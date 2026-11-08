@@ -369,6 +369,9 @@ pub struct VoiceState {
     /// Deafened by someone else: the server sends them no audio.
     #[serde(default)]
     pub server_deafened: bool,
+    /// When they arrived in this channel (server clock, Unix milliseconds; 0 from older servers).
+    #[serde(default)]
+    pub joined_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -444,6 +447,10 @@ pub struct Ready {
     /// Unread mentions of you, per channel.
     #[serde(default)]
     pub mentions: Vec<MentionCount>,
+    /// The server's clock (Unix milliseconds), so times like call lengths can be shown
+    /// correctly even if this computer's clock is off. 0 from older servers.
+    #[serde(default)]
+    pub server_time: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

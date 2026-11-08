@@ -24,6 +24,29 @@ use syncord_proto::{Attachment, DirectChannel};
 use syncord_proto::{ChannelKind, VoiceState};
 
 pub const MESSAGES_ID: &str = "messages";
+
+/// This computer's clock, in Unix milliseconds.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// A call length as "4:07" or "1:02:33".
+pub fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+#[cfg(test)]
+mod duration_tests {
+    #[test]
+    fn formats_call_lengths() {
+        use std::time::Duration;
+        assert_eq!(super::format_duration(Duration::from_secs(7)), "0:07");
+        assert_eq!(super::format_duration(Duration::from_secs(247)), "4:07");
+        assert_eq!(super::format_duration(Duration::from_secs(3753)), "1:02:33");
+    }
+}
 pub const COMPOSER_ID: &str = "composer";
 const TYPING_SHOWN_FOR: Duration = Duration::from_secs(6);
 const TYPING_RESEND_AFTER: Duration = Duration::from_secs(4);
@@ -428,6 +451,8 @@ pub struct Session {
     pub gif_provider: Option<String>,
     /// Largest upload the server accepts, in MB (0 if it doesn't say).
     pub max_upload_mb: u64,
+    /// Server clock minus this computer's clock, in milliseconds.
+    pub clock_offset_ms: i64,
 }
 
 impl Session {
@@ -464,6 +489,14 @@ impl Session {
 
     pub fn first_text_channel(&self) -> Option<ChannelId> {
         self.channels.iter().find(|c| c.kind == ChannelKind::Text).map(|c| c.id)
+    }
+
+    /// How long a voice channel's call has been going (since the first person still there arrived).
+    pub fn call_length(&self, channel: ChannelId) -> Option<Duration> {
+        let started =
+            self.voice.values().filter(|v| v.channel_id == channel && v.joined_at > 0).map(|v| v.joined_at).min()?;
+        let now = now_ms() + self.clock_offset_ms;
+        Some(Duration::from_millis((now - started).max(0) as u64))
     }
 
     pub fn is_owner(&self) -> bool {
@@ -555,6 +588,8 @@ pub const DEFAULT_DEVICE: &str = "Default";
 /// The voice channel we're connected to.
 pub struct ActiveVoice {
     pub channel_id: ChannelId,
+    /// When we connected, for the call timer.
+    pub since: Instant,
     pub ssrc: u32,
     token: Token,
     key: Option<Key>,
@@ -837,7 +872,9 @@ impl App {
             }));
         }
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
-        if someone_typing {
+        // Call timers tick once a second while anyone is in voice.
+        let calls_running = self.session.as_ref().is_some_and(|s| !s.voice.is_empty());
+        if someone_typing || calls_running {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
         }
         if self.voice.is_some() || self.mic_test.is_some() {
@@ -1662,7 +1699,7 @@ impl App {
         if let Some(problem) = engine.status().problem {
             self.notice = Some(problem);
         }
-        self.voice = Some(ActiveVoice { channel_id, ssrc, token, key, udp_port, engine });
+        self.voice = Some(ActiveVoice { channel_id, since: Instant::now(), ssrc, token, key, udp_port, engine });
     }
 
     fn apply_mute_state(&self) {
@@ -1969,6 +2006,7 @@ impl App {
             roles: ready.roles,
             blocked: ready.blocked.into_iter().collect(),
             mention_counts: ready.mentions.into_iter().map(|m| (m.channel_id, m.count)).collect(),
+            clock_offset_ms: if ready.server_time > 0 { ready.server_time - now_ms() } else { 0 },
         });
         if let Some(s) = &mut self.session {
             s.sort_roles();

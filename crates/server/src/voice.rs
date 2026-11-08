@@ -91,7 +91,8 @@ impl Voice {
         let ssrc = self.next_ssrc.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         let (server_muted, server_deafened) =
             self.moderation.lock().unwrap_or_else(|e| e.into_inner()).get(&user_id).copied().unwrap_or_default();
-        let state = VoiceState { user_id, channel_id, muted, deafened, ssrc, server_muted, server_deafened };
+        let joined_at = crate::db::now_ms();
+        let state = VoiceState { user_id, channel_id, muted, deafened, ssrc, server_muted, server_deafened, joined_at };
         let member = Member {
             state: state.clone(),
             token,
@@ -114,6 +115,8 @@ impl Voice {
         let mut members = self.lock();
         let m = members.get_mut(&user_id).filter(|m| m.state.channel_id != channel_id)?;
         m.state.channel_id = channel_id;
+        // joined_at is when they arrived in this channel (it drives the channel's call timer).
+        m.state.joined_at = crate::db::now_ms();
         Some(m.state.clone())
     }
 

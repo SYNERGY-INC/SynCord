@@ -860,6 +860,7 @@ impl Connection {
             roles,
             blocked,
             mentions,
+            server_time: db::now_ms(),
         };
         if self.send(&ServerMsg::Ready(ready)).await { Flow::Continue } else { Flow::Close }
     }

@@ -356,9 +356,15 @@ impl App {
         list = list.push(self.category(s, "Voice channels", ChannelKind::Voice));
         for ch in s.channels.iter().filter(|c| c.kind == ChannelKind::Voice) {
             let connected = self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id);
-            let line = row![icons::icon(&icons::SPEAKER, fs * 1.2, t.muted.0), text(ch.name.clone()).size(fs)]
-                .spacing(6)
-                .align_y(Alignment::Center);
+            let mut line = row![
+                icons::icon(&icons::SPEAKER, fs * 1.2, t.muted.0),
+                text(ch.name.clone()).size(fs).width(Length::Fill)
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            if let Some(length) = s.call_length(ch.id) {
+                line = line.push(text(crate::app::format_duration(length)).size(fs * 0.75).color(t.muted.0));
+            }
             let drop_here = self.voice_drag.as_ref().is_some_and(|d| d.moved() && d.over == Some(ch.id));
             let mut entry =
                 button(line).width(Length::Fill).padding([6, 8]).style(style::row_button(t, connected || drop_here));
@@ -478,10 +484,15 @@ impl App {
             format!("{channel} · relayed (TCP)")
         };
 
+        let timer = self.voice.as_ref().map(|v| crate::app::format_duration(v.since.elapsed())).unwrap_or_default();
         let mut info = column![
-            row![icons::icon(&icons::SIGNAL, fs, color), text(title).size(fs * 0.9).font(bold()).color(color)]
-                .spacing(6)
-                .align_y(Alignment::Center),
+            row![
+                icons::icon(&icons::SIGNAL, fs, color),
+                text(title).size(fs * 0.9).font(bold()).color(color),
+                text(timer).size(fs * 0.75).color(t.muted.0),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
             text(if route.is_empty() { channel.to_string() } else { route }).size(fs * 0.75).color(t.muted.0),
         ]
         .spacing(2)
