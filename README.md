@@ -33,6 +33,9 @@ off in **Settings → Appearance** for GPU rendering.
 - **Statuses**: Online, Idle (automatic after 10 minutes away), Do Not Disturb (no sounds or
   pings) and Invisible, plus "Playing ..." / "Watching ..." / "Listening to ..." that you type or
   that SynCord fills in from the game you're running (Steam, Epic, GOG, Riot and Xbox games)
+- **Replies**, **markdown** (bold, italic, code blocks, quotes, lists...) and **pinned messages**
+- Links ask before opening, showing the real website (and can remember trusted sites)
+- Undo/redo and a right-click menu in the message box
 - **Message search** (Ctrl+F) with `from:`, `in:` and `has:link|file|image|video`; click a result
   to jump to it in the conversation
 - Clickable profile cards
@@ -96,7 +99,8 @@ off in **Settings → Appearance** for GPU rendering.
 - **Noise suppression** (an RNNoise port) that removes fans, keyboard clatter and hum
 - **Voice activity detection** with an adjustable sensitivity and a live level meter, so you
   only send audio while you're talking
-- **Mute and deafen** buttons, shown to everyone in the channel
+- **Mute and deafen** buttons, shown to everyone in the channel; call timers
+- Moderators can **move people** between voice channels (drag them) and **server-mute** them
 - **Per-person volume**: click someone in your call to turn them up or down
 - Pick your microphone and speakers, input and output volume, and a **mic test** that plays you back
 - Uses **UDP** for the lowest delay and switches automatically to the normal connection if UDP is

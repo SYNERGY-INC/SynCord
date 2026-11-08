@@ -2,7 +2,7 @@
 
 ## v0.6.0
 
-**New: cameras and screen sharing, statuses, message search, and closing to the tray.**
+**New: cameras and screen sharing, statuses, search, pinned messages, replies and markdown.**
 
 - **Turn on your camera or share your screen** in any call (voice channels and DM calls): the
   Camera and Screen buttons are under *Voice Connected*. Pick a screen and choose sharp text
@@ -21,9 +21,32 @@
 - **The X button keeps SynCord running in the tray** (Windows and Mac), so you still get messages
   and calls. Turn it off in Appearance → *Closing the window*. Opening SynCord again brings back
   the running one instead of starting a second copy.
-- **Ctrl+Backspace** deletes a word (Ctrl+Delete the next one).
+- **Pinned messages**: right-click a message → *Pin Message*. The pin button at the top lists a
+  channel's pins. Anyone can pin in DMs; in server channels it takes *Manage messages*.
+- **Links ask before opening**, showing exactly which website they go to. Tick *Trust ... links*
+  to stop asking for that site (Appearance lists trusted sites, with *Remove*).
+- **Message box**: Ctrl+Z / Ctrl+Y undo and redo, Ctrl+Backspace deletes a word, and right-click
+  for Cut, Copy, Paste and Select All.
+- **Escape** jumps back to the newest message. Click beside a picture to close it.
+- **Roles**: Server settings → Roles now shows each role's members, with *Add* and *Remove*.
+- Smoother: hover highlights fade, new messages slide in, side panels slide open.
+- Fixed: profile pictures sometimes turned back into letters until SynCord restarted.
 - Fixed: after switching microphone or speakers during a call, others stopped hearing you.
 - The Mac app now needs macOS 12.3 or newer (for screen sharing).
+
+From hepbep (thanks!):
+
+- **Reply** to messages (hover a message, or right-click → *Reply*).
+- **Markdown**: `**bold**`, `*italic*`, `__underline__`, `~~strike~~`, `` `code` ``, code blocks,
+  `> quotes`, headings, lists and `-# small text`.
+- **Call timers** on voice channels and under *Voice Connected*.
+- **Move people between voice channels** (drag them) and **server mute / deafen** (right-click),
+  with new *Move members* and *Mute members* permissions. They're off for @everyone; give them
+  to a role. Nobody can move or mute the owner or someone ranked above them, and they never
+  apply in private calls.
+- **Choose the font** in Appearance (any installed font, or a .ttf/.otf file).
+- A **colour picker** for profile and role colours, an **update button** next to settings, a red
+  **NEW** line above unread messages, and an option to flash the taskbar for every message.
 
 ## v0.5.0
 
