@@ -776,3 +776,57 @@ async fn login(url: &str, token: &str) -> (Socket, ServerMsg) {
     let reply = expect(&mut ws, |m| matches!(m, ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. })).await;
     (ws, reply)
 }
+
+/// Uploading an MP4 the app can play gives it a preview frame, its size and its length.
+#[tokio::test]
+async fn videos_get_a_preview_and_their_length() {
+    let dir = std::env::temp_dir().join(format!("syncord-video-test-{}", rand_suffix()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let clip = dir.join("clip.mp4");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25", "-f", "lavfi", "-i"])
+        .args(["sine=frequency=440", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+        .arg(&clip)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: ffmpeg isn't installed");
+        return;
+    }
+    let config = Config { invite_code: "x".into(), uploads: dir.join("uploads"), ..Config::default() };
+    let state = AppState::new(config, Db::open_in_memory().unwrap());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+    let (_ws, r) = register(&format!("ws://{addr}/ws"), "alice", "x").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let channel = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+    let http = reqwest::Client::new();
+    let up = http
+        .post(format!("http://{addr}/api/upload?channel_id={channel}&filename=clip.mp4"))
+        .bearer_auth(&ready.token)
+        .body(std::fs::read(&clip).unwrap())
+        .send()
+        .await
+        .unwrap();
+    let a: syncord_proto::Attachment = up.json().await.unwrap();
+    let v = a.video.expect("recognised as a video");
+    assert!((1900..=2100).contains(&v.duration_ms), "{v:?}");
+    assert!(v.has_audio);
+    assert_eq!((a.width, a.height), (Some(320), Some(240)));
+    assert!(a.is_video() && !a.is_image());
+    let thumb =
+        http.get(format!("http://{addr}/api/files/{}?thumb=1", a.id)).bearer_auth(&ready.token).send().await.unwrap();
+    assert_eq!(thumb.headers()["content-type"], "image/jpeg");
+
+    // Something that only claims to be a video stays a plain file.
+    let fake = http
+        .post(format!("http://{addr}/api/upload?channel_id={channel}&filename=fake.mp4"))
+        .bearer_auth(&ready.token)
+        .body(vec![7u8; 5000])
+        .send()
+        .await
+        .unwrap();
+    let f: syncord_proto::Attachment = fake.json().await.unwrap();
+    assert!(f.video.is_none() && f.width.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -214,7 +214,9 @@ pub fn key_binding(kp: KeyPress, suggestions: usize, empty: bool) -> Option<Bind
     match kp.key.as_ref() {
         keyboard::Key::Named(Named::Enter) if kp.modifiers.shift() => Some(Binding::Enter),
         keyboard::Key::Named(Named::Enter) => Some(Binding::Custom(Message::SendMessage)),
-        keyboard::Key::Named(Named::Tab) if suggestions > 0 => Some(Binding::Custom(Message::AcceptSuggestion(usize::MAX))),
+        keyboard::Key::Named(Named::Tab) if suggestions > 0 => {
+            Some(Binding::Custom(Message::AcceptSuggestion(usize::MAX)))
+        }
         keyboard::Key::Named(Named::ArrowUp) if suggestions > 0 => Some(Binding::Custom(Message::SuggestionMove(-1))),
         keyboard::Key::Named(Named::ArrowDown) if suggestions > 0 => Some(Binding::Custom(Message::SuggestionMove(1))),
         keyboard::Key::Named(Named::ArrowUp) if empty => Some(Binding::Custom(Message::EditLast)),

@@ -4,12 +4,12 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
-mod app_media;
 mod app_avatars;
+mod app_media;
 mod app_people;
+mod app_social;
 mod composer;
 mod crop;
-mod app_social;
 mod emoji;
 mod icons;
 mod media;
@@ -21,12 +21,13 @@ mod style;
 mod theme;
 mod tls;
 mod updater;
+mod video;
 mod view;
 mod view_extras;
 mod view_menus;
+mod view_messages;
 mod view_people;
 mod view_roles;
-mod view_messages;
 mod voice;
 mod widgets;
 
@@ -35,6 +36,8 @@ use app::App;
 fn main() -> iced::Result {
     // HTTPS (for servers behind a proxy like Caddy) uses the same small crypto library as the WebSocket.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    // Videos downloaded to watch last time aren't needed any more.
+    video::clear_cache();
     // Pick the renderer before iced starts. An explicit ICED_BACKEND wins.
     if std::env::var_os("ICED_BACKEND").is_none() && settings::Settings::load().low_memory {
         // SAFETY: nothing else is running yet, so no other thread can be reading the environment.

@@ -230,7 +230,10 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for MenuOverlay<'_, '_,
             shell.request_redraw();
         }
         match event {
-            Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(keyboard::key::Named::Escape), .. }) => {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            }) => {
                 self.close(shell);
                 shell.capture_event();
                 return;

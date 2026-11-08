@@ -335,8 +335,9 @@ impl App {
             if let Some(c) = name_color {
                 name = name.color(c);
             }
-            let mut line =
-                row![text("#").size(fs * 1.25).color(t.muted.0), name.width(Length::Fill)].spacing(6).align_y(Alignment::Center);
+            let mut line = row![text("#").size(fs * 1.25).color(t.muted.0), name.width(Length::Fill)]
+                .spacing(6)
+                .align_y(Alignment::Center);
             if s.mention_count(ch.id) > 0 && !selected {
                 line = line.push(mention_badge(t, s.mention_count(ch.id), fs));
             }
@@ -423,8 +424,10 @@ impl App {
             (None, Some(id)) => (id, false),
             (None, None) => return space().into(),
         };
-        let dm_name = s.direct(channel_id).and_then(|d| s.users.get(&d.user_id)).map(|u| format!("Call with {}", u.name()));
-        let channel = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.name.clone()).or(dm_name).unwrap_or_default();
+        let dm_name =
+            s.direct(channel_id).and_then(|d| s.users.get(&d.user_id)).map(|u| format!("Call with {}", u.name()));
+        let channel =
+            s.channels.iter().find(|c| c.id == channel_id).map(|c| c.name.clone()).or(dm_name).unwrap_or_default();
         let channel = channel.as_str();
         let (title, color) = if connected { ("Voice Connected", t.online.0) } else { ("Connecting...", rgb(0xF0B232)) };
         let route = if !connected {
@@ -521,7 +524,10 @@ impl App {
             }
         }
         header = header.push(space::horizontal());
-        if let Some(ch) = channel.as_ref().filter(|_| s.can(syncord_proto::perms::MANAGE_CHANNELS) && s.channels.len() > 1 && !is_direct) {
+        if let Some(ch) = channel
+            .as_ref()
+            .filter(|_| s.can(syncord_proto::perms::MANAGE_CHANNELS) && s.channels.len() > 1 && !is_direct)
+        {
             header = header.push(
                 button(text("Delete channel").size(fs * 0.8))
                     .padding([4, 8])
@@ -530,7 +536,8 @@ impl App {
             );
         }
         if let Some(ch) = channel.as_ref().filter(|_| is_direct) {
-            let in_call = self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id) || self.voice_joining == Some(ch.id);
+            let in_call =
+                self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id) || self.voice_joining == Some(ch.id);
             if !in_call {
                 header = header.push(
                     button(icons::icon(&icons::PHONE, fs * 1.3, t.text.0))
@@ -852,10 +859,10 @@ impl App {
             (false, false) => None,
         };
         let bar_color = if pinged { gold } else { Color::TRANSPARENT };
-        let bar = container(space()).width(2).height(Length::Fill).style(move |_| container::Style {
-            background: Some(bar_color.into()),
-            ..Default::default()
-        });
+        let bar = container(space())
+            .width(2)
+            .height(Length::Fill)
+            .style(move |_| container::Style { background: Some(bar_color.into()), ..Default::default() });
         mouse_area(
             container(row![bar, container(line).padding([2, 14]).width(Length::Fill)])
                 .width(Length::Fill)
@@ -1015,10 +1022,7 @@ impl App {
     fn profile_popup<'a>(&'a self, s: &'a Session, u: &'a User) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let mut profile =
-            column![self.profile_card(s, u, s.online.contains(&u.id), true)]
-                .spacing(8)
-                .width(320);
+        let mut profile = column![self.profile_card(s, u, s.online.contains(&u.id), true)].spacing(8).width(320);
         if u.id != s.me {
             profile = profile.push(
                 button(center(text(format!("Message {}", u.name())).size(fs * 0.95)).height(fs * 2.4))
@@ -1171,18 +1175,23 @@ impl App {
         .width(200);
         let mut nav = nav;
         if s.can(syncord_proto::perms::MANAGE_ROLES) {
-            nav = nav.push(label(t, "Server settings", fs)).push(nav_item("Roles", SettingsTab::Roles)).push(space().height(12));
+            nav = nav
+                .push(label(t, "Server settings", fs))
+                .push(nav_item("Roles", SettingsTab::Roles))
+                .push(space().height(12));
         }
-        let nav = nav.push(column![
-            divider(t.hover.0),
-            divider(t.hover.0),
-            button(text("Log Out").size(fs))
-                .width(Length::Fill)
-                .padding([6, 10])
-                .on_press(Message::Logout)
-                .style(style::link_button(danger, style::darken(danger, 0.2))),
-        ]
-        .spacing(4));
+        let nav = nav.push(
+            column![
+                divider(t.hover.0),
+                divider(t.hover.0),
+                button(text("Log Out").size(fs))
+                    .width(Length::Fill)
+                    .padding([6, 10])
+                    .on_press(Message::Logout)
+                    .style(style::link_button(danger, style::darken(danger, 0.2))),
+            ]
+            .spacing(4),
+        );
 
         let content = match tab {
             SettingsTab::Profile => self.profile_settings(s),
@@ -1549,8 +1558,13 @@ impl App {
                 if s.server_version.is_empty() { "older than 0.3".to_string() } else { s.server_version.clone() };
             col = col.push(text(format!("Server version: {server}")).size(fs * 0.85).color(t.muted.0));
             let (security, color) = match &self.encrypted {
-                Some(Some(print)) => (format!("Connection: encrypted (server fingerprint {})", &print[..23.min(print.len())]), t.online.0),
-                Some(None) => ("Connection: not encrypted. Updating the server turns encryption on.".to_string(), t.danger.0),
+                Some(Some(print)) => (
+                    format!("Connection: encrypted (server fingerprint {})", &print[..23.min(print.len())]),
+                    t.online.0,
+                ),
+                Some(None) => {
+                    ("Connection: not encrypted. Updating the server turns encryption on.".to_string(), t.danger.0)
+                }
                 None => (String::new(), t.muted.0),
             };
             if !security.is_empty() {

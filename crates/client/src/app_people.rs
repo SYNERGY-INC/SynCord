@@ -41,7 +41,9 @@ impl Session {
 
     /// Whether you can edit this role or hand it out.
     pub fn can_manage_role(&self, role: &Role) -> bool {
-        role.id != EVERYONE_ROLE && self.can(perms::MANAGE_ROLES) && (self.is_owner() || role.position < self.top_position(self.me))
+        role.id != EVERYONE_ROLE
+            && self.can(perms::MANAGE_ROLES)
+            && (self.is_owner() || role.position < self.top_position(self.me))
     }
 
     /// Someone's roles, highest first.

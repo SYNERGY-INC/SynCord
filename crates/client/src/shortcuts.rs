@@ -54,7 +54,8 @@ pub const LIST: &[(&str, &str)] = &[
 pub fn from_key(key: &Key, physical: key::Physical, m: Modifiers, switcher: bool) -> Option<Shortcut> {
     use key::Named;
     let letter = |c: char, code: key::Code| {
-        matches!(key, Key::Character(s) if s.eq_ignore_ascii_case(&c.to_string())) || physical == key::Physical::Code(code)
+        matches!(key, Key::Character(s) if s.eq_ignore_ascii_case(&c.to_string()))
+            || physical == key::Physical::Code(code)
     };
     if switcher && !m.command() && !m.alt() {
         match key {
@@ -98,9 +99,11 @@ pub fn from_key(key: &Key, physical: key::Physical, m: Modifiers, switcher: bool
         Some(Shortcut::Emoji)
     } else if letter('g', key::Code::KeyG) {
         Some(Shortcut::Gif)
-    } else if matches!(key, Key::Character(s) if s.as_str() == ",") || physical == key::Physical::Code(key::Code::Comma) {
+    } else if matches!(key, Key::Character(s) if s.as_str() == ",") || physical == key::Physical::Code(key::Code::Comma)
+    {
         Some(Shortcut::Settings)
-    } else if matches!(key, Key::Character(s) if s.as_str() == "/") || physical == key::Physical::Code(key::Code::Slash) {
+    } else if matches!(key, Key::Character(s) if s.as_str() == "/") || physical == key::Physical::Code(key::Code::Slash)
+    {
         Some(Shortcut::Help)
     } else {
         None
@@ -284,12 +287,15 @@ impl App {
             );
         }
         list = list.push(label(t, "On a Mac, use Cmd instead of Ctrl", fs));
-        container(scrollable(list).style(style::scroll(t)))
-            .width(620)
-            .max_height(560)
-            .padding(22)
-            .style(card(t.chat.0, t.radius * 1.5))
-            .into()
+        container(
+            scrollable(container(list).padding(iced::Padding { right: 18.0, ..iced::Padding::ZERO }))
+                .style(style::scroll(t)),
+        )
+        .width(620)
+        .max_height(560)
+        .padding(22)
+        .style(card(t.chat.0, t.radius * 1.5))
+        .into()
     }
 }
 
@@ -304,7 +310,10 @@ mod tests {
         let none = key::Physical::Unidentified(key::NativeCode::Unidentified);
         assert_eq!(from_key(&k("k"), none, ctrl, false), Some(Shortcut::QuickSwitcher));
         assert_eq!(from_key(&k("M"), none, ctrl | Modifiers::SHIFT, false), Some(Shortcut::ToggleMute));
-        assert_eq!(from_key(&Key::Named(key::Named::ArrowDown), none, Modifiers::ALT, false), Some(Shortcut::Channel(1)));
+        assert_eq!(
+            from_key(&Key::Named(key::Named::ArrowDown), none, Modifiers::ALT, false),
+            Some(Shortcut::Channel(1))
+        );
         assert_eq!(
             from_key(&Key::Named(key::Named::ArrowUp), none, Modifiers::ALT | Modifiers::SHIFT, false),
             Some(Shortcut::Unread(-1))
@@ -312,6 +321,9 @@ mod tests {
         assert_eq!(from_key(&k("k"), none, Modifiers::empty(), false), None);
         // Russian layout: the K key types "л", but its position still counts.
         assert_eq!(from_key(&k("л"), key::Physical::Code(key::Code::KeyK), ctrl, false), Some(Shortcut::QuickSwitcher));
-        assert_eq!(from_key(&Key::Named(key::Named::ArrowDown), none, Modifiers::empty(), true), Some(Shortcut::SwitcherMove(1)));
+        assert_eq!(
+            from_key(&Key::Named(key::Named::ArrowDown), none, Modifiers::empty(), true),
+            Some(Shortcut::SwitcherMove(1))
+        );
     }
 }

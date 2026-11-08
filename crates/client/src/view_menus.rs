@@ -11,7 +11,11 @@ use crate::widgets::context_menu;
 
 impl App {
     /// `base`, with the menu for person `user` on right-click.
-    pub(crate) fn with_user_menu<'a>(&'a self, base: impl Into<Element<'a, Message>>, user: UserId) -> Element<'a, Message> {
+    pub(crate) fn with_user_menu<'a>(
+        &'a self,
+        base: impl Into<Element<'a, Message>>,
+        user: UserId,
+    ) -> Element<'a, Message> {
         context_menu(base, move || self.user_menu(user)).into()
     }
 
@@ -67,9 +71,17 @@ impl App {
         if !me {
             col = col.push(sep());
             let ignored = self.ignores(user);
-            col = col.push(item(if ignored { "Stop Ignoring" } else { "Ignore" }.into(), Message::ToggleIgnore(user), t.text.0));
+            col = col.push(item(
+                if ignored { "Stop Ignoring" } else { "Ignore" }.into(),
+                Message::ToggleIgnore(user),
+                t.text.0,
+            ));
             let blocked = s.blocked.contains(&user);
-            col = col.push(item(if blocked { "Unblock" } else { "Block" }.into(), Message::ToggleBlock(user), t.danger.0));
+            col = col.push(item(
+                if blocked { "Unblock" } else { "Block" }.into(),
+                Message::ToggleBlock(user),
+                t.danger.0,
+            ));
         }
         col = col.push(sep());
         col = col.push(item("Copy Username".into(), Message::CopyText(u.username.clone()), t.text.0));

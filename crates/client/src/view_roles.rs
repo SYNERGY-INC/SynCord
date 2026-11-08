@@ -147,7 +147,8 @@ impl App {
 
         if everyone {
             col = col.push(text("@everyone").size(fs * 1.2).font(BOLD).color(t.header.0));
-            col = col.push(text("What everyone can do, whatever other roles they have.").size(fs * 0.85).color(t.muted.0));
+            col = col
+                .push(text("What everyone can do, whatever other roles they have.").size(fs * 0.85).color(t.muted.0));
         } else {
             let mut name = text_input("Role name", &d.name).padding(10).size(fs).style(style::input(t, t.rail.0));
             if editable {
@@ -203,7 +204,9 @@ impl App {
                     ]
                     .spacing(2)
                     .width(Length::Fill),
-                    toggler(on).on_toggle_maybe(allowed.then_some(move |v| Message::RolePermission(*bit, v))).size(fs * 1.3),
+                    toggler(on)
+                        .on_toggle_maybe(allowed.then_some(move |v| Message::RolePermission(*bit, v)))
+                        .size(fs * 1.3),
                 ]
                 .align_y(Alignment::Center),
             );

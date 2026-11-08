@@ -47,6 +47,8 @@ pub struct Settings {
     pub ignored: HashMap<String, Vec<i64>>,
     /// Play a sound when someone mentions you.
     pub ping_sound: bool,
+    pub video_volume: f32,
+    pub video_muted: bool,
 }
 
 /// A GIF starred for quick re-sending (remembered per server).
@@ -80,6 +82,8 @@ impl Default for Settings {
             known_servers: HashMap::new(),
             ignored: HashMap::new(),
             ping_sound: true,
+            video_volume: 0.8,
+            video_muted: false,
         }
     }
 }

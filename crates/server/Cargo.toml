@@ -20,6 +20,7 @@ rand = "0.9"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 syncord-update.workspace = true
+syncord-video.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

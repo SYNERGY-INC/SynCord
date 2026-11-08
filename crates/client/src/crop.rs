@@ -106,7 +106,12 @@ pub fn load(bytes: &[u8], banner: bool) -> Result<Source, String> {
             img
         } else {
             let s = max as f32 / w.max(h) as f32;
-            image::imageops::resize(&img, ((w as f32 * s) as u32).max(1), ((h as f32 * s) as u32).max(1), FilterType::Triangle)
+            image::imageops::resize(
+                &img,
+                ((w as f32 * s) as u32).max(1),
+                ((h as f32 * s) as u32).max(1),
+                FilterType::Triangle,
+            )
         }
     };
     if format == ImageFormat::Gif {
@@ -140,7 +145,12 @@ pub fn render(source: &Source, banner: bool, zoom: f32, center: (f32, f32)) -> R
         let mut enc = GifEncoder::new_with_speed(&mut out, 10);
         enc.set_repeat(Repeat::Infinite).map_err(|e| e.to_string())?;
         for (img, delay) in &source.frames {
-            let frame = Frame::from_parts(cut(img, rect, out_size, FilterType::Triangle), 0, 0, Delay::from_numer_denom_ms(*delay, 1));
+            let frame = Frame::from_parts(
+                cut(img, rect, out_size, FilterType::Triangle),
+                0,
+                0,
+                Delay::from_numer_denom_ms(*delay, 1),
+            );
             enc.encode_frame(frame).map_err(|e| format!("Couldn't make the GIF: {e}"))?;
         }
         drop(enc);
@@ -166,7 +176,17 @@ impl CropState {
     pub fn new(source: Source, banner: bool) -> Self {
         let source = Arc::new(source);
         let preview = preview(&source, banner, 1.0, (0.5, 0.5));
-        Self { banner, source, zoom: 1.0, center: (0.5, 0.5), drag: None, last_pointer: None, preview, busy: false, error: None }
+        Self {
+            banner,
+            source,
+            zoom: 1.0,
+            center: (0.5, 0.5),
+            drag: None,
+            last_pointer: None,
+            preview,
+            busy: false,
+            error: None,
+        }
     }
 
     fn refresh(&mut self) {
@@ -206,7 +226,12 @@ impl App {
                             .pick_file()
                             .await?;
                         let bytes = file.read().await;
-                        Some(tokio::task::spawn_blocking(move || load(&bytes, banner)).await.map_err(|e| e.to_string()).and_then(|r| r))
+                        Some(
+                            tokio::task::spawn_blocking(move || load(&bytes, banner))
+                                .await
+                                .map_err(|e| e.to_string())
+                                .and_then(|r| r),
+                        )
                     },
                     move |r| Message::CropLoaded(banner, r.map(|r| r.map(Arc::new))),
                 );
@@ -250,8 +275,15 @@ impl App {
                         let bytes = tokio::task::spawn_blocking(move || render(&source, banner, zoom, center))
                             .await
                             .map_err(|e| e.to_string())??;
-                        let url = format!("{base}{PROFILE_IMAGE_PATH}?kind={}", if banner { "banner" } else { "avatar" });
-                        let resp = http.post(url).bearer_auth(token).body(bytes).send().await.map_err(|e| format!("Upload failed: {e}"))?;
+                        let url =
+                            format!("{base}{PROFILE_IMAGE_PATH}?kind={}", if banner { "banner" } else { "avatar" });
+                        let resp = http
+                            .post(url)
+                            .bearer_auth(token)
+                            .body(bytes)
+                            .send()
+                            .await
+                            .map_err(|e| format!("Upload failed: {e}"))?;
                         if resp.status().is_success() {
                             Ok(())
                         } else if resp.status().as_u16() == 404 {
@@ -374,7 +406,11 @@ impl App {
             .spacing(8)
             .align_y(Alignment::Center),
         );
-        container(body).width(Length::Fixed(pw.max(300.0) + 80.0)).padding(22).style(card(t.chat.0, t.radius * 1.5)).into()
+        container(body)
+            .width(Length::Fixed(pw.max(300.0) + 80.0))
+            .padding(22)
+            .style(card(t.chat.0, t.radius * 1.5))
+            .into()
     }
 }
 

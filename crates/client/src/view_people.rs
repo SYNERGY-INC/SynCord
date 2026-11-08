@@ -13,7 +13,11 @@ const AVATAR: f32 = 84.0;
 
 impl App {
     /// The bar under a direct message's header while a call is going on in it.
-    pub(crate) fn call_bar<'a>(&'a self, s: &'a Session, channel: syncord_proto::ChannelId) -> Option<Element<'a, Message>> {
+    pub(crate) fn call_bar<'a>(
+        &'a self,
+        s: &'a Session,
+        channel: syncord_proto::ChannelId,
+    ) -> Option<Element<'a, Message>> {
         let t = &self.theme;
         let fs = self.fs();
         let mut people: Vec<&User> =
@@ -27,12 +31,10 @@ impl App {
         for u in people {
             let talking = self.speaking.contains(&u.id);
             let ring = if talking { t.online.0 } else { iced::Color::TRANSPARENT };
-            faces = faces.push(
-                container(self.avatar(u, 56.0)).padding(3).style(move |_| container::Style {
-                    border: Border { radius: 32.0.into(), width: 3.0, color: ring },
-                    ..Default::default()
-                }),
-            );
+            faces = faces.push(container(self.avatar(u, 56.0)).padding(3).style(move |_| container::Style {
+                border: Border { radius: 32.0.into(), width: 3.0, color: ring },
+                ..Default::default()
+            }));
         }
         let action = if joined {
             iced::widget::button(text("Leave Call").size(fs * 0.9))
@@ -81,11 +83,23 @@ impl App {
         ]
         .spacing(8)
         .align_x(Alignment::Center);
-        Some(container(card_body).padding(18).width(240).style(card(style::darken(t.floating.0, 0.1), t.radius * 1.5)).into())
+        Some(
+            container(card_body)
+                .padding(18)
+                .width(240)
+                .style(card(style::darken(t.floating.0, 0.1), t.radius * 1.5))
+                .into(),
+        )
     }
 
     /// Someone's profile card. `live`: play their animated avatar and banner.
-    pub(crate) fn profile_card<'a>(&'a self, s: &'a Session, u: &User, online: bool, live: bool) -> Element<'a, Message> {
+    pub(crate) fn profile_card<'a>(
+        &'a self,
+        s: &'a Session,
+        u: &User,
+        online: bool,
+        live: bool,
+    ) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let radius = t.radius * 1.5;

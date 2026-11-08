@@ -178,6 +178,7 @@ pub async fn load_profile_image(
     id: String,
     max_side: u32,
     animate: bool,
+    round: bool,
 ) -> Result<Arc<Picture>, String> {
     let url = format!("{base}{}/{id}", syncord_proto::PROFILE_IMAGE_PATH);
     let resp = http.get(url).bearer_auth(token).send().await.map_err(|e| e.to_string())?;
@@ -185,10 +186,53 @@ pub async fn load_profile_image(
         return Err(describe(resp.status()));
     }
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || if animate { decode(&bytes, max_side) } else { decode_still(&bytes, max_side) })
-        .await
-        .map_err(|e| e.to_string())?
-        .map(Arc::new)
+    tokio::task::spawn_blocking(move || {
+        let picture = if animate { decode(&bytes, max_side) } else { decode_still(&bytes, max_side) }?;
+        // Avatars are cut to a circle here: the CPU renderer doesn't round pictures' corners.
+        Ok(if round { round_picture(picture) } else { picture })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map(Arc::new)
+}
+
+/// Make everything outside the circle transparent (with a soft edge).
+pub fn mask_circle(rgba: &mut [u8], w: u32, h: u32) {
+    let (cx, cy, r) = (w as f32 / 2.0, h as f32 / 2.0, w.min(h) as f32 / 2.0);
+    for y in 0..h {
+        for x in 0..w {
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            let cover = (r - d + 0.5).clamp(0.0, 1.0);
+            if cover < 1.0 {
+                let a = &mut rgba[((y * w + x) * 4 + 3) as usize];
+                *a = (*a as f32 * cover) as u8;
+            }
+        }
+    }
+}
+
+fn round_picture(p: Picture) -> Picture {
+    let round = |handle: &Handle, w: u32, h: u32| -> Handle {
+        match handle {
+            Handle::Rgba { pixels, .. } => {
+                let mut px = pixels.to_vec();
+                mask_circle(&mut px, w, h);
+                Handle::from_rgba(w, h, px)
+            }
+            other => other.clone(),
+        }
+    };
+    match p {
+        Picture::Still { handle, width, height } => {
+            Picture::Still { handle: round(&handle, width, height), width, height }
+        }
+        Picture::Animated { frames, width, height, total_ms } => Picture::Animated {
+            frames: frames.iter().map(|(h, d)| (round(h, width, height), *d)).collect(),
+            width,
+            height,
+            total_ms,
+        },
+    }
 }
 
 /// Decode just the first frame (cheap to keep many of).

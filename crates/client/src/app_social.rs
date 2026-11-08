@@ -12,7 +12,6 @@ const GIF_SEARCH_DELAY: std::time::Duration = std::time::Duration::from_millis(4
 const GIF_TILE_SIDE: u32 = 200;
 
 impl App {
-
     /// Tell the server we've read the channel being shown, if there's anything new.
     pub(crate) fn mark_current_read(&mut self) {
         let Some(s) = &mut self.session else { return };

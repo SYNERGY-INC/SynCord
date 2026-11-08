@@ -64,7 +64,13 @@ impl App {
         }
         let mut col = column![].spacing(6);
         for a in &m.attachments {
-            col = col.push(if a.is_image() { self.picture_view(m, a) } else { self.file_card(a) });
+            col = col.push(if a.is_video() {
+                self.video_view(a)
+            } else if a.is_image() {
+                self.picture_view(m, a)
+            } else {
+                self.file_card(a)
+            });
         }
         Some(col.into())
     }
@@ -124,7 +130,10 @@ impl App {
         let content = row![
             icon(&icons::FILE, 30.0, t.accent.0),
             column![
-                text(middle_ellipsis(&a.filename, 30)).size(fs * 0.95).color(t.accent.0),
+                text(middle_ellipsis(&a.filename, 26))
+                    .wrapping(iced::widget::text::Wrapping::None)
+                    .size(fs * 0.95)
+                    .color(t.accent.0),
                 text(format_size(a.size)).size(fs * 0.75).color(t.muted.0),
             ]
             .spacing(2)
@@ -464,7 +473,9 @@ impl App {
                         .style(|_, _| button::Style::default()),
                     container(tooltip(
                         star,
-                        container(text("Remove from favourites").size(fs * 0.75)).padding([3, 6]).style(card(t.rail.0, 4.0)),
+                        container(text("Remove from favourites").size(fs * 0.75))
+                            .padding([3, 6])
+                            .style(card(t.rail.0, 4.0)),
                         tooltip::Position::Top,
                     ))
                     .padding(4)

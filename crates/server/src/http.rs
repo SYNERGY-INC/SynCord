@@ -176,6 +176,22 @@ async fn finish_upload(
         media::Processed { mime: media::mime_from_name(&filename).into(), ..Default::default() }
     };
 
+    // Videos the app can play get their first frame as the preview.
+    let mut processed = processed;
+    let mut video = None;
+    if processed.width.is_none() && looks_like_video(&filename, &processed.mime) {
+        let path = part.clone();
+        let found = tokio::task::spawn_blocking(move || video_preview(&path)).await.ok().flatten();
+        if let Some((info, thumb)) = found {
+            processed.width = Some(info.width);
+            processed.height = Some(info.height);
+            processed.thumb = Some(thumb);
+            video = Some(syncord_proto::VideoInfo { duration_ms: info.duration_ms, has_audio: info.has_audio });
+            if !processed.mime.starts_with("video/") {
+                processed.mime = "video/mp4".into();
+            }
+        }
+    }
     let write = async {
         if let Some(thumb) = &processed.thumb {
             tokio::fs::write(file_path(dir, id, true), thumb).await?;
@@ -197,7 +213,7 @@ async fn finish_upload(
         width: processed.width,
         height: processed.height,
         animated: processed.animated,
-        video: None,
+        video,
     };
     let has_thumb = processed.thumb.is_some();
     let a = attachment.clone();
@@ -266,6 +282,20 @@ pub async fn download(
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
     h.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment"));
     Ok(resp)
+}
+
+fn looks_like_video(name: &str, mime: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    mime.starts_with("video/") || [".mp4", ".m4v", ".mov"].iter().any(|e| lower.ends_with(e))
+}
+
+/// Size, length and a JPEG of the first frame, for videos the app can play.
+fn video_preview(path: &Path) -> Option<(syncord_video::Info, Vec<u8>)> {
+    let (info, frame) = syncord_video::poster(path, 480).ok()?;
+    let rgb = image::DynamicImage::ImageRgba8(frame).to_rgb8();
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82).encode_image(&rgb).ok()?;
+    Some((info, out.into_inner()))
 }
 
 // ---- Profile pictures and banners

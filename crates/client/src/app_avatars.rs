@@ -20,7 +20,8 @@ impl App {
     /// Start loading everyone's profile pictures (still images; small).
     pub(crate) fn request_avatars(&mut self) -> Task<Message> {
         let Some(s) = &self.session else { return Task::none() };
-        let ids: Vec<String> = s.users.values().filter_map(|u| u.profile.avatar.as_ref().map(|a| a.id.clone())).collect();
+        let ids: Vec<String> =
+            s.users.values().filter_map(|u| u.profile.avatar.as_ref().map(|a| a.id.clone())).collect();
         Task::batch(ids.into_iter().map(|id| self.load_profile_picture(id, false, false)))
     }
 
@@ -53,7 +54,7 @@ impl App {
         }
         let Some((http, base, token)) = self.http_ctx() else { return Task::none() };
         let side = if banner { BANNER_DECODE } else { AVATAR_DECODE };
-        Task::perform(media::load_profile_image(http, base, token, id, side, animate), move |r| {
+        Task::perform(media::load_profile_image(http, base, token, id, side, animate, !banner), move |r| {
             Message::PictureLoaded(key.clone(), r)
         })
     }
@@ -91,12 +92,10 @@ impl App {
             AvatarRing::Thick => with_ring((size * 0.1).max(2.5)),
             AvatarRing::Double => {
                 let w = (size * 0.045).max(1.5);
-                container(
-                    container(round(size - 4.0 * w)).center(size - 2.0 * w).style(move |_| container::Style {
-                        border: Border { width: w, color: ring, radius: (size / 2.0).into() },
-                        ..Default::default()
-                    }),
-                )
+                container(container(round(size - 4.0 * w)).center(size - 2.0 * w).style(move |_| container::Style {
+                    border: Border { width: w, color: ring, radius: (size / 2.0).into() },
+                    ..Default::default()
+                }))
                 .center(size)
                 .style(move |_| container::Style {
                     border: Border { width: w, color: ring, radius: (size / 2.0).into() },
@@ -137,12 +136,15 @@ impl App {
                     })
                     .into()
             }
-            None => container(space()).width(Length::Fill).height(height).style(move |_| container::Style {
-                background: Some(banner_color.into()),
-                border: Border { radius: iced::border::top(radius), ..Default::default() },
-                ..Default::default()
-            })
-            .into(),
+            None => container(space())
+                .width(Length::Fill)
+                .height(height)
+                .style(move |_| container::Style {
+                    background: Some(banner_color.into()),
+                    border: Border { radius: iced::border::top(radius), ..Default::default() },
+                    ..Default::default()
+                })
+                .into(),
         }
     }
 }

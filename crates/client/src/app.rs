@@ -195,6 +195,15 @@ pub enum Message {
     DeleteRole(syncord_proto::RoleId),
     /// Move a role up (true) or down one place.
     MoveRole(syncord_proto::RoleId, bool),
+
+    // Videos
+    /// Play (or pause) a video in the chat.
+    PlayVideo(Attachment),
+    VideoReady(String, Result<crate::video::PlayerHandle, String>),
+    VideoTick,
+    VideoSeek(f32),
+    VideoVolume(f32),
+    VideoMute,
     /// Not now, to an incoming call.
     DismissCall,
     Shortcut(crate::shortcuts::Shortcut),
@@ -309,14 +318,21 @@ pub enum SettingsTab {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Overlay {
     Profile(UserId),
-    NewChannel { name: String, topic: String, kind: ChannelKind },
+    NewChannel {
+        name: String,
+        topic: String,
+        kind: ChannelKind,
+    },
     ConfirmDelete(ChannelId),
     Image(Attachment),
     NewDirect,
     /// Cropping a new profile picture or banner (see `App::crop`).
     Crop,
     /// Ctrl+K.
-    Switcher { query: String, index: usize },
+    Switcher {
+        query: String,
+        index: usize,
+    },
     /// Ctrl+/.
     Shortcuts,
 }
@@ -570,6 +586,10 @@ pub struct App {
     /// Folded-away messages the user chose to see.
     pub revealed: HashSet<MessageId>,
     pub crop: Option<crate::crop::CropState>,
+    pub video: Option<crate::video::ActiveVideo>,
+    /// Videos being downloaded to play: bytes so far, and the size.
+    pub video_loading: HashMap<String, (Arc<AtomicU64>, u64)>,
+    pub video_errors: HashMap<String, String>,
     /// A direct-message call someone started that you haven't joined or dismissed.
     pub ringing: Option<ChannelId>,
     /// When the current dialog, picker and call card opened (for their pop-in).
@@ -648,6 +668,9 @@ impl App {
             role_editing: None,
             revealed: HashSet::new(),
             crop: None,
+            video: None,
+            video_loading: HashMap::new(),
+            video_errors: HashMap::new(),
             ringing: None,
             popped: Instant::now(),
             picker_popped: Instant::now(),
@@ -751,6 +774,9 @@ impl App {
         }
         if !self.downloads.is_empty() || self.pending.iter().any(|p| matches!(p.state, UploadState::Uploading)) {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::TransferTick));
+        }
+        if self.video_busy() {
+            subs.push(iced::time::every(Duration::from_millis(33)).map(|_| Message::VideoTick));
         }
         if self.animating_pops() {
             // Smooth while something pops in (a fraction of a second).
@@ -1306,6 +1332,12 @@ impl App {
             | Message::ResetRole
             | Message::DeleteRole(_)
             | Message::MoveRole(..) => return self.update_roles(message),
+            Message::PlayVideo(_)
+            | Message::VideoReady(..)
+            | Message::VideoTick
+            | Message::VideoSeek(_)
+            | Message::VideoVolume(_)
+            | Message::VideoMute => return self.update_video(message),
             Message::WindowFocused(focused) => {
                 self.focused = focused;
                 if focused {
@@ -1589,6 +1621,7 @@ impl App {
     pub(crate) fn select_channel(&mut self, id: ChannelId) -> Task<Message> {
         let Some(current) = self.session.as_ref().map(|s| s.current) else { return Task::none() };
         if current != Some(id) {
+            self.stop_video();
             self.set_composer(String::new());
             self.composer_mentions.clear();
             self.editing = None;
