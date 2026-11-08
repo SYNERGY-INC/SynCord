@@ -14,6 +14,9 @@
   anything. Point at a GIF to see it move, click to send. The server owner needs to add a free
   GIPHY or KLIPY key to the server settings once (see the README); until then the tab shows how.
 
+- The server can now run in Docker or CasaOS: each release publishes a server image
+  (`ghcr.io/bxpo/syncord-server`). See the README. Thanks to hepbep for adding it!
+
 Server owners: the upload limit goes up from 25 MB to 1 GB by itself (unless you'd changed it).
 
 ## v0.3.1

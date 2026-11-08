@@ -107,6 +107,29 @@ fn load_config(path: &Path) -> Config {
     cfg
 }
 
+/// Ctrl+C, or (on Linux/macOS) the stop signal that Docker and systemd send.
+async fn stop_requested() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Update downloads use HTTPS; use the same small crypto library as everything else.
@@ -176,7 +199,7 @@ async fn main() {
 
     if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            stop_requested().await;
             info!("shutting down");
         })
         .await

@@ -272,6 +272,20 @@ Then run:
 sudo systemctl enable --now syncord
 ```
 
+**Docker / CasaOS:** every release publishes a server image, `ghcr.io/bxpo/syncord-server`.
+
+- **CasaOS:** App Store → **+** → *Install a customized app* → *Import*, and paste in
+  [`docker-compose.yml`](docker-compose.yml). Settings, database and uploads are kept in
+  `/DATA/AppData/syncord`; the invite code is in `syncord-server.toml` there.
+- **Docker:**
+
+  ```bash
+  docker run -d --name syncord-server --restart unless-stopped -p 7878:7878/tcp -p 7878:7878/udp -v ./data:/data ghcr.io/bxpo/syncord-server:latest
+  ```
+
+To update, pull the new image and recreate the container (in CasaOS, update the app). The server
+in a container doesn't update itself; it writes a line in its log when a new version is out.
+
 ### 4. Create accounts
 
 Open `syncord`, click **Register**, enter the server address, a username, a password and the

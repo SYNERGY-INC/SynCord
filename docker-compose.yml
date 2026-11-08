@@ -1,4 +1,6 @@
 # Import this in CasaOS: App Store > "+" > Install a customized app > Import.
+# The image is published by the Release workflow (ghcr.io/bxpo/syncord-server);
+# to update, pull the new image (in CasaOS: the app's "Check then update").
 name: syncord
 services:
   syncord-server:
@@ -11,7 +13,7 @@ services:
     volumes:
       - /DATA/AppData/syncord:/data
     x-casaos:
-      architectures: [amd64, arm64]
+      architectures: [amd64]
       main: syncord-server
       category: Chat
       author: bxpo

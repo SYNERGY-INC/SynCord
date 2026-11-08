@@ -50,10 +50,18 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
         return Ok(());
     }
     if windows_install().is_none() {
-        info!(
-            "SynCord Server {} is available (you have {current}). Install it with the server package for your system: {}",
-            manifest.version, manifest.page
-        );
+        if std::path::Path::new("/.dockerenv").exists() {
+            info!(
+                "SynCord Server {} is available (you have {current}). Pull the new image to update \
+                 (in CasaOS: open the app's settings and update it).",
+                manifest.version
+            );
+        } else {
+            info!(
+                "SynCord Server {} is available (you have {current}). Install it with the server package for your system: {}",
+                manifest.version, manifest.page
+            );
+        }
         return Ok(());
     }
     let entry = manifest.files.get(files::WINDOWS_SERVER).ok_or("the release has no Windows server installer")?;
