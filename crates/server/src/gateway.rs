@@ -4,15 +4,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use axum::extract::State;
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use rand::Rng;
-use syncord_proto::{
-    ClientMsg, MAX_MESSAGE_LEN, HISTORY_PAGE, Ready, ServerMsg, User, UserId, normalize_channel_name,
-};
+use syncord_proto::{ClientMsg, HISTORY_PAGE, MAX_MESSAGE_LEN, Ready, ServerMsg, User, UserId, normalize_channel_name};
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
 
@@ -47,8 +45,7 @@ fn verify_password(password: &str, hash: &str) -> bool {
 }
 
 fn valid_username(name: &str) -> bool {
-    (2..=32).contains(&name.chars().count())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    (2..=32).contains(&name.chars().count()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
 struct RateLimit {
@@ -163,9 +160,7 @@ impl Connection {
 
         let Some(me) = self.user else {
             return match msg {
-                ClientMsg::Register { username, password, invite } => {
-                    self.register(username, password, invite).await
-                }
+                ClientMsg::Register { username, password, invite } => self.register(username, password, invite).await,
                 ClientMsg::Login { username, password } => self.login(username, password).await,
                 ClientMsg::Resume { token } => self.resume(token).await,
                 ClientMsg::Ping => {
@@ -218,14 +213,12 @@ impl Connection {
                         return Ok(self.error("Invalid message").await);
                     }
                     let updated = db
-                        .call(move |c| {
-                            match db::get_message(c, message_id)? {
-                                Some(m) if m.author_id == me => {
-                                    db::edit_message(c, message_id, &content)?;
-                                    db::get_message(c, message_id)
-                                }
-                                _ => Ok(None),
+                        .call(move |c| match db::get_message(c, message_id)? {
+                            Some(m) if m.author_id == me => {
+                                db::edit_message(c, message_id, &content)?;
+                                db::get_message(c, message_id)
                             }
+                            _ => Ok(None),
                         })
                         .await?;
                     match updated {

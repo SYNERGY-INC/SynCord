@@ -1,7 +1,7 @@
 //! Reusable styles and small widgets (avatars, profile cards, dividers).
 
 use iced::widget::{button, column, container, row, scrollable, space, stack, text, text_input};
-use iced::{Background, Border, Color, Element, Font, Length, Shadow, Theme, Vector, font};
+use iced::{Background, Border, Color, Element, Font, Length, Theme, font};
 use syncord_proto::{AvatarRing, Profile};
 
 use crate::theme::{AppTheme, contrast_text, rgb, with_alpha};
@@ -13,11 +13,17 @@ pub fn bg(c: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style { background: Some(c.into()), ..Default::default() }
 }
 
+/// Rounded panel. Deliberately shadow-free: shadows bleed outside a widget's
+/// bounds, which leaves smears with the CPU renderer's partial redraws.
 pub fn card(c: Color, radius: f32) -> impl Fn(&Theme) -> container::Style {
+    flat(c, radius)
+}
+
+/// Rounded block without a shadow.
+pub fn flat(c: Color, radius: f32) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
         background: Some(c.into()),
         border: Border { radius: radius.into(), ..Default::default() },
-        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.35), offset: Vector::new(0.0, 4.0), blur_radius: 16.0 },
         ..Default::default()
     }
 }
@@ -176,14 +182,11 @@ pub fn avatar_with_status<'a, M: 'a>(
 ) -> Element<'a, M> {
     let dot_size = (size * 0.38).round();
     let color = if online { t.online.0 } else { t.muted.0 };
-    let dot = container(space())
-        .width(dot_size)
-        .height(dot_size)
-        .style(move |_| container::Style {
-            background: Some(color.into()),
-            border: Border { radius: (dot_size / 2.0).into(), width: dot_size * 0.22, color: cutout },
-            ..Default::default()
-        });
+    let dot = container(space()).width(dot_size).height(dot_size).style(move |_| container::Style {
+        background: Some(color.into()),
+        border: Border { radius: (dot_size / 2.0).into(), width: dot_size * 0.22, color: cutout },
+        ..Default::default()
+    });
     stack![avatar(name, profile, size), container(dot).align_right(size).align_bottom(size)].into()
 }
 
@@ -231,36 +234,30 @@ pub fn profile_card<'a, M: 'a>(
     let bio = if profile.bio.trim().is_empty() { "No bio yet.".to_string() } else { profile.bio.clone() };
     body = body.push(text(bio).size(fs * 0.95).color(t.text.0));
 
-    container(column![banner, container(body).padding([12, 16])])
-        .width(320)
-        .style(card(t.floating.0, radius))
-        .into()
+    container(column![banner, container(body).padding([12, 16])]).width(320).style(card(t.floating.0, radius)).into()
 }
 
 /// A horizontal row of colour swatches that set a colour field.
 pub fn swatches<'a, M: Clone + 'a>(selected: u32, on_pick: impl Fn(String) -> M) -> Element<'a, M> {
     const COLORS: [u32; 12] = [
-        0x5865F2, 0x3BA55C, 0xFAA61A, 0xED4245, 0xEB459E, 0x1ABC9C, 0x9B59B6, 0xE67E22, 0x3498DB, 0x95A5A6,
-        0xFFFFFF, 0x23272A,
+        0x5865F2, 0x3BA55C, 0xFAA61A, 0xED4245, 0xEB459E, 0x1ABC9C, 0x9B59B6, 0xE67E22, 0x3498DB, 0x95A5A6, 0xFFFFFF,
+        0x23272A,
     ];
     let mut r = row![].spacing(6);
     for c in COLORS {
         let color = rgb(c);
         let is_sel = c == selected;
-        r = r.push(
-            button(space().width(22).height(22))
-                .padding(0)
-                .on_press(on_pick(format!("#{c:06X}")))
-                .style(move |_, status| button::Style {
-                    background: Some(color.into()),
-                    border: Border {
-                        radius: 6.0.into(),
-                        width: if is_sel || matches!(status, button::Status::Hovered) { 2.0 } else { 0.0 },
-                        color: contrast_text(color),
-                    },
-                    ..Default::default()
-                }),
-        );
+        r = r.push(button(space().width(22).height(22)).padding(0).on_press(on_pick(format!("#{c:06X}"))).style(
+            move |_, status| button::Style {
+                background: Some(color.into()),
+                border: Border {
+                    radius: 6.0.into(),
+                    width: if is_sel || matches!(status, button::Status::Hovered) { 2.0 } else { 0.0 },
+                    color: contrast_text(color),
+                },
+                ..Default::default()
+            },
+        ));
     }
     r.wrap().into()
 }

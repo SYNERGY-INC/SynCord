@@ -25,11 +25,7 @@ pub struct User {
 
 impl User {
     pub fn name(&self) -> &str {
-        if self.profile.display_name.trim().is_empty() {
-            &self.username
-        } else {
-            &self.profile.display_name
-        }
+        if self.profile.display_name.trim().is_empty() { &self.username } else { &self.profile.display_name }
     }
 }
 
@@ -212,8 +208,7 @@ mod tests {
 
     #[test]
     fn profile_sanitize() {
-        let p = Profile { display_name: "x".repeat(100), accent_color: 0xFF123456, ..Default::default() }
-            .sanitized();
+        let p = Profile { display_name: "x".repeat(100), accent_color: 0xFF123456, ..Default::default() }.sanitized();
         assert_eq!(p.display_name.len(), 32);
         assert_eq!(p.accent_color, 0x123456);
     }

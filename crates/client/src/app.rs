@@ -20,6 +20,7 @@ const TYPING_SHOWN_FOR: Duration = Duration::from_secs(6);
 const TYPING_RESEND_AFTER: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)] // "Message" here means a chat message, not the iced Message type
 pub enum Message {
     // Login screen
     LoginServer(String),
@@ -68,6 +69,7 @@ pub enum Message {
     ReloadThemes,
     TextScale(f32),
     ToggleCompact(bool),
+    ToggleLowMemory(bool),
     Logout,
 
     Tick,
@@ -362,11 +364,12 @@ impl App {
             Message::ComposerChanged(s) => {
                 let typing_now = !s.trim().is_empty();
                 self.composer = s;
-                if typing_now && self.last_typing_sent.is_none_or(|t| t.elapsed() > TYPING_RESEND_AFTER) {
-                    if let Some(channel_id) = self.session.as_ref().and_then(|s| s.current) {
-                        self.send(ClientMsg::Typing { channel_id });
-                        self.last_typing_sent = Some(Instant::now());
-                    }
+                if typing_now
+                    && self.last_typing_sent.is_none_or(|t| t.elapsed() > TYPING_RESEND_AFTER)
+                    && let Some(channel_id) = self.session.as_ref().and_then(|s| s.current)
+                {
+                    self.send(ClientMsg::Typing { channel_id });
+                    self.last_typing_sent = Some(Instant::now());
                 }
             }
             Message::SendMessage => {
@@ -514,6 +517,10 @@ impl App {
             }
             Message::ToggleCompact(v) => {
                 self.settings.compact = v;
+                self.settings.save();
+            }
+            Message::ToggleLowMemory(v) => {
+                self.settings.low_memory = v;
                 self.settings.save();
             }
             Message::Logout => {

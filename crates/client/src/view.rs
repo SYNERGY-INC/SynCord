@@ -3,8 +3,8 @@
 
 use chrono::{Local, TimeZone};
 use iced::widget::{
-    Id, button, center, column, container, mouse_area, opaque, row, scrollable, slider, space, stack, text,
-    text_input, toggler,
+    Id, button, center, column, container, mouse_area, opaque, row, scrollable, slider, space, stack, text, text_input,
+    toggler,
 };
 use iced::{Alignment, Border, Color, Element, Length, Padding};
 use syncord_proto::{AvatarRing, Channel, Message as ChatMessage, User};
@@ -76,19 +76,21 @@ impl App {
         };
 
         let (title, subtitle, action, switch) = if f.register {
-            ("Create an account", "Ask whoever runs the server for the invite code.", "Continue", "Already have an account? Log in")
+            (
+                "Create an account",
+                "Ask whoever runs the server for the invite code.",
+                "Continue",
+                "Already have an account? Log in",
+            )
         } else {
             ("Welcome back!", "We're so excited to see you again!", "Log In", "Need an account? Register")
         };
 
         let mut form = column![
-            column![
-                text(title).size(fs * 1.6).font(BOLD).color(t.header.0),
-                text(subtitle).size(fs).color(t.muted.0),
-            ]
-            .spacing(6)
-            .align_x(Alignment::Center)
-            .width(Length::Fill),
+            column![text(title).size(fs * 1.6).font(BOLD).color(t.header.0), text(subtitle).size(fs).color(t.muted.0),]
+                .spacing(6)
+                .align_x(Alignment::Center)
+                .width(Length::Fill),
             field("Server address", &f.server, "e.g. 100.64.0.5 or chat.example.com", Message::LoginServer),
             field("Username", &f.username, "", Message::LoginUsername),
             column![
@@ -163,12 +165,16 @@ impl App {
         });
         let entry = row![pill, space().width(8), icon].align_y(Alignment::Center);
 
-        container(column![entry, container(divider(t.hover.0)).width(32).padding([0, 0])].spacing(10).align_x(Alignment::Center))
-            .padding([12, 0])
-            .width(72)
-            .height(Length::Fill)
-            .style(bg(t.rail.0))
-            .into()
+        container(
+            column![entry, container(divider(t.hover.0)).width(32).padding([0, 0])]
+                .spacing(10)
+                .align_x(Alignment::Center),
+        )
+        .padding([12, 0])
+        .width(72)
+        .height(Length::Fill)
+        .style(bg(t.rail.0))
+        .into()
     }
 
     fn channel_sidebar<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
@@ -191,8 +197,8 @@ impl App {
             );
         }
 
-        let mut list = column![container(category).padding(Padding { left: 8.0, top: 16.0, right: 4.0, bottom: 4.0 })]
-            .spacing(2);
+        let mut list =
+            column![container(category).padding(Padding { left: 8.0, top: 16.0, right: 4.0, bottom: 4.0 })].spacing(2);
         for ch in &s.channels {
             let selected = s.current == Some(ch.id);
             let unread = s.unread.contains(&ch.id);
@@ -231,14 +237,14 @@ impl App {
         let fs = self.fs();
         let Some(me) = s.me() else { return space().into() };
         let status = if !self.reconnecting {
-            if me.profile.status_text.is_empty() { "Online".to_string() } else { me.profile.status_text.clone() }
+            if me.profile.status_text.is_empty() { "Online".to_string() } else { truncate(&me.profile.status_text, 18) }
         } else {
             "Reconnecting...".to_string()
         };
         let content = row![
             avatar_with_status(t, me.name(), &me.profile, 32.0, !self.reconnecting, t.user_panel.0),
             column![
-                text(me.name().to_owned()).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
+                text(truncate(me.name(), 16)).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
                 text(status).size(fs * 0.75).color(t.muted.0),
             ]
             .spacing(1)
@@ -338,9 +344,13 @@ impl App {
                 list = list.push(
                     container(
                         column![
-                            container(text("#").size(fs * 2.4).color(t.header.0)).center(68).style(card(t.floating.0, 34.0)),
+                            container(text("#").size(fs * 2.4).color(t.header.0))
+                                .center(68)
+                                .style(card(t.floating.0, 34.0)),
                             text(format!("Welcome to #{}!", channel.name)).size(fs * 2.0).font(BOLD).color(t.header.0),
-                            text(format!("This is the start of the #{} channel.", channel.name)).size(fs).color(t.muted.0),
+                            text(format!("This is the start of the #{} channel.", channel.name))
+                                .size(fs)
+                                .color(t.muted.0),
                         ]
                         .spacing(8),
                     )
@@ -439,10 +449,14 @@ impl App {
             .into()
         } else if grouped {
             row![
-                container(if hovered { text(short_time(m.created_at)).size(fs * 0.68).color(t.muted.0) } else { text("") })
-                    .width(40)
-                    .align_x(Alignment::End)
-                    .padding(Padding { top: 3.0, ..Padding::ZERO }),
+                container(if hovered {
+                    text(short_time(m.created_at)).size(fs * 0.68).color(t.muted.0)
+                } else {
+                    text("")
+                })
+                .width(40)
+                .align_x(Alignment::End)
+                .padding(Padding { top: 3.0, ..Padding::ZERO }),
                 container(body).width(Length::Fill),
             ]
             .spacing(16)
@@ -484,7 +498,10 @@ impl App {
             let mut tools = row![].spacing(2);
             if mine {
                 tools = tools.push(
-                    button(text("Edit").size(fs * 0.8)).padding([2, 8]).on_press(Message::StartEdit(m.id)).style(style::icon_button(t)),
+                    button(text("Edit").size(fs * 0.8))
+                        .padding([2, 8])
+                        .on_press(Message::StartEdit(m.id))
+                        .style(style::icon_button(t)),
                 );
             }
             let danger = t.danger.0;
@@ -498,10 +515,12 @@ impl App {
         }
 
         let hover_bg = if hovered { Some(with_alpha(style::darken(t.chat.0, 0.12), 1.0)) } else { None };
-        mouse_area(container(line).padding([2, 16]).width(Length::Fill).style(move |_| container::Style {
-            background: hover_bg.map(Into::into),
-            ..Default::default()
-        }))
+        mouse_area(
+            container(line)
+                .padding([2, 16])
+                .width(Length::Fill)
+                .style(move |_| container::Style { background: hover_bg.map(Into::into), ..Default::default() }),
+        )
         .on_enter(Message::HoverMessage(Some(m.id)))
         .on_exit(Message::HoverMessage(None))
         .into()
@@ -553,7 +572,7 @@ impl App {
                 let name_color = if is_online { rgb(u.profile.accent_color) } else { t.muted.0 };
                 let mut info = column![text(u.name().to_owned()).size(fs * 0.95).font(SEMIBOLD).color(name_color)];
                 if !u.profile.status_text.is_empty() {
-                    info = info.push(text(u.profile.status_text.clone()).size(fs * 0.75).color(t.muted.0));
+                    info = info.push(text(truncate(&u.profile.status_text, 24)).size(fs * 0.75).color(t.muted.0));
                 }
                 let row_content = row![avatar_with_status(t, u.name(), &u.profile, 32.0, is_online, t.sidebar.0), info]
                     .spacing(12)
@@ -605,7 +624,10 @@ impl App {
                 .style(style::input(t, t.rail.0)),
             row![
                 space::horizontal(),
-                button(text("Cancel").size(fs)).padding([8, 16]).on_press(Message::CloseOverlay).style(style::link_button(t.text.0, t.header.0)),
+                button(text("Cancel").size(fs))
+                    .padding([8, 16])
+                    .on_press(Message::CloseOverlay)
+                    .style(style::link_button(t.text.0, t.header.0)),
                 button(text("Create Channel").size(fs))
                     .padding([8, 16])
                     .on_press_maybe((!preview.is_empty()).then_some(Message::CreateChannel))
@@ -628,7 +650,10 @@ impl App {
                 .color(t.text.0),
             row![
                 space::horizontal(),
-                button(text("Cancel").size(fs)).padding([8, 16]).on_press(Message::CloseOverlay).style(style::link_button(t.text.0, t.header.0)),
+                button(text("Cancel").size(fs))
+                    .padding([8, 16])
+                    .on_press(Message::CloseOverlay)
+                    .style(style::link_button(t.text.0, t.header.0)),
                 button(text("Delete Channel").size(fs))
                     .padding([8, 16])
                     .on_press(Message::ConfirmDeleteChannel(id))
@@ -693,15 +718,17 @@ impl App {
                 .width(Length::FillPortion(1))
                 .height(Length::Fill)
                 .style(bg(t.sidebar.0)),
-            container(
-                row![
-                    scrollable(container(content).padding(Padding { top: 60.0, left: 40.0, right: 20.0, bottom: 40.0 }).max_width(760))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .style(style::scroll(t)),
-                    container(close).padding(Padding { top: 60.0, right: 20.0, ..Padding::ZERO }),
-                ],
-            )
+            container(row![
+                scrollable(
+                    container(content)
+                        .padding(Padding { top: 60.0, left: 40.0, right: 20.0, bottom: 40.0 })
+                        .max_width(760)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(style::scroll(t)),
+                container(close).padding(Padding { top: 60.0, right: 20.0, ..Padding::ZERO }),
+            ],)
             .width(Length::FillPortion(2))
             .height(Length::Fill)
             .style(bg(t.chat.0)),
@@ -740,7 +767,8 @@ impl App {
                     .padding([6, 10])
                     .on_press(Message::Draft(DraftField::Ring(*ring)))
                     .style(if selected {
-                        Box::new(style::solid_button(t.accent.0, t.radius * 0.6)) as Box<dyn Fn(&iced::Theme, button::Status) -> button::Style>
+                        Box::new(style::solid_button(t.accent.0, t.radius * 0.6))
+                            as Box<dyn Fn(&iced::Theme, button::Status) -> button::Style>
                     } else {
                         Box::new(style::solid_button(t.floating.0, t.radius * 0.6))
                     }),
@@ -749,18 +777,36 @@ impl App {
 
         let changed = preview_profile != me.profile;
         let form = column![
-            column![label(t, "Display name", fs), input(&me.username, &d.display_name, |s| Message::Draft(DraftField::DisplayName(s)))].spacing(8),
-            column![label(t, "Custom status", fs), input("What are you up to?", &d.status, |s| Message::Draft(DraftField::Status(s)))].spacing(8),
-            column![label(t, "About me", fs), input("Tell your friends about yourself", &d.bio, |s| Message::Draft(DraftField::Bio(s)))].spacing(8),
+            column![
+                label(t, "Display name", fs),
+                input(&me.username, &d.display_name, |s| Message::Draft(DraftField::DisplayName(s)))
+            ]
+            .spacing(8),
+            column![
+                label(t, "Custom status", fs),
+                input("What are you up to?", &d.status, |s| Message::Draft(DraftField::Status(s)))
+            ]
+            .spacing(8),
+            column![
+                label(t, "About me", fs),
+                input("Tell your friends about yourself", &d.bio, |s| Message::Draft(DraftField::Bio(s)))
+            ]
+            .spacing(8),
             column![
                 label(t, "Avatar symbol", fs),
                 input("1-2 characters (defaults to your initial)", &d.glyph, |s| Message::Draft(DraftField::Glyph(s))),
             ]
             .spacing(8),
-            color_field("Name and avatar colour", &d.accent, preview_profile.accent_color, |s| Message::Draft(DraftField::Accent(s))),
-            color_field("Banner colour", &d.banner, preview_profile.banner_color, |s| Message::Draft(DraftField::Banner(s))),
+            color_field("Name and avatar colour", &d.accent, preview_profile.accent_color, |s| Message::Draft(
+                DraftField::Accent(s)
+            )),
+            color_field("Banner colour", &d.banner, preview_profile.banner_color, |s| Message::Draft(
+                DraftField::Banner(s)
+            )),
             column![label(t, "Avatar decoration", fs), rings].spacing(8),
-            color_field("Decoration colour", &d.ring_color, preview_profile.ring_color, |s| Message::Draft(DraftField::RingColor(s))),
+            color_field("Decoration colour", &d.ring_color, preview_profile.ring_color, |s| Message::Draft(
+                DraftField::RingColor(s)
+            )),
             row![
                 button(text("Save Changes").size(fs))
                     .padding([8, 16])
@@ -778,7 +824,9 @@ impl App {
 
         column![
             text("My Profile").size(fs * 1.4).font(BOLD).color(t.header.0),
-            text("Everything here is free. Your friends see changes as soon as you save.").size(fs * 0.9).color(t.muted.0),
+            text("Everything here is free. Your friends see changes as soon as you save.")
+                .size(fs * 0.9)
+                .color(t.muted.0),
             row![
                 form,
                 column![
@@ -797,9 +845,10 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
 
-        let tiles = self.themes.iter().fold(row![].spacing(12), |r, theme| {
-            r.push(theme_tile(t, theme, theme.name == self.theme.name, fs))
-        });
+        let tiles = self
+            .themes
+            .iter()
+            .fold(row![].spacing(12), |r, theme| r.push(theme_tile(t, theme, theme.name == self.theme.name, fs)));
 
         let mut col = column![
             text("Appearance").size(fs * 1.4).font(BOLD).color(t.header.0),
@@ -842,14 +891,22 @@ impl App {
                     .label("Compact mode (one line per message)")
                     .on_toggle(Message::ToggleCompact)
                     .text_size(fs),
-            );
+            )
+            .push(label(t, "Performance", fs))
+            .push(
+                toggler(self.settings.low_memory)
+                    .label("Low memory mode (draws on the CPU; uses far less RAM)")
+                    .on_toggle(Message::ToggleLowMemory)
+                    .text_size(fs),
+            )
+            .push(text("Takes effect the next time you open SynCord.").size(fs * 0.8).color(t.muted.0));
         col.into()
     }
 }
 
 /// A clickable miniature of a theme's layout.
 fn theme_tile<'a>(current: &AppTheme, theme: &'a AppTheme, selected: bool, fs: f32) -> Element<'a, Message> {
-    let block = |c: Color, w: f32, h: f32, r: f32| container(space()).width(w).height(h).style(card(c, r));
+    let block = |c: Color, w: f32, h: f32, r: f32| container(space()).width(w).height(h).style(style::flat(c, r));
     let chat_lines = column![
         block(theme.accent.0, 40.0, 6.0, 3.0),
         block(theme.text.0, 70.0, 5.0, 3.0),
@@ -869,14 +926,16 @@ fn theme_tile<'a>(current: &AppTheme, theme: &'a AppTheme, selected: bool, fs: f
     .height(72)
     .width(160);
 
-    let border_color = if selected { current.accent.0 } else { current.hover.0 };
+    let border_color = if selected { current.accent.0 } else { Color::TRANSPARENT };
     let radius = current.radius;
     button(
         column![
-            container(mini).clip(true).style(move |_| container::Style {
-                border: Border { radius: radius.into(), width: 2.0, color: border_color },
-                ..Default::default()
-            }),
+            container(container(mini).clip(true).style(style::flat(theme.chat.0, radius * 0.6))).padding(3).style(
+                move |_| container::Style {
+                    border: Border { radius: (radius + 2.0).into(), width: 3.0, color: border_color },
+                    ..Default::default()
+                }
+            ),
             text(theme.name.clone()).size(fs * 0.9).color(if selected { current.header.0 } else { current.text.0 }),
         ]
         .spacing(6)
@@ -898,6 +957,17 @@ fn dimmed(
             s.text_color = with_alpha(s.text_color, 0.5);
         }
         s
+    }
+}
+
+/// Shorten to `max` characters with an ellipsis so sidebars stay on one line.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }
 

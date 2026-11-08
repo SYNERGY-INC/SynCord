@@ -55,10 +55,7 @@ CREATE INDEX IF NOT EXISTS messages_by_channel ON messages(channel_id, id);
 "#;
 
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 /// Stored credentials for a user, used during login.
@@ -110,9 +107,7 @@ impl Db {
         F: FnOnce(&Connection) -> DbResult<T> + Send + 'static,
     {
         let db = self.clone();
-        tokio::task::spawn_blocking(move || f(&db.lock()))
-            .await
-            .expect("database task panicked")
+        tokio::task::spawn_blocking(move || f(&db.lock())).await.expect("database task panicked")
     }
 }
 
@@ -144,8 +139,7 @@ pub fn create_user(conn: &Connection, username: &str, password_hash: &str, is_ow
 
 /// Pick a pleasant default accent colour from the username.
 fn color_for(username: &str) -> u32 {
-    const COLORS: [u32; 8] =
-        [0x5865F2, 0x3BA55C, 0xFAA61A, 0xED4245, 0xEB459E, 0x1ABC9C, 0x9B59B6, 0xE67E22];
+    const COLORS: [u32; 8] = [0x5865F2, 0x3BA55C, 0xFAA61A, 0xED4245, 0xEB459E, 0x1ABC9C, 0x9B59B6, 0xE67E22];
     let hash = username.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
     COLORS[hash as usize % COLORS.len()]
 }
@@ -168,10 +162,7 @@ pub fn all_users(conn: &Connection) -> DbResult<Vec<User>> {
 }
 
 pub fn update_profile(conn: &Connection, id: UserId, profile: &Profile) -> DbResult<()> {
-    conn.execute(
-        "UPDATE users SET profile = ?1 WHERE id = ?2",
-        params![serde_json::to_string(profile).unwrap(), id],
-    )?;
+    conn.execute("UPDATE users SET profile = ?1 WHERE id = ?2", params![serde_json::to_string(profile).unwrap(), id])?;
     Ok(())
 }
 
@@ -206,8 +197,7 @@ pub fn channel_exists(conn: &Connection, id: ChannelId) -> DbResult<bool> {
 }
 
 pub fn create_channel(conn: &Connection, name: &str, topic: &str) -> DbResult<Channel> {
-    let position: i64 =
-        conn.query_row("SELECT COALESCE(MAX(position), -1) + 1 FROM channels", [], |r| r.get(0))?;
+    let position: i64 = conn.query_row("SELECT COALESCE(MAX(position), -1) + 1 FROM channels", [], |r| r.get(0))?;
     conn.execute(
         "INSERT INTO channels (name, topic, position, created_at) VALUES (?1, ?2, ?3, ?4)",
         params![name, topic, position, now_ms()],

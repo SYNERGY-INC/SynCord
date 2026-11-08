@@ -43,8 +43,11 @@ async fn expect(ws: &mut Socket, pred: impl Fn(&ServerMsg) -> bool) -> ServerMsg
 
 async fn register(url: &str, name: &str, invite: &str) -> (Socket, ServerMsg) {
     let (mut ws, _) = connect_async(url).await.unwrap();
-    send(&mut ws, ClientMsg::Register { username: name.into(), password: "correct horse".into(), invite: invite.into() })
-        .await;
+    send(
+        &mut ws,
+        ClientMsg::Register { username: name.into(), password: "correct horse".into(), invite: invite.into() },
+    )
+    .await;
     let reply = expect(&mut ws, |m| matches!(m, ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. })).await;
     (ws, reply)
 }

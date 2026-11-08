@@ -1,0 +1,54 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            ext: .exe
+          - os: macos-latest
+            name: macos
+            ext: ""
+          - os: ubuntu-latest
+            name: linux
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Collect binaries
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/syncord${{ matrix.ext }} dist/
+          cp target/release/syncord-server${{ matrix.ext }} dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncord-${{ matrix.name }}
+          path: dist/

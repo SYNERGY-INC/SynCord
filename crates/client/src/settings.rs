@@ -16,6 +16,9 @@ pub struct Settings {
     pub text_scale: f32,
     pub show_members: bool,
     pub compact: bool,
+    /// Draw the UI on the CPU instead of the GPU. Uses far less memory
+    /// (no graphics driver overhead) and is plenty fast for a chat app.
+    pub low_memory: bool,
 }
 
 impl Default for Settings {
@@ -28,6 +31,7 @@ impl Default for Settings {
             text_scale: 1.0,
             show_members: true,
             compact: false,
+            low_memory: true,
         }
     }
 }
@@ -38,10 +42,7 @@ fn path() -> Option<PathBuf> {
 
 impl Settings {
     pub fn load() -> Self {
-        path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|t| toml::from_str(&t).ok())
-            .unwrap_or_default()
+        path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| toml::from_str(&t).ok()).unwrap_or_default()
     }
 
     pub fn save(&self) {

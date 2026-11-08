@@ -44,7 +44,9 @@ pub fn server_url(input: &str) -> String {
         None => (rest, "/ws"),
     };
     // Add the default port when none is given (and it isn't an IPv6 literal without a port).
-    let has_port = host.rsplit_once(':').is_some_and(|(h, p)| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) && (!h.contains(':') || h.ends_with(']')));
+    let has_port = host.rsplit_once(':').is_some_and(|(h, p)| {
+        !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) && (!h.contains(':') || h.ends_with(']'))
+    });
     let host = if has_port || scheme == "wss" { host.to_string() } else { format!("{host}:7878") };
     format!("{scheme}://{host}{path}")
 }
