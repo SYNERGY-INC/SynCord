@@ -959,7 +959,8 @@ async fn searching_messages() {
     let r = results(expect(&mut carol, |m| matches!(m, ServerMsg::SearchResults { .. })).await);
     assert!(r.contains(&"secret pizza plans".to_string()));
     // From someone, links, and wildcards matched literally.
-    send(&mut alice, search(SearchQuery { words: vec!["pizza".into()], from: Some(bob_id), ..Default::default() })).await;
+    send(&mut alice, search(SearchQuery { words: vec!["pizza".into()], from: Some(bob_id), ..Default::default() }))
+        .await;
     let r = results(expect(&mut alice, |m| matches!(m, ServerMsg::SearchResults { .. })).await);
     assert_eq!(r, ["pizza is overrated"]);
     send(&mut alice, search(SearchQuery { has: Some(SearchHas::Link), ..Default::default() })).await;

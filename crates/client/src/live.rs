@@ -109,8 +109,7 @@ pub fn new_pictures() -> impl futures::Stream<Item = ()> {
     futures::stream::unfold(HashMap::<(u32, VideoKind), u64>::new(), |mut seen| async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(12)).await;
-            let receivers: Vec<_> =
-                inbound().lock().unwrap().receivers.iter().map(|(k, r)| (*k, r.clone())).collect();
+            let receivers: Vec<_> = inbound().lock().unwrap().receivers.iter().map(|(k, r)| (*k, r.clone())).collect();
             seen.retain(|k, _| receivers.iter().any(|(r, _)| r == k));
             let mut fresh = false;
             for (k, r) in receivers {
@@ -241,7 +240,10 @@ impl App {
                 cfg.preview_max_side = Some(480);
                 let wanted = self.settings.camera.clone();
                 return start(VideoKind::Camera, cfg, move || {
-                    Ok(stream::Source::Camera { id: camera_id(wanted.as_deref())?, config: stream::CameraConfig::default() })
+                    Ok(stream::Source::Camera {
+                        id: camera_id(wanted.as_deref())?,
+                        config: stream::CameraConfig::default(),
+                    })
                 });
             }
             Message::OpenScreenPicker => {
@@ -257,9 +259,7 @@ impl App {
                 self.overlay = Some(crate::app::Overlay::ScreenPicker(ScreenList::Loading));
                 return Task::perform(
                     async {
-                        tokio::task::spawn_blocking(stream::list_screens)
-                            .await
-                            .unwrap_or_else(|e| Err(e.to_string()))
+                        tokio::task::spawn_blocking(stream::list_screens).await.unwrap_or_else(|e| Err(e.to_string()))
                     },
                     Message::ScreensListed,
                 );
@@ -396,7 +396,8 @@ impl App {
         }
         if changed {
             let mut inb = inbound().lock().unwrap();
-            inb.receivers = self.live.receivers.iter().map(|((_, kind), (ssrc, r))| ((*ssrc, *kind), r.clone())).collect();
+            inb.receivers =
+                self.live.receivers.iter().map(|((_, kind), (ssrc, r))| ((*ssrc, *kind), r.clone())).collect();
         }
         let (camera, screen) = (self.live.camera.is_some(), self.live.screen.is_some());
         let receivers = &self.live.receivers;

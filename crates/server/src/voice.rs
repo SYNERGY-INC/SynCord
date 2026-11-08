@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use rand::Rng;
-use syncord_proto::voice::{Direction, Key, MAX_PACKET, Packet, ReplayWindow, Token, open, open_video, seal, seal_video};
+use syncord_proto::voice::{
+    Direction, Key, MAX_PACKET, Packet, ReplayWindow, Token, open, open_video, seal, seal_video,
+};
 use syncord_proto::{ChannelId, UserId, VideoKind, VoiceState};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;

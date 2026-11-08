@@ -30,7 +30,9 @@ impl App {
             let starting = self.live.starting.contains(&kind);
             let (icon, label, msg) = match kind {
                 VideoKind::Camera => (&icons::CAMERA, if on { "Camera on" } else { "Camera" }, Message::ToggleCamera),
-                VideoKind::Screen => (&icons::SCREEN, if on { "Stop sharing" } else { "Screen" }, Message::OpenScreenPicker),
+                VideoKind::Screen => {
+                    (&icons::SCREEN, if on { "Stop sharing" } else { "Screen" }, Message::OpenScreenPicker)
+                }
             };
             let label = if starting { "Starting..." } else { label };
             let fg = if on { Color::WHITE } else { t.header.0 };
@@ -40,8 +42,8 @@ impl App {
                     icons::icon(icon, fs * 1.05, fg),
                     text(label).size(fs * 0.8).color(fg).wrapping(iced::widget::text::Wrapping::None)
                 ]
-                    .spacing(6)
-                    .align_y(Alignment::Center),
+                .spacing(6)
+                .align_y(Alignment::Center),
             )
             .width(Length::Fill)
             .padding([6, 8])
@@ -150,14 +152,13 @@ impl App {
         let talking = kind == VideoKind::Camera && self.speaking.contains(&user.id);
         let ring = if talking { t.online.0 } else { Color::TRANSPARENT };
         let fill = style::darken(t.rail.0, 0.2);
-        let framed = container(iced::widget::stack![body, overlay])
-            .width(width)
-            .height(height)
-            .clip(true)
-            .style(move |_| container::Style {
-                background: Some(fill.into()),
-                border: Border { radius: 8.0.into(), width: 2.0, color: ring },
-                ..Default::default()
+        let framed =
+            container(iced::widget::stack![body, overlay]).width(width).height(height).clip(true).style(move |_| {
+                container::Style {
+                    background: Some(fill.into()),
+                    border: Border { radius: 8.0.into(), width: 2.0, color: ring },
+                    ..Default::default()
+                }
             });
         mouse_area(framed).on_press(Message::FocusVideo(Some(key))).into()
     }
@@ -165,10 +166,7 @@ impl App {
     /// The tiles laid out: a grid, or one big with the rest in a strip below.
     pub(crate) fn video_grid<'a>(&'a self, s: &'a Session, channel: ChannelId, compact: bool) -> Element<'a, Message> {
         let tiles = self.tiles(s, channel);
-        let focused = self
-            .live
-            .focus
-            .and_then(|(u, k)| tiles.iter().copied().find(|x| x.user.id == u && x.kind == k));
+        let focused = self.live.focus.and_then(|(u, k)| tiles.iter().copied().find(|x| x.user.id == u && x.kind == k));
         let avatar = |h: f32| (h * 0.38).clamp(28.0, 96.0);
         if let Some(big) = focused {
             let small_w = if compact { 140.0 } else { 176.0 };
@@ -181,10 +179,8 @@ impl App {
             let big_h = if compact { Length::Fixed(300.0) } else { Length::Fill };
             return column![
                 self.tile(s, big, Length::Fill, big_h, 96.0),
-                container(
-                    scrollable(strip).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new()))
-                )
-                .center_x(Length::Fill),
+                container(scrollable(strip).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new())))
+                    .center_x(Length::Fill),
             ]
             .spacing(10)
             .into();
@@ -277,7 +273,9 @@ impl App {
                                 icons::icon(&icons::SCREEN, fs * 1.3, t.muted.0),
                                 column![
                                     text(sc.name.clone()).size(fs * 0.95).color(t.header.0),
-                                    text(format!("{kind} · {}×{}", sc.width, sc.height)).size(fs * 0.75).color(t.muted.0),
+                                    text(format!("{kind} · {}×{}", sc.width, sc.height))
+                                        .size(fs * 0.75)
+                                        .color(t.muted.0),
                                 ]
                                 .spacing(2),
                             ]
@@ -299,15 +297,13 @@ impl App {
                 .text_size(fs * 0.85)
                 .on_toggle(Message::ToggleSmoothScreen),
         );
-        col = col.push(
-            row![
-                space::horizontal(),
-                button(text("Cancel").size(fs * 0.9))
-                    .padding([8, 16])
-                    .on_press(Message::CloseOverlay)
-                    .style(style::solid_button(t.floating.0, 6.0)),
-            ],
-        );
+        col = col.push(row![
+            space::horizontal(),
+            button(text("Cancel").size(fs * 0.9))
+                .padding([8, 16])
+                .on_press(Message::CloseOverlay)
+                .style(style::solid_button(t.floating.0, 6.0)),
+        ]);
         container(col).width(460).max_height(520).padding(20).style(card(t.chat.0, t.radius * 1.5)).into()
     }
 

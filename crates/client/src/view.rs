@@ -614,9 +614,9 @@ impl App {
                         .size(fs * 0.8)
                         .wrapping(iced::widget::text::Wrapping::None),
                 )
-                    .padding([4, 8])
-                    .on_press(Message::ToggleMembers)
-                    .style(style::icon_button(t)),
+                .padding([4, 8])
+                .on_press(Message::ToggleMembers)
+                .style(style::icon_button(t)),
             );
         }
         let header = container(header).padding([0, 16]).height(48).width(Length::Fill).align_y(Alignment::Center);

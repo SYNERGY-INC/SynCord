@@ -288,8 +288,11 @@ impl App {
             let mut col = column![text("Narrow it down").size(fs * 0.75).font(BOLD).color(t.muted.0)].spacing(6);
             for (k, v) in tips {
                 col = col.push(
-                    row![text(k).size(fs * 0.85).font(SEMIBOLD).color(t.header.0), text(v).size(fs * 0.85).color(t.muted.0)]
-                        .spacing(6),
+                    row![
+                        text(k).size(fs * 0.85).font(SEMIBOLD).color(t.header.0),
+                        text(v).size(fs * 0.85).color(t.muted.0)
+                    ]
+                    .spacing(6),
                 );
             }
             list = list.push(col);

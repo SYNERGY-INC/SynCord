@@ -835,9 +835,9 @@ pub fn search(conn: &Connection, user: UserId, q: &SearchQuery) -> DbResult<(Vec
             " AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.is_embed = 0
               AND a.width IS NOT NULL AND a.video IS NULL)",
         ),
-        Some(SearchHas::Video) => sql.push_str(
-            " AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.video IS NOT NULL)",
-        ),
+        Some(SearchHas::Video) => {
+            sql.push_str(" AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.video IS NOT NULL)")
+        }
         None => {}
     }
     sql.push_str(&format!(" ORDER BY m.id DESC LIMIT {}", SEARCH_PAGE + 1));
