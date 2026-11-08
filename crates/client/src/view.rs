@@ -53,7 +53,7 @@ impl App {
         let Some(session) = &self.session else { return self.login_view() };
 
         let base: Element<'_, Message> = match self.settings_tab {
-            Some(tab) => self.settings_view(session, tab),
+            Some(tab) => self.with_color_picker(self.settings_view(session, tab)),
             None => self.with_voice_drag(self.with_message_menu(self.main_view(session))),
         };
 
@@ -1384,12 +1384,9 @@ impl App {
         let color_field = |name: &'static str, value: &str, current: u32, on: fn(String) -> Message| {
             column![
                 label(t, name, fs),
-                row![
-                    container(space()).width(36).height(36).style(card(rgb(current), t.radius * 0.6)),
-                    input("#RRGGBB", value, on).width(130),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
+                row![self.color_swatch_button(current, t.radius * 0.6, on), input("#RRGGBB", value, on).width(130),]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                 style::swatches(current, on),
             ]
             .spacing(8)

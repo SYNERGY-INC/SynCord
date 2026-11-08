@@ -127,6 +127,13 @@ pub enum Message {
     SaveThemeEditor,
     CloseThemeEditor,
     TextScale(f32),
+    /// Open the colour picker for a colour field (current colour, where to send changes).
+    OpenColorPicker(u32, fn(String) -> Message),
+    CloseColorPicker,
+    ColorPickerPress(crate::color_picker::Area),
+    ColorPickerMove(crate::color_picker::Area, iced::Point),
+    ColorPickerRelease,
+    ColorPickerHex(String),
     InstalledFonts(Vec<String>),
     PickFont(String),
     ChooseFontFile,
@@ -603,6 +610,7 @@ pub struct App {
     pub theme_errors: Vec<String>,
     pub theme: AppTheme,
     pub theme_editor: Option<crate::theme_editor::ThemeEditor>,
+    pub color_picker: Option<crate::color_picker::ColorPicker>,
     /// Fonts installed on this computer (loaded when Appearance opens).
     pub installed_fonts: Vec<String>,
     /// Problem importing a font file.
@@ -715,6 +723,7 @@ impl App {
             theme_errors,
             theme,
             theme_editor: None,
+            color_picker: None,
             installed_fonts: Vec::new(),
             font_error: None,
             generation: 0,
@@ -860,6 +869,15 @@ impl App {
             }
             _ => None,
         })];
+        if self.color_picker.as_ref().is_some_and(|p| p.dragging.is_some()) {
+            // Letting go outside the picker still ends the drag.
+            subs.push(iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::ColorPickerRelease)
+                }
+                _ => None,
+            }));
+        }
         if self.voice_drag.is_some() {
             subs.push(iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
@@ -1196,6 +1214,7 @@ impl App {
                 self.overlay = None;
             }
             Message::CloseSettings => {
+                self.color_picker = None;
                 // Leaving settings abandons unsaved theme edits.
                 if let Some(ed) = self.theme_editor.take() {
                     self.theme = ed.original;
@@ -1467,6 +1486,12 @@ impl App {
             | Message::OpenDirect(_)
             | Message::NewDirect => return self.update_social(message),
 
+            Message::OpenColorPicker(..)
+            | Message::CloseColorPicker
+            | Message::ColorPickerPress(_)
+            | Message::ColorPickerMove(..)
+            | Message::ColorPickerRelease
+            | Message::ColorPickerHex(_) => return self.update_color_picker(message),
             Message::VoicePress(_)
             | Message::VoiceDragMove(_)
             | Message::VoiceDragOver(_)
@@ -1566,7 +1591,9 @@ impl App {
                 }
             }
             Message::Escape => {
-                if self.voice_drag.is_some() {
+                if self.color_picker.is_some() {
+                    self.color_picker = None;
+                } else if self.voice_drag.is_some() {
                     self.voice_drag = None;
                 } else if self.message_menu.is_some() {
                     self.message_menu = None;

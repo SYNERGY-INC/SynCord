@@ -5,7 +5,7 @@ use iced::{Alignment, Border, Element, Length, Task};
 use syncord_proto::{ClientMsg, EVERYONE_ROLE, Role, perms};
 
 use crate::app::{App, Message, RoleDraft, Session};
-use crate::style::{self, bold, card, label, semibold};
+use crate::style::{self, bold, label, semibold};
 use crate::theme::{Hex, rgb, to_u32};
 
 impl App {
@@ -157,7 +157,7 @@ impl App {
             col = col.push(column![label(t, "Role name", fs), name].spacing(8));
             let current = Hex::parse(&d.color).map(to_u32);
             let swatch = row![
-                container(space()).width(36).height(36).style(card(current.map(rgb).unwrap_or(t.muted.0), 8.0)),
+                self.color_swatch_button(current.unwrap_or(0x99AAB5), 8.0, Message::RoleColor),
                 text_input("#RRGGBB (empty: no colour)", &d.color)
                     .on_input(Message::RoleColor)
                     .padding(10)

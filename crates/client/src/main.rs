@@ -9,6 +9,7 @@ mod app_media;
 mod app_messages;
 mod app_people;
 mod app_social;
+mod color_picker;
 mod composer;
 mod crop;
 mod emoji;
