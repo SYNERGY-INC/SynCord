@@ -56,6 +56,9 @@ pub async fn upload(
     )
     .map_err(|e| format!("Bad server address: {e}"))?;
     let resp = http.post(url).bearer_auth(token).body(bytes).send().await.map_err(|e| format!("Upload failed: {e}"))?;
+    if matches!(resp.status().as_u16(), 404 | 405) {
+        return Err("The server doesn't support files yet: it needs the latest SynCord Server.".into());
+    }
     if !resp.status().is_success() {
         return Err(describe(resp.status()));
     }

@@ -1412,8 +1412,32 @@ impl App {
                     }
                 }
             }
-            ServerMsg::Error { message } => self.notice = Some(message),
+            ServerMsg::Error { message } => self.notice = Some(friendly_error(message)),
         }
         Task::none()
+    }
+}
+
+/// Old servers reject requests they don't know with a technical message
+/// ("unknown variant `OpenDirect`"); explain what's actually going on.
+fn friendly_error(message: String) -> String {
+    if message.starts_with("bad request: unknown variant") {
+        "The server is running an older version of SynCord that doesn't have this feature yet. \
+         Whoever runs the server needs to install the latest SynCord Server."
+            .into()
+    } else {
+        message
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::friendly_error;
+
+    #[test]
+    fn explains_outdated_servers() {
+        let raw = "bad request: unknown variant `OpenDirect`, expected one of `Register`, `Login`".to_string();
+        assert!(friendly_error(raw).contains("older version"));
+        assert_eq!(friendly_error("Wrong password".into()), "Wrong password");
     }
 }
