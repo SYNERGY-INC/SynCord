@@ -1,0 +1,23 @@
+[package]
+name = "syncord-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Inline MP4/H.264 video for SynCord: probe, poster frames and a lightweight player"
+
+[features]
+default = []
+# Player with audio output (cpal) and AAC decoding (symphonia). Off for the server.
+playback = ["dep:cpal", "dep:symphonia-core", "dep:symphonia-codec-aac"]
+
+[dependencies]
+# OpenH264 compiled from bundled C++ source with `cc` (nasm used for x86 asm only if present).
+openh264-sys2 = { version = "0.9", default-features = false, features = ["source"] }
+image = { version = "0.25", default-features = false }
+cpal = { version = "0.18", optional = true }
+symphonia-core = { version = "0.5", default-features = false, optional = true }
+symphonia-codec-aac = { version = "0.5", default-features = false, optional = true }
+
+[[example]]
+name = "play"
+required-features = ["playback"]
