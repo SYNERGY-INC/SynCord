@@ -21,12 +21,14 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
+    <string>12.3</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.social-networking</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>SynCord uses your microphone for voice chat.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>SynCord uses your camera when you turn on video in a call.</string>
 </dict>
 </plist>

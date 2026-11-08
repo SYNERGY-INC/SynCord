@@ -36,6 +36,7 @@ arboard = { version = "3", default-features = false, features = ["image-data"] }
 emojis = "0.9"
 syncord-update.workspace = true
 syncord-video = { workspace = true, features = ["playback"] }
+syncord-stream = { workspace = true }
 
 # The tray icon (Linux would need GTK libraries for it, so there closing just quits).
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]

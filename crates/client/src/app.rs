@@ -231,6 +231,21 @@ pub enum Message {
     /// The window's X button.
     CloseRequested(iced::window::Id),
 
+    // Cameras and screen shares
+    ToggleCamera,
+    OpenScreenPicker,
+    ScreensListed(Result<Vec<syncord_stream::ScreenInfo>, String>),
+    ToggleSmoothScreen(bool),
+    ShareScreen(String),
+    VideoStarted(syncord_proto::VideoKind, Result<crate::live::Started, String>),
+    WatchScreen(UserId),
+    StopWatching(UserId),
+    OpenStage,
+    CloseStage,
+    FocusVideo(Option<(UserId, syncord_proto::VideoKind)>),
+    CameraDevice(String),
+    LiveTick,
+
     // Searching messages
     OpenSearch,
     SearchInput(String),
@@ -385,6 +400,8 @@ pub enum Overlay {
     Shortcuts,
     /// Choosing your status and activity.
     StatusPicker,
+    /// Choosing what to share.
+    ScreenPicker(crate::live::ScreenList),
 }
 
 #[derive(Default)]
@@ -568,6 +585,7 @@ pub struct ActiveVoice {
     token: Token,
     key: Option<Key>,
     udp_port: u16,
+    counters: Arc<voice::Counters>,
     pub engine: VoiceEngine,
 }
 
@@ -661,6 +679,7 @@ pub struct App {
     /// The activity being typed in the status picker.
     pub activity_draft: (syncord_proto::ActivityKind, String),
     pub search: crate::app_search::Search,
+    pub live: crate::live::Live,
     /// When the current dialog, picker and call card opened (for their pop-in).
     pub(crate) popped: Instant,
     pub(crate) picker_popped: Instant,
@@ -750,6 +769,7 @@ impl App {
             sent_presence: None,
             activity_draft: (syncord_proto::ActivityKind::Playing, String::new()),
             search: Default::default(),
+            live: Default::default(),
             popped: Instant::now(),
             picker_popped: Instant::now(),
             call_popped: Instant::now(),
@@ -873,6 +893,13 @@ impl App {
         }
         if self.video_busy() {
             subs.push(iced::time::every(Duration::from_millis(33)).map(|_| Message::VideoTick));
+        }
+        if self.live.receiving() {
+            subs.push(Subscription::run(crate::live::new_pictures).map(|_| Message::LiveTick));
+        }
+        // Your own preview doesn't need every frame.
+        if self.live.sending_any() {
+            subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::LiveTick));
         }
         if self.animating_pops() {
             // Smooth while something pops in (a fraction of a second).
@@ -1019,7 +1046,10 @@ impl App {
                 }
             }
 
-            Message::SelectChannel(id) => return self.select_channel(id),
+            Message::SelectChannel(id) => {
+                self.live.stage = false;
+                return self.select_channel(id);
+            }
             Message::EditorAction(_) | Message::SuggestionMove(_) => return self.update_composer(message),
             Message::AcceptSuggestion(i) => {
                 let i = if i == usize::MAX { self.suggestion_index } else { i };
@@ -1181,6 +1211,7 @@ impl App {
                 if tab == SettingsTab::Voice {
                     self.input_devices = voice::devices::input_names();
                     self.output_devices = voice::devices::output_names();
+                    self.refresh_cameras();
                 } else {
                     self.mic_test = None;
                 }
@@ -1283,6 +1314,7 @@ impl App {
                 self.apply_mute_state();
             }
             Message::VoiceTick => {
+                self.sync_live();
                 let status = match (&self.voice, &self.mic_test) {
                     (Some(v), _) => v.engine.status(),
                     (None, Some(t)) => t.status(),
@@ -1487,6 +1519,19 @@ impl App {
                 return self.on_shortcut(sc);
             }
             Message::SwitcherQuery(_) | Message::SwitcherGo(_) => return self.update_switcher(message),
+            Message::ToggleCamera
+            | Message::OpenScreenPicker
+            | Message::ScreensListed(_)
+            | Message::ToggleSmoothScreen(_)
+            | Message::ShareScreen(_)
+            | Message::VideoStarted(..)
+            | Message::WatchScreen(_)
+            | Message::StopWatching(_)
+            | Message::OpenStage
+            | Message::CloseStage
+            | Message::FocusVideo(_)
+            | Message::CameraDevice(_)
+            | Message::LiveTick => return self.update_live(message),
             Message::OpenSearch
             | Message::SearchInput(_)
             | Message::SubmitSearch
@@ -1638,21 +1683,29 @@ impl App {
     }
 
     fn stop_voice(&mut self) {
+        self.stop_live();
         self.voice = None;
         *self.voice_sink.lock().unwrap() = None;
         self.speaking.clear();
         self.voice_status = voice::Status::default();
     }
 
-    fn start_engine(&self, token: Token, key: Option<Key>, udp_port: u16) -> Result<VoiceEngine, String> {
+    fn start_engine(
+        &self,
+        token: Token,
+        key: Option<Key>,
+        udp_port: u16,
+        counters: Arc<voice::Counters>,
+    ) -> Result<VoiceEngine, String> {
         let conn = self.conn.clone().ok_or("Not connected")?;
         let host = net::host_of(&self.server_url.clone().unwrap_or_else(|| net::server_url(&self.settings.server)))
             .unwrap_or_default();
-        let link = Link::Server { host, udp_port, token, key, conn };
+        let link = Link::Server { host, udp_port, token, key, conn, counters };
         VoiceEngine::start(self.settings.voice_config(), link, self.muted, self.deafened)
     }
 
     /// Hook a freshly started engine up to the network and per-person volumes.
+    #[allow(clippy::too_many_arguments)]
     fn install_engine(
         &mut self,
         channel_id: ChannelId,
@@ -1660,8 +1713,10 @@ impl App {
         token: Token,
         key: Option<Key>,
         udp_port: u16,
+        counters: Arc<voice::Counters>,
         engine: VoiceEngine,
     ) {
+        crate::live::set_key(key);
         *self.voice_sink.lock().unwrap() = Some(engine.mixer());
         if let Some(s) = &self.session {
             for st in s.voice.values() {
@@ -1671,7 +1726,7 @@ impl App {
         if let Some(problem) = engine.status().problem {
             self.notice = Some(problem);
         }
-        self.voice = Some(ActiveVoice { channel_id, ssrc, token, key, udp_port, engine });
+        self.voice = Some(ActiveVoice { channel_id, ssrc, token, key, udp_port, counters, engine });
     }
 
     fn apply_mute_state(&self) {
@@ -1700,9 +1755,10 @@ impl App {
         }
         if let Some(v) = self.voice.take() {
             let (channel_id, ssrc, token, key, udp_port) = (v.channel_id, v.ssrc, v.token, v.key, v.udp_port);
+            let counters = v.counters.clone();
             drop(v); // release the old devices first
-            match self.start_engine(token, key, udp_port) {
-                Ok(engine) => self.install_engine(channel_id, ssrc, token, key, udp_port, engine),
+            match self.start_engine(token, key, udp_port, counters.clone()) {
+                Ok(engine) => self.install_engine(channel_id, ssrc, token, key, udp_port, counters, engine),
                 Err(e) => {
                     self.notice = Some(format!("Couldn't switch audio device: {e}"));
                     self.send(ClientMsg::LeaveVoice);
@@ -1729,9 +1785,10 @@ impl App {
                 self.voice_joining = None;
                 let Some(token) = token_from_hex(&token) else { return };
                 let key = key.as_deref().and_then(key_from_hex);
-                match self.start_engine(token, key, udp_port) {
+                let counters = Arc::<voice::Counters>::default();
+                match self.start_engine(token, key, udp_port, counters.clone()) {
                     Ok(engine) => {
-                        self.install_engine(channel_id, ssrc, token, key, udp_port, engine);
+                        self.install_engine(channel_id, ssrc, token, key, udp_port, counters, engine);
                         if self.settings.voice_sounds && !self.deafened {
                             self.settings.play(crate::sounds::Sound::Join);
                         }
@@ -2002,6 +2059,11 @@ impl App {
         }
         if matches!(msg, ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. }) {
             self.on_voice(msg);
+            self.sync_live();
+            return Task::none();
+        }
+        if let ServerMsg::KeyframeRequest { kind } = msg {
+            self.on_keyframe_request(kind);
             return Task::none();
         }
         if matches!(msg, ServerMsg::RoleUpdated(_) | ServerMsg::RoleDeleted { .. } | ServerMsg::BlockUpdated { .. }) {
@@ -2035,7 +2097,7 @@ impl App {
 
         match msg {
             ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. } | ServerMsg::Pong => {}
-            ServerMsg::SearchResults { .. } | ServerMsg::Around { .. } => {} // on_server
+            ServerMsg::SearchResults { .. } | ServerMsg::Around { .. } | ServerMsg::KeyframeRequest { .. } => {} // on_server
             ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. } => {} // handled in on_voice
             ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } | ServerMsg::GifResults { .. } => {} // on_social
             ServerMsg::RoleUpdated(_) | ServerMsg::RoleDeleted { .. } | ServerMsg::BlockUpdated { .. } => {} // on_people

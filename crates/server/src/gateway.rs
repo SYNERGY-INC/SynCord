@@ -669,6 +669,26 @@ impl Connection {
                         self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(state) }, to);
                     }
                 }
+                ClientMsg::SetVideo { camera, screen } => {
+                    if let Some(state) = self.state.voice.set_video(me, self.conn_id, camera, screen) {
+                        let to = voice_audience(&db, state.channel_id).await?;
+                        self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(state) }, to);
+                    }
+                }
+                ClientMsg::WatchStream { user_id, watching } => {
+                    // A new viewer needs a keyframe to start from.
+                    if self.state.voice.watch(me, user_id, watching) {
+                        self.broadcast_to(
+                            &ServerMsg::KeyframeRequest { kind: syncord_proto::VideoKind::Screen },
+                            Some(Arc::from([user_id])),
+                        );
+                    }
+                }
+                ClientMsg::RequestKeyframe { user_id, kind } => {
+                    if self.state.voice.may_request_keyframe(me, user_id, kind) {
+                        self.broadcast_to(&ServerMsg::KeyframeRequest { kind }, Some(Arc::from([user_id])));
+                    }
+                }
             }
             Ok(Flow::Continue)
         }

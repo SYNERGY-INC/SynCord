@@ -226,8 +226,9 @@ pub fn connect(input: String, pin: Option<String>, voice: VoiceSink) -> impl Str
                         Err(e) => eprintln!("ignoring unknown server message: {e}"),
                     },
                     Some(Ok(WsMessage::Binary(data))) => {
-                        // Straight to the audio mixer: voice never goes through the UI thread.
-                        if let Some(mixer) = voice.lock().unwrap().as_ref() {
+                        // Straight to the video decoders or the audio mixer: neither goes through the UI thread.
+                        if crate::live::deliver(&data) {
+                        } else if let Some(mixer) = voice.lock().unwrap().as_ref() {
                             mixer.push_packet(&data);
                         }
                     }

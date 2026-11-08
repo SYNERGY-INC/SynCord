@@ -1,8 +1,9 @@
-//! Voice relay. The server never decodes audio: it checks who sent a packet
-//! and forwards it to everyone else in the same voice channel, over UDP when
-//! the listener's UDP path works and over their WebSocket otherwise.
+//! Voice and video relay. The server never decodes audio or video: it checks
+//! who sent a packet and forwards it to everyone else in the same voice channel,
+//! over UDP when the listener's UDP path works and over their WebSocket otherwise.
+//! Cameras go to everyone in the call; screen shares only to people watching them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -10,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use rand::Rng;
-use syncord_proto::voice::{Direction, Key, MAX_PACKET, Packet, Token, open, seal};
-use syncord_proto::{ChannelId, UserId, VoiceState};
+use syncord_proto::voice::{Direction, Key, MAX_PACKET, Packet, ReplayWindow, Token, open, open_video, seal, seal_video};
+use syncord_proto::{ChannelId, UserId, VideoKind, VoiceState};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -20,6 +21,9 @@ use tracing::{debug, warn};
 const UDP_FRESH: Duration = Duration::from_secs(15);
 /// Audio packets allowed per second per person (50 is normal for 20 ms frames).
 const MAX_PACKETS_PER_SEC: u32 = 75;
+/// Video packets allowed per second per person (about 13 Mbit/s; a 1080p screen
+/// share needs a few hundred a second, more for a moment at each keyframe).
+const MAX_VIDEO_PACKETS_PER_SEC: u32 = 1500;
 
 struct Member {
     state: VoiceState,
@@ -37,6 +41,12 @@ struct Member {
     udp: Option<(SocketAddr, Instant)>,
     window_start: Instant,
     window_count: u32,
+    /// Video counters seen from them.
+    video_up: ReplayWindow,
+    video_window_start: Instant,
+    video_window_count: u32,
+    /// Whose screen shares they're watching.
+    watching: HashSet<UserId>,
 }
 
 #[derive(Default)]
@@ -87,7 +97,7 @@ impl Voice {
         let token: Token = rand::rng().random();
         let key: Option<Key> = encrypted.then(|| rand::rng().random());
         let ssrc = self.next_ssrc.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-        let state = VoiceState { user_id, channel_id, muted, deafened, ssrc };
+        let state = VoiceState { user_id, channel_id, muted, deafened, ssrc, camera: false, screen: false };
         let member = Member {
             state: state.clone(),
             token,
@@ -99,6 +109,10 @@ impl Voice {
             udp: None,
             window_start: Instant::now(),
             window_count: 0,
+            video_up: ReplayWindow::default(),
+            video_window_start: Instant::now(),
+            video_window_count: 0,
+            watching: HashSet::new(),
         };
         let previous = self.lock().insert(user_id, member);
         Joined { state, token, key, replaced_conn: previous.map(|m| m.conn_id).filter(|c| *c != conn_id) }
@@ -121,6 +135,49 @@ impl Voice {
         m.state.muted = muted;
         m.state.deafened = deafened;
         Some(m.state.clone())
+    }
+
+    /// Camera or screen share turned on or off. Turning a screen share off stops
+    /// everyone watching it, so starting a new one doesn't send it to them unasked.
+    pub fn set_video(&self, user_id: UserId, conn_id: u64, camera: bool, screen: bool) -> Option<VoiceState> {
+        let mut members = self.lock();
+        let m = members.get_mut(&user_id).filter(|m| m.conn_id == conn_id)?;
+        m.state.camera = camera;
+        m.state.screen = screen;
+        let state = m.state.clone();
+        if !screen {
+            for m in members.values_mut() {
+                m.watching.remove(&user_id);
+            }
+        }
+        Some(state)
+    }
+
+    /// Start or stop watching someone's screen. True if `viewer` now watches a
+    /// screen share in their own call.
+    pub fn watch(&self, viewer: UserId, target: UserId, on: bool) -> bool {
+        let mut members = self.lock();
+        let shares = members.get(&target).filter(|t| t.state.screen).map(|t| t.state.channel_id);
+        let Some(m) = members.get_mut(&viewer) else { return false };
+        if on && shares == Some(m.state.channel_id) && viewer != target {
+            m.watching.insert(target);
+            true
+        } else {
+            m.watching.remove(&target);
+            false
+        }
+    }
+
+    /// Whether `from` may ask `to` for a keyframe of this video: they're in the same
+    /// call, it's on, and (for screens) `from` is watching it.
+    pub fn may_request_keyframe(&self, from: UserId, to: UserId, kind: VideoKind) -> bool {
+        let members = self.lock();
+        let (Some(a), Some(b)) = (members.get(&from), members.get(&to)) else { return false };
+        a.state.channel_id == b.state.channel_id
+            && match kind {
+                VideoKind::Camera => b.state.camera,
+                VideoKind::Screen => b.state.screen && a.watching.contains(&to),
+            }
     }
 
     /// Remove everyone in a channel that was deleted; returns who was removed.
@@ -155,7 +212,11 @@ impl Voice {
                 self.relay(token, Some(counter), seq, &opus, from);
                 None
             }
-            Packet::Ack | Packet::AudioDown { .. } | Packet::SealedDown { .. } => None,
+            Packet::VideoUp { token, counter, sealed } => {
+                self.relay_video(token, counter, sealed, from);
+                None
+            }
+            Packet::Ack | Packet::AudioDown { .. } | Packet::SealedDown { .. } | Packet::VideoDown { .. } => None,
         }
     }
 
@@ -209,6 +270,66 @@ impl Voice {
             match (fresh_udp, &udp) {
                 (Some(addr), Some(sock)) => {
                     // Non-blocking: if the OS buffer is full, dropping a voice packet is fine.
+                    if let Err(e) = sock.try_send_to(&bytes, addr) {
+                        debug!("udp send to {addr} failed: {e}");
+                    }
+                }
+                _ => {
+                    let _ = m.ws.try_send(bytes);
+                }
+            }
+        }
+    }
+}
+
+impl Voice {
+    /// Forward one video packet to whoever should see it, sealed with each one's key.
+    fn relay_video(&self, token: Token, counter: u64, sealed: &[u8], from: Option<SocketAddr>) {
+        let udp = self.udp.lock().unwrap().clone();
+        let mut members = self.lock();
+        let Some(sender) = members.values_mut().find(|m| m.token == token) else { return };
+        // Video is always encrypted, so only apps that asked for a key can send it.
+        let Some(key) = sender.key else { return };
+        let Some((kind, data)) = open_video(&key, Direction::Up, counter, sealed) else { return };
+        if !sender.video_up.accept(counter) {
+            return;
+        }
+        let on = match kind {
+            VideoKind::Camera => sender.state.camera,
+            VideoKind::Screen => sender.state.screen,
+        };
+        if !on {
+            return;
+        }
+        if let Some(addr) = from {
+            sender.udp = Some((addr, Instant::now()));
+        }
+        if sender.video_window_start.elapsed() >= Duration::from_secs(1) {
+            sender.video_window_start = Instant::now();
+            sender.video_window_count = 0;
+        }
+        sender.video_window_count += 1;
+        if sender.video_window_count > MAX_VIDEO_PACKETS_PER_SEC {
+            return;
+        }
+        let (sender_id, channel_id, ssrc) = (sender.state.user_id, sender.state.channel_id, sender.state.ssrc);
+
+        for m in members.values_mut() {
+            if m.state.user_id == sender_id || m.state.channel_id != channel_id {
+                continue;
+            }
+            let wanted = match kind {
+                VideoKind::Camera => true,
+                VideoKind::Screen => m.watching.contains(&sender_id),
+            };
+            let Some(key) = m.key.filter(|_| wanted) else { continue };
+            let counter = m.down_counter;
+            m.down_counter += 1;
+            let sealed = seal_video(&key, Direction::Down, counter, kind, &data);
+            let bytes = Bytes::from(Packet::VideoDown { ssrc, counter, sealed: &sealed }.encode());
+            let fresh_udp = m.udp.filter(|(_, seen)| seen.elapsed() < UDP_FRESH).map(|(addr, _)| addr);
+            match (fresh_udp, &udp) {
+                (Some(addr), Some(sock)) => {
                     if let Err(e) = sock.try_send_to(&bytes, addr) {
                         debug!("udp send to {addr} failed: {e}");
                     }
@@ -345,6 +466,66 @@ mod tests {
         assert!(v.handle_packet(&Packet::Hello { token: alice }.encode(), None).is_none());
         assert!(v.handle_packet(&Packet::Hello { token: [1; 16] }.encode(), Some(addr)).is_none());
         assert_eq!(v.handle_packet(&Packet::Hello { token: alice }.encode(), Some(addr)), Some(vec![2]));
+    }
+
+    #[test]
+    fn cameras_go_to_everyone_screens_to_watchers() {
+        use syncord_proto::voice::{open_video, seal_video};
+        let v = Voice::default();
+        let mut keys = Vec::new();
+        let mut rxs = Vec::new();
+        for user in 1..=3 {
+            let (tx, rx) = mpsc::channel(64);
+            let j = v.join(user, 10, user as u64, tx, false, true, true);
+            keys.push((j.token, j.key.unwrap()));
+            rxs.push(rx);
+        }
+        let (old_token, mut old_rx) = join(&v, 4, 10); // no key: gets no video
+        let (alice_token, alice_key) = keys[0];
+        let send = |counter: u64, kind| {
+            let sealed = seal_video(&alice_key, Direction::Up, counter, kind, &[counter as u8; 40]);
+            v.handle_packet(&Packet::VideoUp { token: alice_token, counter, sealed: &sealed }.encode(), None);
+        };
+        let got = |rx: &mut mpsc::Receiver<Bytes>, key: &Key| -> Option<(VideoKind, Vec<u8>)> {
+            let b = rx.try_recv().ok()?;
+            let Some(Packet::VideoDown { counter, sealed, .. }) = Packet::parse(&b) else { panic!("video") };
+            open_video(key, Direction::Down, counter, sealed)
+        };
+
+        // Off: nothing goes out.
+        send(0, VideoKind::Camera);
+        assert!(rxs[1].try_recv().is_err());
+        // Camera on: Bob and Carol (deafened) both see it, sealed with their own keys.
+        v.set_video(1, 1, true, true).unwrap();
+        send(1, VideoKind::Camera);
+        assert_eq!(got(&mut rxs[1], &keys[1].1), Some((VideoKind::Camera, vec![1; 40])));
+        assert_eq!(got(&mut rxs[2], &keys[2].1), Some((VideoKind::Camera, vec![1; 40])));
+        assert!(old_rx.try_recv().is_err());
+        assert!(rxs[0].try_recv().is_err(), "no echo");
+        // Replays are dropped, late packets aren't.
+        send(1, VideoKind::Camera);
+        assert!(rxs[1].try_recv().is_err());
+        send(3, VideoKind::Screen);
+        send(2, VideoKind::Camera);
+        assert_eq!(got(&mut rxs[1], &keys[1].1), Some((VideoKind::Camera, vec![2; 40])), "screen not watched");
+        assert_eq!(got(&mut rxs[2], &keys[2].1), Some((VideoKind::Camera, vec![2; 40])));
+
+        // Bob watches the screen; only he gets it.
+        assert!(v.watch(2, 1, true));
+        assert!(!v.watch(4, 2, true), "bob isn't sharing");
+        assert!(v.may_request_keyframe(2, 1, VideoKind::Screen));
+        assert!(!v.may_request_keyframe(3, 1, VideoKind::Screen));
+        send(4, VideoKind::Screen);
+        assert_eq!(got(&mut rxs[1], &keys[1].1), Some((VideoKind::Screen, vec![4; 40])));
+        assert!(rxs[2].try_recv().is_err());
+        // Stopping the share stops the watching.
+        v.set_video(1, 1, true, false).unwrap();
+        v.set_video(1, 1, true, true).unwrap();
+        send(5, VideoKind::Screen);
+        assert!(rxs[1].try_recv().is_err());
+        // Old apps can't send video.
+        v.handle_packet(&Packet::VideoUp { token: old_token, counter: 0, sealed: &[0; 40] }.encode(), None);
+        assert!(rxs[0].try_recv().is_err());
     }
 
     #[test]

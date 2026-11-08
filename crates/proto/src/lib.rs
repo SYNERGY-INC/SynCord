@@ -356,6 +356,36 @@ pub struct VoiceState {
     pub deafened: bool,
     /// Identifies this person's audio packets (see [`voice`]).
     pub ssrc: u32,
+    /// Their camera is on (everyone in the call sees it).
+    #[serde(default)]
+    pub camera: bool,
+    /// They're sharing their screen (people who click Watch see it).
+    #[serde(default)]
+    pub screen: bool,
+}
+
+/// Which of someone's two videos: their camera or their screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum VideoKind {
+    Camera,
+    Screen,
+}
+
+impl VideoKind {
+    pub fn to_u8(self) -> u8 {
+        match self {
+            VideoKind::Camera => 1,
+            VideoKind::Screen => 2,
+        }
+    }
+
+    pub fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(VideoKind::Camera),
+            2 => Some(VideoKind::Screen),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -631,6 +661,21 @@ pub enum ClientMsg {
         muted: bool,
         deafened: bool,
     },
+    /// Turn your camera or screen share on or off (in the call you're in).
+    SetVideo {
+        camera: bool,
+        screen: bool,
+    },
+    /// Start or stop watching someone's screen share.
+    WatchStream {
+        user_id: UserId,
+        watching: bool,
+    },
+    /// The picture from someone broke up (lost packets): ask them for a fresh keyframe.
+    RequestKeyframe {
+        user_id: UserId,
+        kind: VideoKind,
+    },
     /// Needs the manage roles permission (and only roles below your own).
     CreateRole {
         name: String,
@@ -730,6 +775,10 @@ pub enum ServerMsg {
         /// Hex-encoded audio encryption key, when the app asked for encryption.
         #[serde(default)]
         key: Option<String>,
+    },
+    /// Someone needs a fresh keyframe of your video (sent only to you).
+    KeyframeRequest {
+        kind: VideoKind,
     },
     /// Someone joined, left (`state: None`) or changed mute/deafen.
     VoiceStateUpdate {

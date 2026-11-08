@@ -68,6 +68,8 @@ pub struct Settings {
     /// Show the game you're playing (found from where it's installed).
     pub detect_games: bool,
     pub video_muted: bool,
+    /// Camera for video calls, by name (None: the first one).
+    pub camera: Option<String>,
 }
 
 /// A GIF starred for quick re-sending (remembered per server).
@@ -110,6 +112,7 @@ impl Default for Settings {
             status: syncord_proto::Status::Online,
             custom_activity: None,
             detect_games: true,
+            camera: None,
             video_muted: false,
         }
     }

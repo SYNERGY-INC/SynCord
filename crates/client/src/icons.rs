@@ -144,3 +144,12 @@ icon!(
     VOLUME_OFF,
     r#"<path d="M3.5 9h4l5-4.5v15l-5-4.5h-4z" fill="black"/><path d="M16 9l5 6M21 9l-5 6" stroke="black" stroke-width="2" stroke-linecap="round"/>"#
 );
+
+icon!(
+    CAMERA,
+    r#"<rect x="2" y="6" width="13.5" height="12" rx="2.5" fill="black"/><path d="M17 10.2l5-3v9.6l-5-3z" fill="black"/>"#
+);
+icon!(
+    SCREEN,
+    r#"<rect x="2.5" y="3.5" width="19" height="13.5" rx="2" stroke="black" stroke-width="2" fill="none"/><path d="M8 21h8M12 17v4" stroke="black" stroke-width="2" stroke-linecap="round"/><path d="M12 13.5V7.5m-3 3l3-3 3 3" stroke="black" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#
+);

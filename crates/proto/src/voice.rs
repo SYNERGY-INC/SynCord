@@ -10,7 +10,13 @@
 //! server -> client  AUDIO   [0x04][ssrc: u32 BE][seq: u16 BE][opus...]
 //! client -> server  SEALED  [0x05][token: 16][counter: u64 BE][sealed(seq: u16 BE, opus...)]
 //! server -> client  SEALED  [0x06][ssrc: u32 BE][counter: u64 BE][sealed(seq: u16 BE, opus...)]
+//! client -> server  VIDEO   [0x07][token: 16][counter: u64 BE][sealed(kind: u8, video packet...)]
+//! server -> client  VIDEO   [0x08][ssrc: u32 BE][counter: u64 BE][sealed(kind: u8, video packet...)]
 //! ```
+//!
+//! Video (cameras and screen shares) is always sealed; `kind` says which of the
+//! sender's two videos a packet belongs to (see [`crate::VideoKind`]), and the
+//! rest is one `syncord-stream` datagram, which the server never looks inside.
 //!
 //! Sealed packets are encrypted and authenticated with ChaCha20-Poly1305 using a
 //! per-session key that the server hands out over the (encrypted) WebSocket.
@@ -37,6 +43,8 @@ const AUDIO_UP: u8 = 3;
 const AUDIO_DOWN: u8 = 4;
 const SEALED_UP: u8 = 5;
 const SEALED_DOWN: u8 = 6;
+const VIDEO_UP: u8 = 7;
+const VIDEO_DOWN: u8 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Packet<'a> {
@@ -46,6 +54,8 @@ pub enum Packet<'a> {
     AudioDown { ssrc: u32, seq: u16, opus: &'a [u8] },
     SealedUp { token: Token, counter: u64, sealed: &'a [u8] },
     SealedDown { ssrc: u32, counter: u64, sealed: &'a [u8] },
+    VideoUp { token: Token, counter: u64, sealed: &'a [u8] },
+    VideoDown { ssrc: u32, counter: u64, sealed: &'a [u8] },
 }
 
 impl<'a> Packet<'a> {
@@ -68,6 +78,18 @@ impl<'a> Packet<'a> {
                 let seq = u16::from_be_bytes(rest.get(4..6)?.try_into().ok()?);
                 let opus = rest.get(6..)?;
                 (!opus.is_empty()).then_some(Packet::AudioDown { ssrc, seq, opus })
+            }
+            VIDEO_UP => {
+                let token = rest.get(..TOKEN_LEN)?.try_into().ok()?;
+                let counter = u64::from_be_bytes(rest.get(TOKEN_LEN..TOKEN_LEN + 8)?.try_into().ok()?);
+                let sealed = rest.get(TOKEN_LEN + 8..)?;
+                (sealed.len() > SEAL_OVERHEAD + 1).then_some(Packet::VideoUp { token, counter, sealed })
+            }
+            VIDEO_DOWN => {
+                let ssrc = u32::from_be_bytes(rest.get(..4)?.try_into().ok()?);
+                let counter = u64::from_be_bytes(rest.get(4..12)?.try_into().ok()?);
+                let sealed = rest.get(12..)?;
+                (sealed.len() > SEAL_OVERHEAD + 1).then_some(Packet::VideoDown { ssrc, counter, sealed })
             }
             SEALED_UP => {
                 let token = rest.get(..TOKEN_LEN)?.try_into().ok()?;
@@ -99,6 +121,12 @@ impl<'a> Packet<'a> {
             Packet::SealedDown { ssrc, counter, sealed } => {
                 [&[SEALED_DOWN][..], &ssrc.to_be_bytes(), &counter.to_be_bytes(), sealed].concat()
             }
+            Packet::VideoUp { token, counter, sealed } => {
+                [&[VIDEO_UP][..], &token, &counter.to_be_bytes(), sealed].concat()
+            }
+            Packet::VideoDown { ssrc, counter, sealed } => {
+                [&[VIDEO_DOWN][..], &ssrc.to_be_bytes(), &counter.to_be_bytes(), sealed].concat()
+            }
         }
     }
 }
@@ -108,6 +136,15 @@ impl<'a> Packet<'a> {
 pub enum Direction {
     Up = 0,
     Down = 1,
+}
+
+/// Audio and video count their packets separately, so the nonce also says which it is.
+fn nonce_for(direction: Direction, video: bool, counter: u64) -> chacha20poly1305::Nonce {
+    let mut n = [0u8; 12];
+    n[0] = direction as u8;
+    n[1] = video as u8;
+    n[4..].copy_from_slice(&counter.to_be_bytes());
+    n.into()
 }
 
 fn nonce(direction: Direction, counter: u64) -> chacha20poly1305::Nonce {
@@ -133,6 +170,59 @@ pub fn open(key: &Key, direction: Direction, counter: u64, sealed: &[u8]) -> Opt
     let seq = u16::from_be_bytes(plain.get(..2)?.try_into().ok()?);
     let opus = plain.get(2..)?;
     (!opus.is_empty()).then(|| (seq, opus.to_vec()))
+}
+
+/// Encrypt one video packet.
+pub fn seal_video(key: &Key, direction: Direction, counter: u64, kind: crate::VideoKind, data: &[u8]) -> Vec<u8> {
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new(key.into());
+    let mut plain = Vec::with_capacity(data.len() + 1);
+    plain.push(kind.to_u8());
+    plain.extend_from_slice(data);
+    cipher.encrypt(&nonce_for(direction, true, counter), plain.as_slice()).expect("encrypting in memory can't fail")
+}
+
+/// Decrypt and check one video packet.
+pub fn open_video(key: &Key, direction: Direction, counter: u64, sealed: &[u8]) -> Option<(crate::VideoKind, Vec<u8>)> {
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new(key.into());
+    let mut plain = cipher.decrypt(&nonce_for(direction, true, counter), sealed).ok()?;
+    let kind = crate::VideoKind::from_u8(*plain.first()?)?;
+    plain.remove(0);
+    (!plain.is_empty()).then_some((kind, plain))
+}
+
+/// Remembers which packet counters were seen recently, so replayed packets are
+/// refused while packets that merely arrive a little out of order still count.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReplayWindow {
+    highest: Option<u64>,
+    /// Bit `i` set: counter `highest - i` was seen.
+    seen: u64,
+}
+
+impl ReplayWindow {
+    /// True (and remembered) if `counter` is new.
+    pub fn accept(&mut self, counter: u64) -> bool {
+        let Some(highest) = self.highest else {
+            self.highest = Some(counter);
+            self.seen = 1;
+            return true;
+        };
+        if counter > highest {
+            let shift = counter - highest;
+            self.seen = if shift >= 64 { 0 } else { self.seen << shift };
+            self.seen |= 1;
+            self.highest = Some(counter);
+            return true;
+        }
+        let back = highest - counter;
+        if back >= 64 || self.seen & (1 << back) != 0 {
+            return false;
+        }
+        self.seen |= 1 << back;
+        true
+    }
 }
 
 pub fn key_to_hex(key: &Key) -> String {
@@ -214,6 +304,37 @@ mod tests {
         assert!(!s.windows(8).any(|w| w == &loud[..8]));
         assert_eq!(key_from_hex(&key_to_hex(&key)), Some(key));
         assert_eq!(key_from_hex("00"), None);
+    }
+
+    #[test]
+    fn sealed_video() {
+        use crate::VideoKind;
+        let key: Key = [3; 32];
+        let sealed = seal_video(&key, Direction::Up, 4, VideoKind::Screen, &[9, 8, 7]);
+        let wire = Packet::VideoUp { token: [2; 16], counter: 4, sealed: &sealed }.encode();
+        let Some(Packet::VideoUp { counter, sealed: s, .. }) = Packet::parse(&wire) else { panic!() };
+        assert_eq!(open_video(&key, Direction::Up, counter, s), Some((VideoKind::Screen, vec![9, 8, 7])));
+        // Audio and video with the same counter never share a nonce.
+        assert_ne!(seal(&key, Direction::Up, 4, 0x0209, &[8, 7]), sealed);
+        assert_eq!(open(&key, Direction::Up, 4, &sealed), None);
+        assert_eq!(open_video(&key, Direction::Down, 4, &sealed), None);
+        let down = Packet::VideoDown { ssrc: 5, counter: 1, sealed: &sealed }.encode();
+        assert!(matches!(Packet::parse(&down), Some(Packet::VideoDown { ssrc: 5, counter: 1, .. })));
+    }
+
+    #[test]
+    fn replay_window() {
+        let mut w = ReplayWindow::default();
+        assert!(w.accept(10));
+        assert!(!w.accept(10), "repeat");
+        assert!(w.accept(12));
+        assert!(w.accept(11), "a little late is fine");
+        assert!(!w.accept(11));
+        assert!(w.accept(100));
+        assert!(!w.accept(30), "too old");
+        assert!(w.accept(99));
+        assert!(w.accept(1000));
+        assert!(!w.accept(99));
     }
 
     #[test]

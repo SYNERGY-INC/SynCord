@@ -7,7 +7,7 @@ use iced::widget::{
     text_input, toggler,
 };
 use iced::{Alignment, Border, Color, Element, Length, Padding};
-use syncord_proto::{AvatarRing, ChannelKind, Message as ChatMessage, User, VoiceState};
+use syncord_proto::{AvatarRing, ChannelKind, Message as ChatMessage, User, UserId, VoiceState};
 
 use crate::app::{
     App, COMPOSER_ID, ChannelInfo, DEFAULT_DEVICE, DraftField, MESSAGES_ID, Message, Overlay, PickerTarget, Session,
@@ -73,6 +73,7 @@ impl App {
                     Overlay::Switcher { query, index } => self.switcher_dialog(session, query, *index),
                     Overlay::Shortcuts => self.shortcuts_dialog(),
                     Overlay::StatusPicker => self.status_picker(session),
+                    Overlay::ScreenPicker(list) => self.screen_picker(list),
                 };
                 let dim = if matches!(overlay, Overlay::Image(_)) { 0.88 } else { 0.6 };
                 // The backdrop fades in while the dialog pops up.
@@ -201,6 +202,17 @@ impl App {
                 layout = layout.push(self.search_panel(s));
             }
             return layout.height(Length::Fill).into();
+        }
+        // The call view replaces the chat while open.
+        let stage = self
+            .voice
+            .as_ref()
+            .map(|v| v.channel_id)
+            .filter(|c| self.live.stage && s.channels.iter().any(|x| x.id == *c));
+        if let Some(channel) = stage {
+            return row![self.server_rail(s), self.channel_sidebar(s), self.stage_view(s, channel)]
+                .height(Length::Fill)
+                .into();
         }
         let mut layout = row![self.server_rail(s), self.channel_sidebar(s), self.chat_area(s)];
         if self.search.open {
@@ -381,9 +393,7 @@ impl App {
                 .spacing(6)
                 .align_y(Alignment::Center);
             let mut entry = button(line).width(Length::Fill).padding([6, 8]).style(style::row_button(t, connected));
-            if !connected {
-                entry = entry.on_press(Message::JoinVoice(ch.id));
-            }
+            entry = entry.on_press(if connected { Message::OpenStage } else { Message::JoinVoice(ch.id) });
             list = list.push(entry);
 
             // Who's in this channel.
@@ -395,7 +405,7 @@ impl App {
                 .collect();
             members.sort_by_key(|(u, _)| u.name().to_lowercase());
             for (u, v) in members {
-                list = list.push(self.voice_member(u, v));
+                list = list.push(self.voice_member(u, v, s.me));
             }
         }
 
@@ -413,7 +423,7 @@ impl App {
     }
 
     /// One person listed under a voice channel, with a ring while they talk.
-    fn voice_member<'a>(&'a self, u: &'a User, v: &VoiceState) -> Element<'a, Message> {
+    fn voice_member<'a>(&'a self, u: &'a User, v: &VoiceState, me: UserId) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let speaking = self.speaking.contains(&u.id);
@@ -425,6 +435,7 @@ impl App {
         let mut line = row![pic, text(truncate(u.name(), 16)).size(fs * 0.9).width(Length::Fill)]
             .spacing(8)
             .align_y(Alignment::Center);
+        line = line.push(self.live_badges(v, me));
         if v.muted && !v.deafened {
             line = line.push(icons::icon(&icons::MIC_OFF, fs, t.danger.0));
         }
@@ -483,9 +494,13 @@ impl App {
         ]
         .spacing(6)
         .align_y(Alignment::Center);
+        let mut body = column![content].spacing(8);
+        if connected {
+            body = body.push(self.live_buttons());
+        }
         container(column![
             divider(style::darken(t.user_panel.0, 0.2)),
-            container(content).padding([8, 10]).width(Length::Fill)
+            container(body).padding([8, 10]).width(Length::Fill)
         ])
         .width(Length::Fill)
         .style(bg(t.user_panel.0))
@@ -1493,6 +1508,20 @@ impl App {
                 column![label(t, "Output volume", fs), percent_slider(st.output_volume, Message::OutputVolume)]
                     .spacing(8)
                     .width(Length::Fill),
+            ]
+            .spacing(20),
+            row![
+                column![
+                    label(t, "Camera", fs),
+                    device_picker(
+                        &self.live.cameras.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                        &st.camera,
+                        Message::CameraDevice
+                    )
+                ]
+                .spacing(8)
+                .width(Length::Fill),
+                space::horizontal().width(Length::Fill),
             ]
             .spacing(20),
             label(t, "Mic test", fs),

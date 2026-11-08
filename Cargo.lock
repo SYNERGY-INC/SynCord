@@ -5700,6 +5700,7 @@ dependencies = [
  "sha2",
  "syncord-proto",
  "syncord-server",
+ "syncord-stream",
  "syncord-update",
  "syncord-video",
  "sysinfo",

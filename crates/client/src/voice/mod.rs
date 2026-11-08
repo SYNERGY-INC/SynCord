@@ -15,7 +15,7 @@ pub mod jitter;
 pub mod mixer;
 
 use std::net::{ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -45,11 +45,20 @@ pub struct VoiceConfig {
     pub noise_suppression: bool,
 }
 
+/// Packet counters for one voice session. They outlive the engine (which restarts when
+/// you switch devices) because the server refuses counters it has already seen, and
+/// an encryption key must never see the same counter twice.
+#[derive(Debug, Default)]
+pub struct Counters {
+    pub audio: AtomicU64,
+    pub video: AtomicU64,
+}
+
 /// How audio leaves this computer.
 pub enum Link {
     /// Talk to the server: UDP if it gets through, otherwise the WebSocket.
-    /// With `key`, audio is encrypted both ways.
-    Server { host: String, udp_port: u16, token: Token, key: Option<Key>, conn: Connection },
+    /// With `key`, audio is encrypted both ways (and video can be sent).
+    Server { host: String, udp_port: u16, token: Token, key: Option<Key>, conn: Connection, counters: Arc<Counters> },
     /// Play your own microphone back to you (the mic test).
     Loopback,
 }
@@ -71,7 +80,7 @@ struct Shared {
     config: Mutex<VoiceConfig>,
     input_level: AtomicU32,
     transmitting: AtomicBool,
-    udp_ok: AtomicBool,
+    udp_ok: Arc<AtomicBool>,
     problem: Mutex<Option<String>>,
     mixer: Arc<Mixer>,
 }
@@ -79,6 +88,8 @@ struct Shared {
 pub struct VoiceEngine {
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
+    /// Set while this engine carries the call's video (see `crate::live`).
+    video_out: Option<u64>,
 }
 
 impl VoiceEngine {
@@ -92,11 +103,12 @@ impl VoiceEngine {
             config: Mutex::new(config.clone()),
             input_level: AtomicU32::new((-100f32).to_bits()),
             transmitting: AtomicBool::new(false),
-            udp_ok: AtomicBool::new(false),
+            udp_ok: Arc::new(AtomicBool::new(false)),
             problem: Mutex::new(None),
             mixer: mixer.clone(),
         });
         let mut threads = Vec::new();
+        let mut video_out = None;
 
         // Audio devices live on their own thread: cpal streams can't move between threads on every OS.
         let (chunks_tx, chunks_rx) = mpsc::sync_channel::<Vec<f32>>(32);
@@ -148,23 +160,33 @@ impl VoiceEngine {
                 let mixer = mixer.clone();
                 Box::new(move |seq, opus| mixer.push(0, seq, opus))
             }
-            Link::Server { host, udp_port, token, key, conn } => {
+            Link::Server { host, udp_port, token, key, conn, counters } => {
                 mixer.set_key(key);
-                let mut counter = 0u64;
                 let udp = open_udp(&host, udp_port);
                 if let Some(sock) = &udp {
                     let shared = shared.clone();
                     let sock = sock.try_clone().expect("clone udp socket");
                     threads.push(spawn("syncord-voice-udp", move || udp_loop(sock, token, shared)));
                 }
-                let udp = udp.and_then(|s| s.try_clone().ok());
+                let udp = udp.and_then(|s| s.try_clone().ok()).map(Arc::new);
+                // Video goes out the same way (same socket, so the server sees one address).
+                if let Some(key) = key {
+                    video_out = Some(crate::live::set_out(crate::live::VideoOut {
+                        token,
+                        key,
+                        udp: udp.clone(),
+                        udp_ok: shared.udp_ok.clone(),
+                        conn: conn.clone(),
+                        counters: counters.clone(),
+                    }));
+                }
                 let shared = shared.clone();
                 Box::new(move |seq, opus| {
                     let packet = match &key {
                         Some(key) => {
+                            let counter = counters.audio.fetch_add(1, Ordering::Relaxed);
                             let sealed = seal(key, Direction::Up, counter, seq, opus);
-                            counter += 1;
-                            Packet::SealedUp { token, counter: counter - 1, sealed: &sealed }.encode()
+                            Packet::SealedUp { token, counter, sealed: &sealed }.encode()
                         }
                         None => Packet::AudioUp { token, seq, opus }.encode(),
                     };
@@ -181,7 +203,7 @@ impl VoiceEngine {
         let capture_shared = shared.clone();
         threads.push(spawn("syncord-capture", move || capture_loop(chunks_rx, capture_shared, sender)));
 
-        Ok(Self { shared, threads })
+        Ok(Self { shared, threads, video_out })
     }
 
     pub fn mixer(&self) -> Arc<Mixer> {
@@ -229,6 +251,9 @@ impl VoiceEngine {
 
 impl Drop for VoiceEngine {
     fn drop(&mut self) {
+        if let Some(id) = self.video_out {
+            crate::live::clear_out(id);
+        }
         self.shared.stop.store(true, Ordering::Relaxed);
         for t in self.threads.drain(..) {
             let _ = t.join();
@@ -311,6 +336,9 @@ fn udp_loop(sock: UdpSocket, token: Token, shared: Arc<Shared>) {
             Ok(n) => match Packet::parse(&buf[..n]) {
                 Some(Packet::Ack) => last_ack = Some(Instant::now()),
                 Some(Packet::AudioDown { .. } | Packet::SealedDown { .. }) => shared.mixer.push_packet(&buf[..n]),
+                Some(Packet::VideoDown { .. }) => {
+                    crate::live::deliver(&buf[..n]);
+                }
                 _ => {}
             },
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
@@ -346,7 +374,7 @@ mod tests {
             }),
             input_level: AtomicU32::new(0),
             transmitting: AtomicBool::new(false),
-            udp_ok: AtomicBool::new(false),
+            udp_ok: Arc::new(AtomicBool::new(false)),
             problem: Mutex::new(None),
             mixer: Arc::new(Mixer::default()),
         })
@@ -357,7 +385,7 @@ mod tests {
         address: String,
         name: &str,
         sink: VoiceSink,
-    ) -> (Connection, Token, Key, u16, std::pin::Pin<Box<impl futures::Stream<Item = Event>>>) {
+    ) -> (Connection, Token, Key, u16, std::pin::Pin<Box<impl futures::Stream<Item = Event>>>, u32) {
         let mut events = Box::pin(net::connect(address, None, sink));
         let Some(Event::Connected { conn, url, fingerprint }) = events.next().await else { panic!("connect failed") };
         assert!(url.starts_with("wss://"), "encrypted connection: {url}");
@@ -373,10 +401,10 @@ mod tests {
         conn.send(ClientMsg::JoinVoice { channel_id: voice_channel, encrypted: true });
         loop {
             if let Some(Event::Received(msg)) = events.next().await
-                && let ServerMsg::VoiceReady { token, udp_port, key, .. } = *msg
+                && let ServerMsg::VoiceReady { token, udp_port, key, ssrc, .. } = *msg
             {
                 let key = syncord_proto::voice::key_from_hex(&key.expect("a voice key")).unwrap();
-                return (conn, token_from_hex(&token).unwrap(), key, udp_port, events);
+                return (conn, token_from_hex(&token).unwrap(), key, udp_port, events, ssrc);
             }
         }
     }
@@ -427,12 +455,12 @@ mod tests {
         // Alice only uses the WebSocket; her incoming audio lands in her sink's mixer.
         let alice_mixer = Arc::new(Mixer::default());
         let alice_sink: VoiceSink = Arc::new(Mutex::new(Some(alice_mixer.clone())));
-        let (alice_conn, alice_token, alice_key, _, mut alice_events) =
+        let (alice_conn, alice_token, alice_key, _, mut alice_events, _) =
             join(address.clone(), "alice", alice_sink).await;
         alice_mixer.set_key(Some(alice_key));
 
         // Bob uses UDP, through the engine's real UDP loop.
-        let (_bob_conn, bob_token, bob_key, udp_port, mut bob_events) =
+        let (_bob_conn, bob_token, bob_key, udp_port, mut bob_events, _) =
             join(address.clone(), "bob", Arc::default()).await;
         let bob = shared();
         bob.mixer.set_key(Some(bob_key));
@@ -478,6 +506,92 @@ mod tests {
         })
         .await;
 
+        bob.stop.store(true, Ordering::Relaxed);
+        udp_thread.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A camera (a test pattern) and a screen share travel from Alice's app over the
+    /// WebSocket, through the real server, to Bob's app over UDP, and decode there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn video_flows_through_the_server() {
+        use syncord_proto::VideoKind;
+        use syncord_server::{AppState, Config, db::Db, router, start_udp};
+        use syncord_stream as stream;
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let config = Config { invite_code: "x".into(), ..Config::default() };
+        let state = AppState::new(config, Db::open_in_memory().unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        start_udp(&state, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let dir = std::env::temp_dir().join(format!("syncord-video-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tls, _) = syncord_server::tls::load_or_create(&dir).unwrap();
+        let dual = syncord_server::tls::DualListener::new(listener, tls).unwrap();
+        tokio::spawn(async move { axum::serve(dual, router(state)).await.unwrap() });
+
+        let (alice_conn, alice_token, alice_key, _, mut alice_events, alice_ssrc) =
+            join(address.clone(), "alice", Arc::default()).await;
+        let (bob_conn, bob_token, bob_key, udp_port, mut bob_events, _) =
+            join(address.clone(), "bob", Arc::default()).await;
+        tokio::spawn(async move { while bob_events.next().await.is_some() {} });
+
+        // Bob listens on UDP, with decoders for Alice's camera and screen.
+        let bob = shared();
+        let sock = open_udp("127.0.0.1", udp_port).expect("udp socket");
+        let loop_shared = bob.clone();
+        let udp_thread = std::thread::spawn(move || udp_loop(sock, bob_token, loop_shared));
+        wait_for(|| bob.udp_ok.load(Ordering::Relaxed)).await;
+        crate::live::set_key(Some(bob_key));
+        let camera = Arc::new(stream::Receiver::new(stream::ReceiverConfig::new(1)));
+        let screen = Arc::new(stream::Receiver::new(stream::ReceiverConfig::new(2)));
+        crate::live::route_for_test(alice_ssrc, VideoKind::Camera, camera.clone());
+        crate::live::route_for_test(alice_ssrc, VideoKind::Screen, screen.clone());
+
+        // Alice sends over her WebSocket (no UDP).
+        let out = crate::live::set_out(crate::live::VideoOut {
+            token: alice_token,
+            key: alice_key,
+            udp: None,
+            udp_ok: Arc::new(AtomicBool::new(false)),
+            conn: alice_conn.clone(),
+            counters: Arc::default(),
+        });
+        alice_conn.send(syncord_proto::ClientMsg::SetVideo { camera: true, screen: true });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let pattern = |w, h| stream::Source::TestPattern { width: w, height: h, fps: 30 };
+        let cam = Arc::new(crate::live::start_sender_for_test(
+            VideoKind::Camera,
+            stream::SenderConfig::camera(1),
+            pattern(320, 180),
+        ));
+        let scr = Arc::new(crate::live::start_sender_for_test(
+            VideoKind::Screen,
+            stream::SenderConfig::screen(2),
+            pattern(640, 360),
+        ));
+        // Alice's app answers keyframe requests (a new viewer needs one to start from).
+        let (c, s) = (cam.clone(), scr.clone());
+        tokio::spawn(async move {
+            while let Some(e) = alice_events.next().await {
+                if let Event::Received(msg) = e
+                    && let ServerMsg::KeyframeRequest { kind } = *msg
+                {
+                    if kind == VideoKind::Camera { c.force_keyframe() } else { s.force_keyframe() }
+                }
+            }
+        });
+
+        // The camera arrives; the screen doesn't until Bob watches it.
+        wait_for(|| camera.frame().is_some_and(|f| f.width == 320 && f.height == 180)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(screen.frame().is_none(), "not watching yet");
+        let started = Instant::now();
+        bob_conn.send(syncord_proto::ClientMsg::WatchStream { user_id: 1, watching: true });
+        wait_for(|| screen.frame().is_some_and(|f| f.width == 640)).await;
+        assert!(started.elapsed() < Duration::from_secs(2), "the keyframe came on request");
+
+        crate::live::clear_out(out);
         bob.stop.store(true, Ordering::Relaxed);
         udp_thread.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);

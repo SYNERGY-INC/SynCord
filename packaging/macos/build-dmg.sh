@@ -10,7 +10,8 @@ repo="$(cd "$here/../.." && pwd)"
 mkdir -p "$2"; out="$(cd "$2" && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 
-export MACOSX_DEPLOYMENT_TARGET=11.0
+# 12.3: screen sharing uses ScreenCaptureKit.
+export MACOSX_DEPLOYMENT_TARGET=12.3
 cd "$repo"
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
     rustup target add "$target" >/dev/null

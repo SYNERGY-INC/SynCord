@@ -54,6 +54,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Without nasm, OpenH264 (video calls and video playback) builds without its fast paths.
+      - name: Install nasm
+        run: choco install nasm -y --no-progress && echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
       - run: cargo build --release --locked
       - uses: actions/upload-artifact@v4
         with:

@@ -46,6 +46,9 @@ jobs:
       - name: Install audio headers (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install nasm (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nasm -y --no-progress && echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
       - run: cargo build --release
       - name: Collect binaries
         shell: bash

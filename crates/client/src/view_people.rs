@@ -130,6 +130,8 @@ impl App {
         }
         people.sort_by_key(|u| u.id);
         let joined = self.voice.as_ref().is_some_and(|v| v.channel_id == channel);
+        // With cameras or screens on, the call shows its video instead of faces.
+        let video = joined && self.call_has_video(s, channel);
         let mut faces = row![].spacing(10).align_y(Alignment::Center);
         for u in people {
             let talking = self.speaking.contains(&u.id);
@@ -150,8 +152,13 @@ impl App {
                 .on_press(Message::JoinVoice(channel))
                 .style(style::solid_button(t.online.0, t.radius * 0.6))
         };
+        let top: Element<'a, Message> = if video { self.video_grid(s, channel, true) } else { faces.into() };
+        let mut controls = iced::widget::row![action].spacing(10).align_y(Alignment::Center);
+        if joined {
+            controls = controls.push(container(self.live_buttons()).width(260));
+        }
         Some(
-            container(column![faces, action].spacing(14).align_x(Alignment::Center))
+            container(column![top, controls].spacing(14).align_x(Alignment::Center))
                 .padding(18)
                 .width(Length::Fill)
                 .align_x(Alignment::Center)
