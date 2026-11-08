@@ -1,6 +1,6 @@
 //! Reusable styles and small widgets (avatars, profile cards, dividers).
 
-use iced::widget::{button, column, container, row, scrollable, space, stack, text, text_input};
+use iced::widget::{button, container, row, scrollable, space, text, text_input};
 use iced::{Background, Border, Color, Element, Font, Length, Theme, font};
 use syncord_proto::{AvatarRing, Profile};
 
@@ -173,72 +173,6 @@ pub fn avatar<'a, M: 'a>(name: &str, profile: &Profile, size: f32) -> Element<'a
     }
 }
 
-/// Avatar with a small online/offline dot in the corner.
-pub fn avatar_with_status<'a, M: 'a>(
-    t: &AppTheme,
-    name: &str,
-    profile: &Profile,
-    size: f32,
-    online: bool,
-    cutout: Color,
-) -> Element<'a, M> {
-    let dot_size = (size * 0.38).round();
-    let color = if online { t.online.0 } else { t.muted.0 };
-    let dot = container(space()).width(dot_size).height(dot_size).style(move |_| container::Style {
-        background: Some(color.into()),
-        border: Border { radius: (dot_size / 2.0).into(), width: dot_size * 0.22, color: cutout },
-        ..Default::default()
-    });
-    stack![avatar(name, profile, size), container(dot).align_right(size).align_bottom(size)].into()
-}
-
-/// The pop-out profile card (also used as the live preview in settings).
-pub fn profile_card<'a, M: 'a>(
-    t: &AppTheme,
-    username: &str,
-    profile: &Profile,
-    is_owner: bool,
-    online: bool,
-    fs: f32,
-) -> Element<'a, M> {
-    let banner_color = rgb(profile.banner_color);
-    let radius = t.radius * 1.5;
-    let banner = container(space()).width(Length::Fill).height(64).style(move |_| container::Style {
-        background: Some(banner_color.into()),
-        border: Border { radius: iced::border::top(radius), ..Default::default() },
-        ..Default::default()
-    });
-
-    let display = if profile.display_name.trim().is_empty() { username } else { profile.display_name.as_str() };
-
-    let mut body = column![
-        avatar_with_status(t, display, profile, 80.0, online, t.floating.0),
-        column![
-            text(display.to_owned()).size(fs * 1.35).font(BOLD).color(t.header.0),
-            text(username.to_owned()).size(fs * 0.9).color(t.muted.0),
-        ]
-        .spacing(2),
-    ]
-    .spacing(10);
-
-    if is_owner {
-        body = body.push(
-            container(text("Server Owner").size(fs * 0.75).font(BOLD).color(contrast_text(t.accent.0)))
-                .padding([2, 8])
-                .style(card(t.accent.0, 10.0)),
-        );
-    }
-    if !profile.status_text.trim().is_empty() {
-        body = body.push(text(profile.status_text.clone()).size(fs * 0.95).color(t.text.0));
-    }
-    body = body.push(divider(t.hover.0));
-    body = body.push(label(t, "About me", fs));
-    let bio = if profile.bio.trim().is_empty() { "No bio yet.".to_string() } else { profile.bio.clone() };
-    body = body.push(text(bio).size(fs * 0.95).color(t.text.0));
-
-    container(column![banner, container(body).padding([12, 16])]).width(320).style(card(t.floating.0, radius)).into()
-}
-
 /// A horizontal row of colour swatches that set a colour field.
 pub fn swatches<'a, M: Clone + 'a>(selected: u32, on_pick: impl Fn(String) -> M) -> Element<'a, M> {
     const COLORS: [u32; 12] = [
@@ -264,15 +198,8 @@ pub fn swatches<'a, M: Clone + 'a>(selected: u32, on_pick: impl Fn(String) -> M)
     r.wrap().into()
 }
 
-/// The system's colour emoji font. Asking for it by name stops the text engine
-/// from borrowing black-and-white emoji from some other installed font.
-pub const EMOJI_FONT: Font = Font::with_name(if cfg!(windows) {
-    "Segoe UI Emoji"
-} else if cfg!(target_os = "macos") {
-    "Apple Color Emoji"
-} else {
-    "Noto Color Emoji"
-});
+/// Colour emoji: Twemoji (the set Discord uses), bundled with the app.
+pub const EMOJI_FONT: Font = Font::with_name("Twemoji Mozilla");
 
 fn is_emoji_char(c: char) -> bool {
     matches!(c as u32,
@@ -307,22 +234,6 @@ pub fn split_emoji(s: &str) -> Vec<(bool, &str)> {
 /// An emoji (or a few) drawn with the colour emoji font.
 pub fn emoji_text<'a>(e: impl text::IntoFragment<'a>, size: f32) -> iced::widget::Text<'a> {
     text(e).font(EMOJI_FONT).size(size)
-}
-
-/// Message text where any emoji are drawn in colour.
-pub fn rich_message<'a, M: 'a>(content: &'a str, size: f32, color: Color) -> Element<'a, M> {
-    let parts = split_emoji(content);
-    if !parts.iter().any(|(e, _)| *e) {
-        return text(content).size(size).color(color).into();
-    }
-    let spans: Vec<iced::widget::text::Span<'a, (), Font>> = parts
-        .into_iter()
-        .map(|(e, s)| {
-            let span = iced::widget::span(s);
-            if e { span.font(EMOJI_FONT) } else { span }
-        })
-        .collect();
-    iced::widget::rich_text(spans).size(size).color(color).into()
 }
 
 #[cfg(test)]

@@ -1,0 +1,10 @@
+Twemoji.ttf: the Twemoji emoji graphics as a colour (COLR) font.
+
+Emoji graphics: Copyright Twitter, Inc and other contributors, licensed under
+CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Source:
+https://github.com/jdecked/twemoji (continuation of https://github.com/twitter/twemoji).
+
+Font build: "Twemoji Mozilla" by Mozilla (https://github.com/mozilla/twemoji-colr),
+packaged as twemoji-colr-font 15.0.3 by Tilman Vatteroth
+(https://github.com/mrdrogdrog/twemoji-color-font), licensed under the
+SIL Open Font License 1.1. Converted from WOFF2 to TTF without other changes.

@@ -35,8 +35,8 @@ impl App {
         let Some(st) = s.current.and_then(|c| s.chans.get(&c)) else { return Vec::new() };
         st.messages
             .iter()
-            .flat_map(|m| &m.attachments)
-            .filter(|a| a.is_image())
+            .flat_map(|m| m.attachments.iter().chain(m.embeds.iter().filter_map(|e| e.image.as_ref())))
+            .filter(|a| a.is_image() || a.is_video())
             .map(|a| media::key(&a.id, false))
             .collect()
     }
@@ -77,6 +77,20 @@ impl App {
         if let Some(Overlay::Image(a)) = &self.overlay {
             return a.animated;
         }
+        if let Some(Overlay::Profile(id)) = &self.overlay
+            && let Some(u) = self.session.as_ref().and_then(|s| s.users.get(id))
+        {
+            let keys: Vec<String> = [
+                u.profile.avatar.as_ref().filter(|a| a.animated).map(|a| media::avatar_key(&a.id, true)),
+                u.profile.banner.as_ref().map(|b| media::banner_key(&b.id)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            if self.images.has_animation(&keys) {
+                return true;
+            }
+        }
         if matches!(self.emoji_picker.as_ref().map(|p| p.tab), Some(crate::app::PickerTab::Gifs)) {
             // Favourites play, and so does the search result under the mouse.
             let mut keys: Vec<String> = self.settings.favorites_here().map(|f| f.attachment.id.clone()).collect();
@@ -112,8 +126,15 @@ impl App {
 
     pub(crate) fn close_overlay(&mut self) {
         // The full-size picture is only kept while the viewer is open.
-        if let Some(Overlay::Image(a)) = self.overlay.take() {
-            self.images.remove(&media::key(&a.id, true));
+        match self.overlay.take() {
+            Some(Overlay::Image(a)) => self.images.remove(&media::key(&a.id, true)),
+            Some(Overlay::Crop) => self.crop = None,
+            Some(Overlay::Profile(id)) => {
+                if let Some(u) = self.session.as_ref().and_then(|s| s.users.get(&id)).cloned() {
+                    self.drop_profile_extras(&u);
+                }
+            }
+            _ => {}
         }
         self.copying = None;
     }
@@ -219,17 +240,20 @@ impl App {
             Message::Pasted(Some(Clip::Files(paths))) => {
                 // Some file managers also offer the files' names as text, which the message box
                 // has already pasted; take that back out.
+                let mut text = self.composer.clone();
                 for path in &paths {
                     let full = path.display().to_string();
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     for needle in [format!("file://{full}"), full, name] {
-                        if !needle.is_empty() && self.composer.contains(&needle) {
-                            self.composer = self.composer.replacen(&needle, "", 1);
+                        if !needle.is_empty() && text.contains(&needle) {
+                            text = text.replacen(&needle, "", 1);
                             break;
                         }
                     }
                 }
-                self.composer = self.composer.trim_end().to_string();
+                if text != self.composer {
+                    self.set_composer(text.trim_end().to_string());
+                }
                 return self.attach_paths(paths);
             }
             Message::Pasted(None) => {} // plain text paste: the text box handles it

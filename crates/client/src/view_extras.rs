@@ -12,7 +12,7 @@ use crate::app::{App, Message, PickerTab, PickerTarget, Session, UploadState};
 use crate::emoji;
 use crate::icons::{self, icon};
 use crate::media::{self, format_size};
-use crate::style::{self, BOLD, SEMIBOLD, avatar_with_status, bg, card, label};
+use crate::style::{self, BOLD, SEMIBOLD, bg, card, label};
 use crate::theme::{contrast_text, with_alpha};
 
 const PICTURE_W: f32 = 400.0;
@@ -37,6 +37,18 @@ fn boxed_picture<'a>(
         .height(h)
         .style(card(backdrop, radius))
         .into()
+}
+
+/// Shorten a long file name in the middle, keeping its end and extension:
+/// "2C5273C0-4F53-...7B4235.mp4".
+pub fn middle_ellipsis(name: &str, max: usize) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= max {
+        return name.to_string();
+    }
+    let tail = (max / 3).max(6).min(chars.len());
+    let head = max.saturating_sub(tail + 1);
+    format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>())
 }
 
 fn percent(done: u64, total: u64) -> u64 {
@@ -112,7 +124,7 @@ impl App {
         let content = row![
             icon(&icons::FILE, 30.0, t.accent.0),
             column![
-                text(a.filename.clone()).size(fs * 0.95).color(t.accent.0),
+                text(middle_ellipsis(&a.filename, 30)).size(fs * 0.95).color(t.accent.0),
                 text(format_size(a.size)).size(fs * 0.75).color(t.muted.0),
             ]
             .spacing(2)
@@ -261,29 +273,69 @@ impl App {
         Some(r.wrap().vertical_spacing(8).into())
     }
 
-    /// Emoji suggestions while typing `:code`.
+    /// Suggestions while typing `:emoji` or `@someone`.
     pub(crate) fn suggestions_view(&self) -> Option<Element<'_, Message>> {
-        let found = self.emoji_suggestions();
+        use crate::composer::Suggestion;
+        let found = self.composer_suggestions();
+        let s = self.session.as_ref()?;
         if found.is_empty() {
             return None;
         }
         let t = &self.theme;
         let fs = self.fs();
-        let mut col = column![label(t, "Emoji matching", fs)].spacing(2);
-        for (i, (e, code)) in found.into_iter().enumerate() {
-            let line =
-                row![style::emoji_text(e.as_str(), fs * 1.2), text(format!(":{code}:")).size(fs * 0.9).color(t.text.0)]
+        let title = if matches!(found[0], Suggestion::Emoji(..)) { "Emoji matching" } else { "Members" };
+        let selected = self.suggestion_index.min(found.len() - 1);
+        let mut col = column![label(t, title, fs)].spacing(2);
+        for (i, pick) in found.into_iter().enumerate() {
+            let line: Element<'_, Message> = match pick {
+                Suggestion::Emoji(e, code) => row![
+                    style::emoji_text(e.as_str(), fs * 1.2),
+                    text(format!(":{code}:")).size(fs * 0.9).color(t.text.0)
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .into(),
+                Suggestion::User(id) => match s.users.get(&id) {
+                    Some(u) => row![
+                        self.avatar(u, 24.0),
+                        text(u.name().to_owned()).size(fs * 0.95).color(t.header.0),
+                        text(u.username.clone()).size(fs * 0.8).color(t.muted.0),
+                    ]
                     .spacing(10)
-                    .align_y(Alignment::Center);
+                    .align_y(Alignment::Center)
+                    .into(),
+                    None => continue,
+                },
+                Suggestion::Role(id) => match s.role(id) {
+                    Some(r) => {
+                        let color = r.color.map(crate::theme::rgb).unwrap_or(t.text.0);
+                        row![
+                            text(format!("@{}", r.name)).size(fs * 0.95).font(SEMIBOLD).color(color),
+                            text("Notify everyone with this role").size(fs * 0.8).color(t.muted.0),
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center)
+                        .into()
+                    }
+                    None => continue,
+                },
+                Suggestion::Everyone => row![
+                    text("@everyone").size(fs * 0.95).font(SEMIBOLD).color(t.header.0),
+                    text("Notify everyone who can see this channel").size(fs * 0.8).color(t.muted.0),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .into(),
+            };
             col = col.push(
                 button(line)
                     .width(Length::Fill)
                     .padding([4, 8])
-                    .on_press(Message::PickEmojiSuggestion(e.as_str().to_string()))
-                    .style(style::row_button(t, i == 0)),
+                    .on_press(Message::AcceptSuggestion(i))
+                    .style(style::row_button(t, i == selected)),
             );
         }
-        col = col.push(text("Enter to pick the highlighted one").size(fs * 0.7).color(t.muted.0));
+        col = col.push(text("Tab or Enter to pick, Up and Down to move").size(fs * 0.7).color(t.muted.0));
         Some(container(col).padding(8).width(Length::Fill).style(card(t.floating.0, t.radius)).into())
     }
 
@@ -395,12 +447,42 @@ impl App {
                     Some(p) => boxed_picture(p, self.animation_ms(None), GIF_TILE_W, GIF_TILE_H, 6.0, t.rail.0),
                     None => container(space()).width(GIF_TILE_W).height(GIF_TILE_H).style(card(t.rail.0, 6.0)).into(),
                 };
-                grid = grid.push(
+                // A filled star on each favourite: click it to remove it (or right-click the GIF).
+                let gold = Color::from_rgb8(0xF0, 0xB2, 0x32);
+                let star = button(icon(&icons::STAR, 15.0, gold))
+                    .padding(4)
+                    .on_press(Message::ToggleFavoriteGif(a.clone()))
+                    .style(|_, _| button::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                        border: Border { radius: 6.0.into(), ..Default::default() },
+                        ..Default::default()
+                    });
+                let tile = stack![
                     button(content)
                         .padding(0)
                         .on_press(Message::SendFavorite(a.clone()))
                         .style(|_, _| button::Style::default()),
-                );
+                    container(tooltip(
+                        star,
+                        container(text("Remove from favourites").size(fs * 0.75)).padding([3, 6]).style(card(t.rail.0, 4.0)),
+                        tooltip::Position::Top,
+                    ))
+                    .padding(4)
+                    .width(GIF_TILE_W)
+                    .align_x(Alignment::End),
+                ];
+                let fav = a.clone();
+                grid = grid.push(crate::widgets::context_menu(tile, move || {
+                    container(
+                        button(text("Remove from favourites").size(fs * 0.9).color(t.text.0))
+                            .padding([6, 10])
+                            .on_press(Message::ToggleFavoriteGif(fav.clone()))
+                            .style(style::row_button(t, false)),
+                    )
+                    .padding(6)
+                    .style(card(style::darken(t.floating.0, 0.12), t.radius * 0.8))
+                    .into()
+                }));
             }
             col = col.push(label(t, "Favourites", fs)).push(grid.wrap().vertical_spacing(6));
         }
@@ -554,7 +636,7 @@ impl App {
             list = list.push(
                 button(
                     row![
-                        avatar_with_status(t, u.name(), &u.profile, 32.0, online, t.chat.0),
+                        self.avatar_status(u, 32.0, online, t.chat.0),
                         column![
                             text(u.name().to_owned()).size(fs).font(SEMIBOLD),
                             text(u.username.clone()).size(fs * 0.75).color(t.muted.0)
@@ -618,12 +700,14 @@ impl App {
                 name = name.font(BOLD).color(t.header.0);
             }
             let mut line = row![
-                avatar_with_status(t, u.name(), &u.profile, 32.0, s.online.contains(&u.id), t.sidebar.0),
+                self.with_user_menu(self.avatar_status(u, 32.0, s.online.contains(&u.id), t.sidebar.0), u.id),
                 name.width(Length::Fill)
             ]
             .spacing(10)
             .align_y(Alignment::Center);
-            if unread {
+            if s.mention_count(d.id) > 0 && !selected {
+                line = line.push(crate::view::mention_badge(t, s.mention_count(d.id), fs));
+            } else if unread {
                 line = line.push(container(space()).width(8).height(8).style(style::flat(t.header.0, 4.0)));
             }
             list = list.push(
@@ -646,5 +730,16 @@ impl App {
         .height(Length::Fill)
         .style(bg(t.sidebar.0))
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn long_file_names_keep_their_end() {
+        let n = super::middle_ellipsis("2C5273C0-4F53-4A82-9ABE-99A43A7B4235.mp4", 34);
+        assert!(n.chars().count() <= 34, "{n}");
+        assert!(n.ends_with(".mp4") && n.starts_with("2C5273C0") && n.contains('…'), "{n}");
+        assert_eq!(super::middle_ellipsis("cat.png", 34), "cat.png");
     }
 }

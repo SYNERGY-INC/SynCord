@@ -25,15 +25,26 @@ off in **Settings → Appearance** for GPU rendering.
 ## Features
 
 - **Discord-style layout**: server bar, channel list, chat, member list, user panel
-- Real-time text chat with message grouping, edit/delete, typing indicators, unread channels
+- Real-time text chat with message grouping, edit/delete, typing indicators, unread channels;
+  **Shift+Enter** for new lines, Up to edit your last message
+- **@mentions** of people, roles and @everyone, with highlighted messages, red badges and a ping sound
+- **Links** are clickable and get preview cards (title, description, picture), fetched by the
+  server so your friends' addresses aren't shared with every website
 - Online/offline presence, clickable profile cards
-- **Profile customization**: display name, custom status, bio, name/avatar colour,
-  banner colour, avatar symbol, and decorative avatar rings (thin, thick, double) in any colour
+- **Right-click anyone** for Profile, Message, Start a Call, Roles, Ignore, Block, Copy Username/ID
+- **Profile customization**: display name, pronouns, custom status, bio, name/avatar colour,
+  **profile picture and banner** (pictures or animated GIFs, cropped Discord-style), banner colour,
+  avatar symbol, and decorative avatar rings (thin, thick, double) in any colour
 - **Themes**: 7 built-in (Classic Dark, Light, Midnight, Ocean, Forest, Sakura, Ember), plus
   your own `.toml` theme files with every colour editable
 - Text size slider and compact mode
 - Invite-code sign-up so strangers can't join; the first account becomes the server owner
-- Owner can create and delete channels and remove any message
+- **Roles** with colours, their own section in the member list, and permissions (manage
+  channels, manage roles, delete messages, mention @everyone, send messages and files, join voice...)
+- **Keyboard shortcuts** like Discord's (Ctrl+K quick switcher, Alt+Up/Down, Ctrl+Shift+M...);
+  Ctrl+/ lists them
+- **Encrypted connections**, including voice: the app remembers each server's identity the first
+  time it connects and refuses an impostor after that
 - Auto-reconnect if the connection drops (and rejoins your voice call); stays logged in between launches
 - Unread markers that are remembered between launches
 
@@ -60,14 +71,15 @@ off in **Settings → Appearance** for GPU rendering.
 - **Reactions**: hover a message and click the smiley, or click an existing reaction to add yours.
   Hover a reaction to see who reacted
 - Messages that are only emoji show big
-- Emoji are drawn in colour with your system's emoji font
+- **Twemoji**, the emoji Discord uses, bundled so they look the same on every computer
 
 ### Direct messages
 
 - The **Home** button (top-left) holds your private conversations, with an unread badge
 - Start one with **Message** on anyone's profile card, or the **+** next to *Conversations*
-- Only the two people in a conversation can see it or its files. (They aren't end-to-end
-  encrypted: whoever hosts the server could read the database file.)
+- **Calls**: the phone button in a conversation (or right-click → Start a Call) rings the other person
+- Only the two people in a conversation can see it or its files. (Connections are encrypted,
+  but messages aren't end-to-end encrypted: whoever hosts the server could read the database file.)
 
 ### Voice chat
 
@@ -382,10 +394,16 @@ Themes are plain files, so you can send them to friends.
 
 1. Echo cancellation and push-to-talk (needs a global hotkey that works while the app is in
    the background)
-2. Link previews
-3. Markdown formatting, replies, @mentions and desktop notifications
-4. Custom server emoji, group DMs, animated avatars, uploadable avatar and banner images
-5. Screen sharing
+2. Markdown formatting, replies and desktop notifications
+3. Custom server emoji and group DMs
+4. Screen sharing
+
+## Credits
+
+- Emoji: [Twemoji](https://github.com/jdecked/twemoji), © Twitter, Inc and other contributors,
+  [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/); colour font build by Mozilla
+  (twemoji-colr), SIL Open Font License 1.1. See `crates/client/assets/fonts/TWEMOJI-LICENSE.txt`.
+- Interface font: [Inter](https://rsms.me/inter/), SIL Open Font License 1.1.
 
 ## Project layout
 

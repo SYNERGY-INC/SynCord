@@ -28,7 +28,7 @@ fn find_input(name: Option<&str>) -> Option<Device> {
         .or_else(|| host.default_input_device())
 }
 
-fn find_output(name: Option<&str>) -> Option<Device> {
+pub fn find_output(name: Option<&str>) -> Option<Device> {
     let host = cpal::default_host();
     name.and_then(|n| host.output_devices().ok()?.find(|d| device_name(d).as_deref() == Some(n)))
         .or_else(|| host.default_output_device())

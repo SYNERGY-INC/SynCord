@@ -14,7 +14,7 @@ use crate::app::{
     SettingsTab, View,
 };
 use crate::icons;
-use crate::style::{self, BOLD, SEMIBOLD, avatar, avatar_with_status, bg, card, divider, label};
+use crate::style::{self, BOLD, SEMIBOLD, bg, card, divider, label};
 use crate::theme::{AppTheme, contrast_text, rgb, themes_dir, with_alpha};
 
 /// Messages from the same person within this window are grouped under one header.
@@ -23,6 +23,17 @@ const GROUP_WINDOW_MS: i64 = 7 * 60 * 1000;
 impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let main = self.view_main();
+        let main = match self.incoming_call() {
+            Some(call) => stack![
+                main,
+                container(crate::widgets::pop(call, self.pop(self.call_popped)))
+                    .padding(20)
+                    .align_right(Length::Fill)
+                    .align_bottom(Length::Fill)
+            ]
+            .into(),
+            None => main,
+        };
         match self.update_popup() {
             Some(popup) => stack![
                 main,
@@ -58,8 +69,14 @@ impl App {
                     Overlay::ConfirmDelete(id) => self.confirm_delete_dialog(session, *id),
                     Overlay::Image(a) => self.image_viewer(a),
                     Overlay::NewDirect => self.new_direct_dialog(session),
+                    Overlay::Crop => self.crop_dialog(),
+                    Overlay::Switcher { query, index } => self.switcher_dialog(session, query, *index),
+                    Overlay::Shortcuts => self.shortcuts_dialog(),
                 };
                 let dim = if matches!(overlay, Overlay::Image(_)) { 0.88 } else { 0.6 };
+                // The backdrop fades in while the dialog pops up.
+                let dim = dim * ((self.pop(self.popped) - 0.9) / 0.1).clamp(0.0, 1.0);
+                let content = crate::widgets::pop(content, self.pop(self.popped));
                 let backdrop = mouse_area(
                     center(opaque(content))
                         .style(bg(Color::from_rgba(0.0, 0.0, 0.0, dim)))
@@ -216,7 +233,11 @@ impl App {
         let home_icon =
             icons::icon(&icons::DIRECT, 26.0, if home_selected { contrast_text(t.accent.0) } else { t.text.0 });
         let mut home = stack![tile(home_icon, home_color, home_selected, Message::ShowHome)];
-        let unread = s.unread_directs();
+        // Pings first (like Discord), else how many conversations have something new.
+        let unread = match s.direct_mentions() {
+            0 => s.unread_directs() as u32,
+            n => n,
+        };
         if unread > 0 {
             let danger = t.danger.0;
             let badge = container(text(unread.min(99).to_string()).size(fs * 0.7).font(BOLD).color(Color::WHITE))
@@ -237,6 +258,7 @@ impl App {
         let accent = t.accent.0;
         let server_unread = s.channels.iter().any(|c| c.kind == ChannelKind::Text && s.is_unread(c.id));
         let label = text(initials).size(fs * 1.1).font(BOLD).color(contrast_text(accent));
+        let server_pings = s.server_mentions();
         let server_pill: Element<'a, Message> = if server_selected {
             pill(40.0).into()
         } else if server_unread {
@@ -252,7 +274,19 @@ impl App {
             column![
                 entry(home_pill, home.into()),
                 container(divider(t.hover.0)).width(32),
-                entry(server_pill, tile(label.into(), accent, server_selected, Message::ShowServer).into()),
+                entry(server_pill, {
+                    let mut t2 = stack![tile(label.into(), accent, server_selected, Message::ShowServer)];
+                    if server_pings > 0 {
+                        t2 = t2.push(
+                            container(mention_badge(t, server_pings, fs))
+                                .width(48)
+                                .height(48)
+                                .align_x(Alignment::End)
+                                .align_y(Alignment::End),
+                        );
+                    }
+                    t2.into()
+                }),
             ]
             .spacing(10)
             .align_x(Alignment::Center),
@@ -268,7 +302,7 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let mut category = row![label(t, title, fs), space::horizontal()].align_y(Alignment::Center);
-        if s.is_owner() {
+        if s.can(syncord_proto::perms::MANAGE_CHANNELS) {
             category = category.push(
                 button(text("+").size(fs * 1.2))
                     .padding([0, 6])
@@ -301,7 +335,11 @@ impl App {
             if let Some(c) = name_color {
                 name = name.color(c);
             }
-            let line = row![text("#").size(fs * 1.25).color(t.muted.0), name].spacing(6).align_y(Alignment::Center);
+            let mut line =
+                row![text("#").size(fs * 1.25).color(t.muted.0), name.width(Length::Fill)].spacing(6).align_y(Alignment::Center);
+            if s.mention_count(ch.id) > 0 && !selected {
+                line = line.push(mention_badge(t, s.mention_count(ch.id), fs));
+            }
             list = list.push(
                 button(line)
                     .width(Length::Fill)
@@ -355,7 +393,7 @@ impl App {
         let fs = self.fs();
         let speaking = self.speaking.contains(&u.id);
         let ring = if speaking { t.online.0 } else { Color::TRANSPARENT };
-        let pic = container(avatar(u.name(), &u.profile, 22.0)).padding(2).style(move |_| container::Style {
+        let pic = container(self.avatar(u, 22.0)).padding(2).style(move |_| container::Style {
             border: Border { radius: 14.0.into(), width: 2.0, color: ring },
             ..Default::default()
         });
@@ -385,7 +423,9 @@ impl App {
             (None, Some(id)) => (id, false),
             (None, None) => return space().into(),
         };
-        let channel = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.name.as_str()).unwrap_or("?");
+        let dm_name = s.direct(channel_id).and_then(|d| s.users.get(&d.user_id)).map(|u| format!("Call with {}", u.name()));
+        let channel = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.name.clone()).or(dm_name).unwrap_or_default();
+        let channel = channel.as_str();
         let (title, color) = if connected { ("Voice Connected", t.online.0) } else { ("Connecting...", rgb(0xF0B232)) };
         let route = if !connected {
             String::new()
@@ -443,7 +483,7 @@ impl App {
         let ears = if self.deafened { &icons::HEADPHONES_OFF } else { &icons::HEADPHONES_ON };
 
         let content = row![
-            avatar_with_status(t, me.name(), &me.profile, 32.0, !self.reconnecting, t.user_panel.0),
+            self.avatar_status(me, 32.0, !self.reconnecting, t.user_panel.0),
             column![
                 text(truncate(me.name(), 11)).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
                 text(status).size(fs * 0.75).color(t.muted.0),
@@ -481,13 +521,24 @@ impl App {
             }
         }
         header = header.push(space::horizontal());
-        if let Some(ch) = channel.as_ref().filter(|_| s.is_owner() && s.channels.len() > 1 && !is_direct) {
+        if let Some(ch) = channel.as_ref().filter(|_| s.can(syncord_proto::perms::MANAGE_CHANNELS) && s.channels.len() > 1 && !is_direct) {
             header = header.push(
                 button(text("Delete channel").size(fs * 0.8))
                     .padding([4, 8])
                     .on_press(Message::AskDeleteChannel(ch.id))
                     .style(style::icon_button(t)),
             );
+        }
+        if let Some(ch) = channel.as_ref().filter(|_| is_direct) {
+            let in_call = self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id) || self.voice_joining == Some(ch.id);
+            if !in_call {
+                header = header.push(
+                    button(icons::icon(&icons::PHONE, fs * 1.3, t.text.0))
+                        .padding([4, 8])
+                        .on_press(Message::JoinVoice(ch.id))
+                        .style(style::icon_button(t)),
+                );
+            }
         }
         if !is_direct {
             header = header.push(
@@ -500,6 +551,11 @@ impl App {
         let header = container(header).padding([0, 16]).height(48).width(Length::Fill).align_y(Alignment::Center);
 
         let mut col = column![header, divider(style::darken(t.chat.0, 0.25))];
+        if let Some(ch) = channel.as_ref().filter(|_| is_direct)
+            && let Some(bar) = self.call_bar(s, ch.id)
+        {
+            col = col.push(bar);
+        }
 
         if self.reconnecting {
             col = col.push(
@@ -535,7 +591,7 @@ impl App {
         let chat = container(col).width(Length::Fill).height(Length::Fill).style(bg(t.chat.0));
         // Always a stack, so opening the picker doesn't reset the chat's scroll position or focus.
         let picker: Element<'a, Message> = match self.emoji_picker_view().filter(|_| has_channel) {
-            Some(picker) => container(opaque(picker))
+            Some(picker) => container(opaque(crate::widgets::pop(picker, self.pop(self.picker_popped))))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .align_x(Alignment::End)
@@ -567,7 +623,7 @@ impl App {
             Some(st) if st.loaded && st.reached_start => {
                 let (badge, title, line): (Element<'a, Message>, String, String) = match channel.direct_with {
                     Some(u) => (
-                        avatar(u.name(), &u.profile, 68.0),
+                        self.avatar(u, 68.0),
                         u.name().to_owned(),
                         format!("This is the beginning of your direct messages with {}.", u.name()),
                     ),
@@ -632,13 +688,21 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let author = s.users.get(&m.author_id);
+        if self.hides(s, m.author_id) && !self.revealed.contains(&m.id) {
+            return self.hidden_message(s, m);
+        }
         let name = author.map(User::name).unwrap_or("Unknown user");
-        let name_color = author.map(|u| rgb(u.profile.accent_color)).unwrap_or(t.header.0);
+        // Like Discord: your highest coloured role, else your profile colour.
+        let name_color = match (s.role_color(m.author_id), author) {
+            (Some(c), _) => rgb(c),
+            (None, Some(u)) => rgb(u.profile.accent_color),
+            (None, None) => t.header.0,
+        };
         let hovered = self.hovered == Some(m.id);
         let editing = self.editing.as_ref().filter(|(id, _)| *id == m.id);
 
         let jumbo = crate::emoji::is_jumbo(&m.content);
-        let body_text = style::rich_message(&m.content, if jumbo { fs * 2.6 } else { fs }, t.text.0);
+        let body_text = self.message_text(s, &m.content, if jumbo { fs * 2.6 } else { fs });
         let body: Element<'a, Message> = match editing {
             Some((_, value)) => column![
                 text_input("", value)
@@ -671,6 +735,9 @@ impl App {
                 if let Some(files) = self.attachments_view(m) {
                     col = col.push(files);
                 }
+                if let Some(embeds) = self.embeds_view(m) {
+                    col = col.push(embeds);
+                }
                 if let Some(reactions) = self.reactions_view(s, m) {
                     col = col.push(reactions);
                 }
@@ -681,10 +748,13 @@ impl App {
         let content: Element<'a, Message> = if self.settings.compact {
             row![
                 text(short_time(m.created_at)).size(fs * 0.75).color(t.muted.0).width(64),
-                button(text(name.to_owned()).size(fs).font(SEMIBOLD).color(name_color))
-                    .padding(0)
-                    .on_press(Message::ShowProfile(m.author_id))
-                    .style(style::link_button(name_color, name_color)),
+                self.with_user_menu(
+                    button(text(name.to_owned()).size(fs).font(SEMIBOLD).color(name_color))
+                        .padding(0)
+                        .on_press(Message::ShowProfile(m.author_id))
+                        .style(style::link_button(name_color, name_color)),
+                    m.author_id
+                ),
                 container(body).width(Length::Fill),
             ]
             .spacing(8)
@@ -706,21 +776,26 @@ impl App {
             .into()
         } else {
             let pic: Element<'a, Message> = match author {
-                Some(u) => button(avatar(u.name(), &u.profile, 40.0))
-                    .padding(0)
-                    .on_press(Message::ShowProfile(u.id))
-                    .style(style::link_button(t.text.0, t.text.0))
-                    .into(),
+                Some(u) => self.with_user_menu(
+                    button(self.avatar(u, 40.0))
+                        .padding(0)
+                        .on_press(Message::ShowProfile(u.id))
+                        .style(style::link_button(t.text.0, t.text.0)),
+                    u.id,
+                ),
                 None => container(space()).width(40).height(40).style(card(t.hover.0, 20.0)).into(),
             };
             row![
                 pic,
                 column![
                     row![
-                        button(text(name.to_owned()).size(fs).font(SEMIBOLD).color(name_color))
-                            .padding(0)
-                            .on_press(Message::ShowProfile(m.author_id))
-                            .style(style::link_button(name_color, name_color)),
+                        self.with_user_menu(
+                            button(text(name.to_owned()).size(fs).font(SEMIBOLD).color(name_color))
+                                .padding(0)
+                                .on_press(Message::ShowProfile(m.author_id))
+                                .style(style::link_button(name_color, name_color)),
+                            m.author_id
+                        ),
                         text(long_time(m.created_at)).size(fs * 0.75).color(t.muted.0),
                     ]
                     .spacing(8)
@@ -756,7 +831,7 @@ impl App {
                 );
             }
             let danger = t.danger.0;
-            if mine || (s.is_owner() && in_server) {
+            if mine || (s.can(syncord_proto::perms::MANAGE_MESSAGES) && in_server) {
                 tools = tools.push(
                     button(text("Delete").size(fs * 0.8))
                         .padding([2, 8])
@@ -767,10 +842,22 @@ impl App {
             line = line.push(container(tools).padding(2).style(card(t.floating.0, t.radius * 0.6)));
         }
 
-        let hover_bg = if hovered { Some(with_alpha(style::darken(t.chat.0, 0.12), 1.0)) } else { None };
+        // Messages that ping you get a gold tint and a bar on the left, like Discord.
+        let pinged = s.mentions_me(m);
+        let gold = Color::from_rgb8(0xF0, 0xB2, 0x32);
+        let hover_bg = match (pinged, hovered) {
+            (true, true) => Some(with_alpha(gold, 0.14)),
+            (true, false) => Some(with_alpha(gold, 0.09)),
+            (false, true) => Some(with_alpha(style::darken(t.chat.0, 0.12), 1.0)),
+            (false, false) => None,
+        };
+        let bar_color = if pinged { gold } else { Color::TRANSPARENT };
+        let bar = container(space()).width(2).height(Length::Fill).style(move |_| container::Style {
+            background: Some(bar_color.into()),
+            ..Default::default()
+        });
         mouse_area(
-            container(line)
-                .padding([2, 16])
+            container(row![bar, container(line).padding([2, 14]).width(Length::Fill)])
                 .width(Length::Fill)
                 .style(move |_| container::Style { background: hover_bg.map(Into::into), ..Default::default() }),
         )
@@ -784,18 +871,25 @@ impl App {
         let fs = self.fs();
         let placeholder =
             if ch.direct_with.is_some() { format!("Message @{}", ch.name) } else { format!("Message #{}", ch.name) };
-        let input = text_input(&placeholder, &self.composer)
+        let suggestions = self.composer_suggestions().len();
+        let empty = self.composer.is_empty();
+        let (text_color, muted, accent) = (t.text.0, t.muted.0, t.accent.0);
+        let input = iced::widget::text_editor(&self.editor)
             .id(Id::new(COMPOSER_ID))
-            .on_input(Message::ComposerChanged)
-            .on_submit(Message::SendMessage)
-            .padding(Padding { top: 14.0, bottom: 14.0, left: 4.0, right: 4.0 })
+            .placeholder(placeholder)
+            .on_action(Message::EditorAction)
+            .key_binding(move |kp| crate::composer::key_binding(kp, suggestions, empty))
+            .padding(Padding { top: 13.0, bottom: 13.0, left: 4.0, right: 4.0 })
             .size(fs)
-            .style(move |theme, status| {
-                let mut st = style::input(t, t.floating.0)(theme, status);
-                // The surrounding box draws the background and focus border.
-                st.background = Color::TRANSPARENT.into();
-                st.border.width = 0.0;
-                st
+            .height(Length::Shrink)
+            .max_height(fs * 15.0)
+            // The surrounding box draws the background.
+            .style(move |_, _| iced::widget::text_editor::Style {
+                background: Color::TRANSPARENT.into(),
+                border: Border::default(),
+                placeholder: muted,
+                value: text_color,
+                selection: with_alpha(accent, 0.4),
             });
         let floating = t.floating.0;
         let radius = t.radius;
@@ -821,9 +915,9 @@ impl App {
                     .style(style::icon_button(t)),
             ]
             .spacing(2)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::End),
         )
-        .padding([0, 6])
+        .padding(Padding { top: 0.0, bottom: 3.0, left: 6.0, right: 6.0 })
         .style(move |_| container::Style {
             background: Some(floating.into()),
             border: Border { radius: radius.into(), ..Default::default() },
@@ -862,21 +956,38 @@ impl App {
         let fs = self.fs();
         let mut users: Vec<&User> = s.users.values().collect();
         users.sort_by_key(|u| u.name().to_lowercase());
-        let (online, offline): (Vec<&User>, Vec<&User>) = users.into_iter().partition(|u| s.online.contains(&u.id));
+
+        // Like Discord: online people under their highest "show separately" role, then
+        // everyone else online, then offline.
+        let mut groups: Vec<(String, Vec<&User>, bool)> = Vec::new();
+        for r in s.roles.iter().filter(|r| r.hoist) {
+            let members: Vec<&User> = users
+                .iter()
+                .copied()
+                .filter(|u| s.online.contains(&u.id) && s.hoisted_role(u.id).is_some_and(|h| h.id == r.id))
+                .collect();
+            groups.push((r.name.clone(), members, true));
+        }
+        let rest: Vec<&User> =
+            users.iter().copied().filter(|u| s.online.contains(&u.id) && s.hoisted_role(u.id).is_none()).collect();
+        groups.push(("Online".into(), rest, true));
+        let offline: Vec<&User> = users.iter().copied().filter(|u| !s.online.contains(&u.id)).collect();
+        groups.push(("Offline".into(), offline, false));
 
         let mut list = column![].spacing(2).padding([16, 8]);
-        for (title, group, is_online) in [("Online", online, true), ("Offline", offline, false)] {
+        for (title, group, is_online) in groups {
             if group.is_empty() {
                 continue;
             }
             list = list.push(container(label(t, format!("{title} — {}", group.len()), fs)).padding([8, 8]));
             for u in group {
-                let name_color = if is_online { rgb(u.profile.accent_color) } else { t.muted.0 };
+                let color = s.role_color(u.id).unwrap_or(u.profile.accent_color);
+                let name_color = if is_online { rgb(color) } else { t.muted.0 };
                 let mut info = column![text(u.name().to_owned()).size(fs * 0.95).font(SEMIBOLD).color(name_color)];
                 if !u.profile.status_text.is_empty() {
                     info = info.push(text(truncate(&u.profile.status_text, 24)).size(fs * 0.75).color(t.muted.0));
                 }
-                let row_content = row![avatar_with_status(t, u.name(), &u.profile, 32.0, is_online, t.sidebar.0), info]
+                let row_content = row![self.avatar_status(u, 32.0, is_online, t.sidebar.0), info]
                     .spacing(12)
                     .align_y(Alignment::Center);
                 let mut entry = button(row_content)
@@ -887,7 +998,7 @@ impl App {
                 if !is_online {
                     entry = entry.style(dimmed(style::row_button(t, false)));
                 }
-                list = list.push(entry);
+                list = list.push(self.with_user_menu(entry, u.id));
             }
         }
 
@@ -905,7 +1016,7 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let mut profile =
-            column![style::profile_card(t, &u.username, &u.profile, u.is_owner, s.online.contains(&u.id), fs)]
+            column![self.profile_card(s, u, s.online.contains(&u.id), true)]
                 .spacing(8)
                 .width(320);
         if u.id != s.me {
@@ -1055,6 +1166,15 @@ impl App {
             nav_item("Appearance", SettingsTab::Appearance),
             nav_item("Voice & Audio", SettingsTab::Voice),
             space().height(12),
+        ]
+        .spacing(4)
+        .width(200);
+        let mut nav = nav;
+        if s.can(syncord_proto::perms::MANAGE_ROLES) {
+            nav = nav.push(label(t, "Server settings", fs)).push(nav_item("Roles", SettingsTab::Roles)).push(space().height(12));
+        }
+        let nav = nav.push(column![
+            divider(t.hover.0),
             divider(t.hover.0),
             button(text("Log Out").size(fs))
                 .width(Length::Fill)
@@ -1062,13 +1182,13 @@ impl App {
                 .on_press(Message::Logout)
                 .style(style::link_button(danger, style::darken(danger, 0.2))),
         ]
-        .spacing(4)
-        .width(200);
+        .spacing(4));
 
         let content = match tab {
             SettingsTab::Profile => self.profile_settings(s),
             SettingsTab::Appearance => self.appearance_settings(),
             SettingsTab::Voice => self.voice_settings(),
+            SettingsTab::Roles => self.roles_settings(s),
         };
 
         let close = column![
@@ -1153,6 +1273,12 @@ impl App {
             ]
             .spacing(8),
             column![
+                label(t, "Pronouns", fs),
+                input("e.g. she/her, they/them", &d.pronouns, |s| Message::Draft(DraftField::Pronouns(s)))
+            ]
+            .spacing(8),
+            self.picture_buttons(me),
+            column![
                 label(t, "Custom status", fs),
                 input("What are you up to?", &d.status, |s| Message::Draft(DraftField::Status(s)))
             ]
@@ -1201,7 +1327,7 @@ impl App {
                 form,
                 column![
                     label(t, "Preview", fs),
-                    style::profile_card(t, &me.username, &preview_profile, me.is_owner, true, fs),
+                    self.profile_card(s, &User { profile: preview_profile.clone(), ..me.clone() }, true, true),
                 ]
                 .spacing(8),
             ]
@@ -1422,6 +1548,14 @@ impl App {
             let server =
                 if s.server_version.is_empty() { "older than 0.3".to_string() } else { s.server_version.clone() };
             col = col.push(text(format!("Server version: {server}")).size(fs * 0.85).color(t.muted.0));
+            let (security, color) = match &self.encrypted {
+                Some(Some(print)) => (format!("Connection: encrypted (server fingerprint {})", &print[..23.min(print.len())]), t.online.0),
+                Some(None) => ("Connection: not encrypted. Updating the server turns encryption on.".to_string(), t.danger.0),
+                None => (String::new(), t.muted.0),
+            };
+            if !security.is_empty() {
+                col = col.push(text(security).size(fs * 0.85).color(color));
+            }
             if s.is_owner()
                 && syncord_update::is_newer(
                     VERSION,
@@ -1565,6 +1699,19 @@ fn dimmed(
 }
 
 /// Shorten to `max` characters with an ellipsis so sidebars stay on one line.
+/// The red count of unread pings.
+pub(crate) fn mention_badge<'a>(t: &AppTheme, count: u32, fs: f32) -> Element<'a, Message> {
+    let danger = t.danger.0;
+    container(text(count.min(99).to_string()).size(fs * 0.7).font(BOLD).color(Color::WHITE))
+        .padding([1, 6])
+        .style(move |_| container::Style {
+            background: Some(danger.into()),
+            border: Border { radius: 9.0.into(), ..Default::default() },
+            ..Default::default()
+        })
+        .into()
+}
+
 pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()

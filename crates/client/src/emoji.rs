@@ -2,8 +2,8 @@
 
 use emojis::{Emoji, EmojiVersion, Group};
 
-/// Newest emoji offered: anything newer shows as a box on Windows 10 and older Linux systems.
-const NEWEST: EmojiVersion = EmojiVersion::new(13, 0);
+/// Newest emoji offered: the bundled Twemoji font has everything up to Emoji 15.
+const NEWEST: EmojiVersion = EmojiVersion::new(15, 0);
 
 fn supported(e: &Emoji) -> bool {
     e.emoji_version() <= NEWEST
@@ -175,8 +175,9 @@ mod tests {
         assert!(search("red heart", 5).iter().any(|e| e.as_str() == "❤️"));
         assert!(search("", 5).is_empty());
         assert!(group(0).count() > 100);
-        assert!(group(0).all(supported), "nothing too new for older systems");
-        assert!(search("melting", 5).is_empty(), "the melting face (2021) is filtered out");
+        assert!(group(0).all(supported), "nothing newer than the bundled font");
+        assert!(!search("melting", 5).is_empty(), "the melting face (2021) is in Twemoji");
+        assert!(!search("shaking face", 5).is_empty(), "so is Emoji 15");
     }
 
     #[test]

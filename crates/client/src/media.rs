@@ -170,6 +170,43 @@ pub async fn save(
     result.map(|()| path.display().to_string())
 }
 
+/// Download a profile picture or banner and decode it (`animate`: keep a GIF's frames).
+pub async fn load_profile_image(
+    http: reqwest::Client,
+    base: String,
+    token: String,
+    id: String,
+    max_side: u32,
+    animate: bool,
+) -> Result<Arc<Picture>, String> {
+    let url = format!("{base}{}/{id}", syncord_proto::PROFILE_IMAGE_PATH);
+    let resp = http.get(url).bearer_auth(token).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(describe(resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || if animate { decode(&bytes, max_side) } else { decode_still(&bytes, max_side) })
+        .await
+        .map_err(|e| e.to_string())?
+        .map(Arc::new)
+}
+
+/// Decode just the first frame (cheap to keep many of).
+pub fn decode_still(bytes: &[u8], max_side: u32) -> Result<Picture, String> {
+    let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+    let img = if img.width().max(img.height()) > max_side { img.thumbnail(max_side, max_side) } else { img };
+    Ok(still(img.to_rgba8()))
+}
+
+/// Cache keys for profile pictures and banners.
+pub fn avatar_key(id: &str, animated: bool) -> String {
+    if animated { format!("pfp:{id}:anim") } else { format!("pfp:{id}") }
+}
+
+pub fn banner_key(id: &str) -> String {
+    format!("banner:{id}")
+}
+
 /// Download and decode a picture from the web (GIF search previews).
 pub async fn load_url(http: reqwest::Client, url: String, max_side: u32) -> Result<Arc<Picture>, String> {
     let resp = http.get(url).send().await.map_err(|e| e.to_string())?;

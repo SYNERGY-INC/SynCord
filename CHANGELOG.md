@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.5.0
+
+**New: roles, @mentions, right-click menus, profile pictures and banners, link previews, and encryption.**
+
+- **Encrypted connections.** Messages, files, logins and voice are now encrypted between the app
+  and the server. The first time you connect, SynCord remembers the server's identity and refuses
+  impostors after that. Nothing to set up.
+- **Roles.** Server settings → Roles: give people a colour, a place in the member list, and
+  permissions (manage channels, delete messages, ping @everyone, and more). Right-click someone to
+  give them a role.
+- **@mentions.** Type `@` to pick someone (or a role, or @everyone). Pings highlight the message,
+  show a red badge on the channel and play a sound.
+- **Shift+Enter** starts a new line, and Up in an empty box edits your last message.
+- **Right-click anyone** for Profile, Message, Start a Call, Roles, Ignore, Block and Copy ID.
+- **Calls in direct messages**, with a ringing popup for the person you call.
+- **Profile pictures and banners**: upload a picture or GIF and crop it, Discord-style. GIFs stay
+  animated. Plus **pronouns** on your profile.
+- **Links** are clickable and get a preview card (title, description, picture).
+- **Keyboard shortcuts** like Discord's: Ctrl+K to jump anywhere, Alt+Up/Down between channels,
+  Ctrl+Shift+M to mute and more. Ctrl+/ lists them all.
+- **Twemoji**, the same emoji Discord uses, on every computer, including the newest emoji.
+- Remove GIFs from your favourites with the star in the GIF picker.
+- Long file names no longer run out of their box.
+- Menus and dialogs pop open with a little bounce.
+
 ## v0.4.0
 
 **New: paste screenshots, send files up to 1 GB, and search for GIFs.**

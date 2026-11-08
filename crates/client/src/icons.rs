@@ -123,3 +123,17 @@ pub fn icon<'a, M: 'a>(handle: &LazyLock<Handle>, size: f32, color: Color) -> El
         .style(move |_, _| svg::Style { color: Some(color) })
         .into()
 }
+icon!(
+    PHONE,
+    r#"<path d="M6.6 3.2l2.6 0.4 1.3 4-2 1.6c1 2.3 2.9 4.2 5.2 5.2l1.6-2 4 1.3 0.4 2.6c0.1 1-0.6 1.9-1.6 2.1C10.6 18.9 5 13.4 4.4 6.4 4.3 5.4 5.1 4.6 6.1 4.4z" fill="black"/>"#
+);
+icon!(PLAY, r#"<path d="M7 4.5v15l12.5-7.5z" fill="black"/>"#);
+icon!(PAUSE, r#"<rect x="6" y="4.5" width="4" height="15" rx="1" fill="black"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="black"/>"#);
+icon!(
+    VOLUME,
+    r#"<path d="M3.5 9h4l5-4.5v15l-5-4.5h-4z" fill="black"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" stroke="black" stroke-width="2" fill="none" stroke-linecap="round"/>"#
+);
+icon!(
+    VOLUME_OFF,
+    r#"<path d="M3.5 9h4l5-4.5v15l-5-4.5h-4z" fill="black"/><path d="M16 9l5 6M21 9l-5 6" stroke="black" stroke-width="2" stroke-linecap="round"/>"#
+);

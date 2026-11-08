@@ -42,6 +42,11 @@ pub struct Settings {
 
     /// Certificate fingerprints of servers we've connected to (host:port -> fingerprint).
     pub known_servers: HashMap<String, String>,
+
+    /// People whose messages are folded away, per server (only on this computer).
+    pub ignored: HashMap<String, Vec<i64>>,
+    /// Play a sound when someone mentions you.
+    pub ping_sound: bool,
 }
 
 /// A GIF starred for quick re-sending (remembered per server).
@@ -73,6 +78,8 @@ impl Default for Settings {
             recent_emoji: Vec::new(),
             favorite_gifs: Vec::new(),
             known_servers: HashMap::new(),
+            ignored: HashMap::new(),
+            ping_sound: true,
         }
     }
 }
@@ -82,6 +89,19 @@ fn path() -> Option<PathBuf> {
 }
 
 impl Settings {
+    /// People ignored on this server.
+    pub fn ignored_here(&self, server: &str) -> &[i64] {
+        self.ignored.get(&crate::net::server_key(server)).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn set_ignored(&mut self, server: &str, user: i64, ignored: bool) {
+        let list = self.ignored.entry(crate::net::server_key(server)).or_default();
+        list.retain(|u| *u != user);
+        if ignored {
+            list.push(user);
+        }
+    }
+
     pub fn voice_config(&self) -> crate::voice::VoiceConfig {
         crate::voice::VoiceConfig {
             input_device: self.input_device.clone(),

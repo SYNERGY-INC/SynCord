@@ -47,7 +47,13 @@ pub enum Message {
 
     // Chat
     SelectChannel(ChannelId),
-    ComposerChanged(String),
+    /// Typing in the message box.
+    EditorAction(iced::widget::text_editor::Action),
+    SuggestionMove(i32),
+    /// Pick a suggestion (`usize::MAX`: the highlighted one).
+    AcceptSuggestion(usize),
+    /// Up arrow in an empty message box: edit your last message.
+    EditLast,
     SendMessage,
     LoadOlder,
     HoverMessage(Option<MessageId>),
@@ -128,7 +134,6 @@ pub enum Message {
     EmojiSearch(String),
     PickerTab(PickerTab),
     PickEmoji(String),
-    PickEmojiSuggestion(String),
     ToggleReaction(MessageId, String),
     /// The search box hasn't changed for a moment: search for GIFs.
     GifSearchDue(String),
@@ -153,6 +158,49 @@ pub enum Message {
 
     Tick,
     Escape,
+    WindowFocused(bool),
+    /// Open a link from a message in the browser.
+    OpenLink(String),
+    /// Show a folded-away message from someone blocked or ignored.
+    RevealMessage(MessageId),
+    /// Call someone in your direct messages.
+    StartCall(UserId),
+    ToggleIgnore(UserId),
+    ToggleBlock(UserId),
+    ToggleUserRole(UserId, syncord_proto::RoleId),
+    CopyText(String),
+
+    // Profile pictures and banners
+    /// Choose a picture to crop (`true`: banner).
+    PickProfileImage(bool),
+    CropLoaded(bool, Option<Result<Arc<crate::crop::Source>, String>>),
+    CropZoom(f32),
+    CropScroll(f32),
+    CropPointer(iced::Point),
+    CropDrag(bool),
+    CropApply,
+    CropDone(Result<(), String>),
+    CropCancel,
+    RemoveProfileImage(bool),
+
+    // Roles (server settings)
+    CreateRole,
+    SelectRole(syncord_proto::RoleId),
+    RoleName(String),
+    RoleColor(String),
+    RoleHoist(bool),
+    RolePermission(u64, bool),
+    SaveRole,
+    ResetRole,
+    DeleteRole(syncord_proto::RoleId),
+    /// Move a role up (true) or down one place.
+    MoveRole(syncord_proto::RoleId, bool),
+    /// Not now, to an incoming call.
+    DismissCall,
+    Shortcut(crate::shortcuts::Shortcut),
+    SwitcherQuery(String),
+    /// Go to a quick switcher result (`usize::MAX`: the highlighted one).
+    SwitcherGo(usize),
 }
 
 /// What a picked emoji is for.
@@ -246,6 +294,7 @@ pub enum DraftField {
     Accent(String),
     Banner(String),
     Ring(AvatarRing),
+    Pronouns(String),
     RingColor(String),
 }
 
@@ -254,6 +303,7 @@ pub enum SettingsTab {
     Profile,
     Appearance,
     Voice,
+    Roles,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -263,6 +313,12 @@ pub enum Overlay {
     ConfirmDelete(ChannelId),
     Image(Attachment),
     NewDirect,
+    /// Cropping a new profile picture or banner (see `App::crop`).
+    Crop,
+    /// Ctrl+K.
+    Switcher { query: String, index: usize },
+    /// Ctrl+/.
+    Shortcuts,
 }
 
 #[derive(Default)]
@@ -305,6 +361,11 @@ pub struct Session {
     /// Server channel to go back to when leaving the DM home.
     pub last_server_channel: Option<ChannelId>,
     pub server_version: String,
+    /// Highest first.
+    pub roles: Vec<syncord_proto::Role>,
+    pub blocked: HashSet<UserId>,
+    /// Unread pings per channel.
+    pub mention_counts: HashMap<ChannelId, u32>,
     /// GIF search service the server offers, if any.
     pub gif_provider: Option<String>,
     /// Largest upload the server accepts, in MB (0 if it doesn't say).
@@ -363,6 +424,33 @@ pub struct ProfileDraft {
     pub banner: String,
     pub ring: AvatarRing,
     pub ring_color: String,
+    pub pronouns: String,
+}
+
+/// A role being edited in the server settings.
+#[derive(Debug, Clone, Default)]
+pub struct RoleDraft {
+    pub id: syncord_proto::RoleId,
+    pub name: String,
+    /// Colour as typed ("" for none).
+    pub color: String,
+    pub permissions: u64,
+    pub hoist: bool,
+    /// Changed since it was loaded (so updates from others don't overwrite your typing).
+    pub dirty: bool,
+}
+
+impl RoleDraft {
+    pub fn from_role(r: &syncord_proto::Role) -> Self {
+        Self {
+            id: r.id,
+            name: r.name.clone(),
+            color: r.color.map(|c| format!("#{c:06X}")).unwrap_or_default(),
+            permissions: r.permissions,
+            hoist: r.hoist,
+            dirty: false,
+        }
+    }
 }
 
 impl ProfileDraft {
@@ -376,6 +464,7 @@ impl ProfileDraft {
             banner: format!("#{:06X}", p.banner_color),
             ring: p.avatar_ring,
             ring_color: format!("#{:06X}", p.ring_color),
+            pronouns: p.pronouns.clone(),
         }
     }
 
@@ -391,6 +480,9 @@ impl ProfileDraft {
             banner_color: color(&self.banner, base.banner_color),
             avatar_ring: self.ring,
             ring_color: color(&self.ring_color, base.ring_color),
+            pronouns: self.pronouns.clone(),
+            avatar: base.avatar.clone(),
+            banner: base.banner.clone(),
         }
         .sanitized()
     }
@@ -425,7 +517,14 @@ pub struct App {
     pub login: LoginForm,
     pub session: Option<Session>,
 
+    /// The message box's text (kept in step with `editor`).
     pub composer: String,
+    pub editor: iced::widget::text_editor::Content,
+    /// Mentions picked from suggestions: how they're shown, and how they're sent.
+    pub(crate) composer_mentions: Vec<(String, String)>,
+    pub suggestion_index: usize,
+    /// Same, for the message being edited.
+    pub(crate) edit_mentions: Vec<(String, String)>,
     last_typing_sent: Option<Instant>,
     pub hovered: Option<MessageId>,
     pub editing: Option<(MessageId, String)>,
@@ -465,9 +564,23 @@ pub struct App {
     pub encrypted: Option<Option<String>>,
     /// Set when a known server showed a different certificate: the one it showed.
     pub identity_changed: Option<String>,
+    /// Whether the window has keyboard focus (mentions don't ping while you're reading).
+    pub focused: bool,
+    pub role_editing: Option<RoleDraft>,
+    /// Folded-away messages the user chose to see.
+    pub revealed: HashSet<MessageId>,
+    pub crop: Option<crate::crop::CropState>,
+    /// A direct-message call someone started that you haven't joined or dismissed.
+    pub ringing: Option<ChannelId>,
+    /// When the current dialog, picker and call card opened (for their pop-in).
+    pub(crate) popped: Instant,
+    pub(crate) picker_popped: Instant,
+    pub(crate) call_popped: Instant,
     /// Picture being copied from the viewer, and whether it's done.
     pub copying: Option<(String, bool)>,
     pub(crate) pending_direct: Option<UserId>,
+    /// Call this person as soon as the DM with them is open.
+    pub(crate) pending_call: Option<UserId>,
     pub update: crate::updater::Stage,
 }
 
@@ -495,6 +608,10 @@ impl App {
             reconnecting: false,
             session: None,
             composer: String::new(),
+            editor: iced::widget::text_editor::Content::new(),
+            composer_mentions: Vec::new(),
+            suggestion_index: 0,
+            edit_mentions: Vec::new(),
             last_typing_sent: None,
             hovered: None,
             editing: None,
@@ -527,8 +644,17 @@ impl App {
             server_url: None,
             encrypted: None,
             identity_changed: None,
+            focused: true,
+            role_editing: None,
+            revealed: HashSet::new(),
+            crop: None,
+            ringing: None,
+            popped: Instant::now(),
+            picker_popped: Instant::now(),
+            call_popped: Instant::now(),
             copying: None,
             pending_direct: None,
+            pending_call: None,
             update: crate::updater::Stage::Checking,
         };
 
@@ -577,6 +703,14 @@ impl App {
                 ..
             }) => Some(Message::Escape),
             iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FilesChosen(vec![path])),
+            iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(true)),
+            iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowFocused(false)),
+            // Ctrl+K and friends (plain arrow keys only matter while the quick switcher is open).
+            iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. })
+                if crate::shortcuts::from_key(&key, physical_key, modifiers, true).is_some() =>
+            {
+                crate::shortcuts::from_key(&key, physical_key, modifiers, true).map(Message::Shortcut)
+            }
             // Match the letter or the key's position, so it works with any keyboard layout.
             iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. })
                 if modifiers.command() && !modifiers.alt() =>
@@ -618,7 +752,10 @@ impl App {
         if !self.downloads.is_empty() || self.pending.iter().any(|p| matches!(p.state, UploadState::Uploading)) {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::TransferTick));
         }
-        if self.wants_animation() {
+        if self.animating_pops() {
+            // Smooth while something pops in (a fraction of a second).
+            subs.push(iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimationTick));
+        } else if self.wants_animation() {
             subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
         }
         Subscription::batch(subs)
@@ -633,6 +770,18 @@ impl App {
         let pin = self.settings.known_servers.get(&net::server_key(&self.settings.server)).cloned();
         let stream = net::connect(self.settings.server.clone(), pin, self.voice_sink.clone());
         Task::run(stream, move |event| Message::Net(generation, event))
+    }
+
+    /// Tell others you're typing (at most every few seconds).
+    pub(crate) fn typed(&mut self) -> Task<Message> {
+        if !self.composer.trim().is_empty()
+            && self.last_typing_sent.is_none_or(|t| t.elapsed() > TYPING_RESEND_AFTER)
+            && let Some(channel_id) = self.session.as_ref().and_then(|s| s.current)
+        {
+            self.send(ClientMsg::Typing { channel_id });
+            self.last_typing_sent = Some(Instant::now());
+        }
+        Task::none()
     }
 
     /// The server's web address for files and pictures (`https://...` when encrypted).
@@ -654,6 +803,36 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // Note when a dialog, menu or picker opens, so it can pop in.
+        let before = (self.overlay.as_ref().map(std::mem::discriminant), self.emoji_picker.is_some(), self.ringing);
+        let task = self.update_inner(message);
+        let after = (self.overlay.as_ref().map(std::mem::discriminant), self.emoji_picker.is_some(), self.ringing);
+        if after.0.is_some() && after.0 != before.0 {
+            self.popped = Instant::now();
+            self.now = self.popped;
+        }
+        if after.1 && !before.1 {
+            self.picker_popped = Instant::now();
+            self.now = self.picker_popped;
+        }
+        if after.2.is_some() && after.2 != before.2 {
+            self.call_popped = Instant::now();
+            self.now = self.call_popped;
+        }
+        task
+    }
+
+    /// How far into its pop-in animation something opened at `at` is drawn.
+    pub(crate) fn pop(&self, at: Instant) -> f32 {
+        crate::widgets::pop_scale(self.now.saturating_duration_since(at).as_secs_f32() * 1000.0)
+    }
+
+    fn animating_pops(&self) -> bool {
+        let busy = |at: Instant| at.elapsed().as_secs_f32() * 1000.0 < crate::widgets::POP_MS + 40.0;
+        busy(self.popped) || busy(self.picker_popped) || busy(self.call_popped)
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::LoginServer(s) => self.login.server = s,
             Message::LoginUsername(s) => self.login.username = s,
@@ -719,25 +898,30 @@ impl App {
             }
 
             Message::SelectChannel(id) => return self.select_channel(id),
-            Message::ComposerChanged(s) => {
-                let typing_now = !s.trim().is_empty();
-                self.composer = s;
-                if typing_now
-                    && self.last_typing_sent.is_none_or(|t| t.elapsed() > TYPING_RESEND_AFTER)
-                    && let Some(channel_id) = self.session.as_ref().and_then(|s| s.current)
-                {
-                    self.send(ClientMsg::Typing { channel_id });
-                    self.last_typing_sent = Some(Instant::now());
+            Message::EditorAction(_) | Message::SuggestionMove(_) => return self.update_composer(message),
+            Message::AcceptSuggestion(i) => {
+                let i = if i == usize::MAX { self.suggestion_index } else { i };
+                return self.update_composer(Message::AcceptSuggestion(i));
+            }
+            Message::EditLast => {
+                let last = self.session.as_ref().and_then(|s| {
+                    let st = s.chans.get(&s.current?)?;
+                    st.messages.iter().rev().find(|m| m.author_id == s.me).map(|m| m.id)
+                });
+                if let Some(id) = last {
+                    return self.update(Message::StartEdit(id));
                 }
             }
             Message::SendMessage => {
-                // Enter while an emoji suggestion is showing picks it instead of sending.
-                if let Some((emoji, _)) = self.emoji_suggestions().first() {
-                    let emoji = emoji.as_str().to_string();
-                    self.accept_suggestion(&emoji);
+                // Enter while a suggestion is showing picks it instead of sending.
+                let suggestions = self.composer_suggestions();
+                if !suggestions.is_empty() {
+                    let pick = suggestions[self.suggestion_index.min(suggestions.len() - 1)];
+                    self.accept(pick);
                     return Task::none();
                 }
                 let content = crate::emoji::replace_shortcodes(self.composer.trim());
+                let content = self.encode_mentions(&content, &self.composer_mentions);
                 if self.pending.iter().any(|p| matches!(p.state, UploadState::Uploading)) {
                     self.notice = Some("Still uploading. Press Enter again when the files are ready.".into());
                     return Task::none();
@@ -759,7 +943,8 @@ impl App {
                         return Task::none();
                     }
                     self.send(ClientMsg::SendMessage { channel_id, content, attachments });
-                    self.composer.clear();
+                    self.set_composer(String::new());
+                    self.composer_mentions.clear();
                     self.pending.clear();
                     self.emoji_picker = None;
                     self.last_typing_sent = None;
@@ -787,7 +972,9 @@ impl App {
                     .and_then(|st| st.messages.iter().find(|m| m.id == id))
                     .map(|m| m.content.clone());
                 if let Some(content) = content {
-                    self.editing = Some((id, content));
+                    let (shown, mentions) = self.decode_mentions(&content);
+                    self.edit_mentions = mentions;
+                    self.editing = Some((id, shown));
                     return operation::focus(Id::new("edit"));
                 }
             }
@@ -801,6 +988,8 @@ impl App {
                     if content.trim().is_empty() {
                         self.send(ClientMsg::DeleteMessage { message_id });
                     } else {
+                        let content = crate::emoji::replace_shortcodes(content.trim());
+                        let content = self.encode_mentions(&content, &self.edit_mentions);
                         self.send(ClientMsg::EditMessage { message_id, content });
                     }
                 }
@@ -813,7 +1002,13 @@ impl App {
             }
             Message::DismissNotice => self.notice = None,
 
-            Message::ShowProfile(id) => self.overlay = Some(Overlay::Profile(id)),
+            Message::ShowProfile(id) => {
+                self.close_overlay();
+                self.overlay = Some(Overlay::Profile(id));
+                if let Some(u) = self.session.as_ref().and_then(|s| s.users.get(&id)).cloned() {
+                    return self.request_profile_extras(&u);
+                }
+            }
             Message::OpenNewChannel(kind) => {
                 self.overlay = Some(Overlay::NewChannel { name: String::new(), topic: String::new(), kind });
                 return operation::focus(Id::new("new-channel"));
@@ -876,6 +1071,7 @@ impl App {
                     DraftField::Banner(s) => d.banner = s,
                     DraftField::Ring(r) => d.ring = r,
                     DraftField::RingColor(s) => d.ring_color = s,
+                    DraftField::Pronouns(s) => d.pronouns = s.chars().take(40).collect(),
                 }
             }
             Message::SaveProfile => {
@@ -923,6 +1119,9 @@ impl App {
             }
 
             Message::JoinVoice(id) => {
+                if self.ringing == Some(id) {
+                    self.ringing = None;
+                }
                 if self.voice.as_ref().is_some_and(|v| v.channel_id == id) || self.voice_joining == Some(id) {
                     return Task::none();
                 }
@@ -1043,7 +1242,6 @@ impl App {
             | Message::EmojiSearch(_)
             | Message::PickerTab(_)
             | Message::PickEmoji(_)
-            | Message::PickEmojiSuggestion(_)
             | Message::ToggleReaction(..)
             | Message::GifSearchDue(_)
             | Message::GifHover(..)
@@ -1061,6 +1259,59 @@ impl App {
             | Message::OpenUpdatePage
             | Message::DismissUpdate => return self.update_updates(message),
 
+            Message::OpenLink(url) => {
+                // Only web links; anything else in a message could start a program.
+                if url.starts_with("https://") || url.starts_with("http://") {
+                    crate::updater::open_in_browser(&url);
+                }
+            }
+            Message::RevealMessage(id) => {
+                self.revealed.insert(id);
+            }
+            Message::DismissCall => self.ringing = None,
+            Message::Shortcut(sc) => {
+                // Arrow keys only drive the switcher when it's open (they're for typing otherwise).
+                let switcher_open = matches!(self.overlay, Some(Overlay::Switcher { .. }));
+                if matches!(sc, crate::shortcuts::Shortcut::SwitcherMove(_)) && !switcher_open {
+                    return Task::none();
+                }
+                if self.session.is_none() {
+                    return Task::none();
+                }
+                return self.on_shortcut(sc);
+            }
+            Message::SwitcherQuery(_) | Message::SwitcherGo(_) => return self.update_switcher(message),
+            Message::StartCall(_)
+            | Message::ToggleIgnore(_)
+            | Message::ToggleBlock(_)
+            | Message::ToggleUserRole(..)
+            | Message::CopyText(_) => return self.update_people(message),
+            Message::PickProfileImage(_)
+            | Message::CropLoaded(..)
+            | Message::CropZoom(_)
+            | Message::CropScroll(_)
+            | Message::CropPointer(_)
+            | Message::CropDrag(_)
+            | Message::CropApply
+            | Message::CropDone(_)
+            | Message::CropCancel
+            | Message::RemoveProfileImage(_) => return self.update_crop(message),
+            Message::CreateRole
+            | Message::SelectRole(_)
+            | Message::RoleName(_)
+            | Message::RoleColor(_)
+            | Message::RoleHoist(_)
+            | Message::RolePermission(..)
+            | Message::SaveRole
+            | Message::ResetRole
+            | Message::DeleteRole(_)
+            | Message::MoveRole(..) => return self.update_roles(message),
+            Message::WindowFocused(focused) => {
+                self.focused = focused;
+                if focused {
+                    self.mark_current_read();
+                }
+            }
             Message::Tick => {
                 if let Some(s) = &mut self.session {
                     for users in s.typing.values_mut() {
@@ -1272,7 +1523,7 @@ impl App {
                 };
                 if user_id == me {
                     let my_ssrc = self.voice.as_ref().map(|v| v.ssrc);
-                    match (state, my_ssrc) {
+                    match (state.clone(), my_ssrc) {
                         // Removed by the server (e.g. the channel was deleted).
                         (None, Some(_)) => self.stop_voice(),
                         (Some(st), Some(ssrc)) if st.ssrc != ssrc && self.voice_joining.is_none() => {
@@ -1283,6 +1534,29 @@ impl App {
                     }
                 } else if let (Some(st), Some(v)) = (&state, &self.voice) {
                     v.engine.set_speaker_volume(st.ssrc, self.settings.user_volume(user_id));
+                }
+                // Someone started (or joined) a call in your DMs: ring, unless you're in it.
+                let Some(s) = &self.session else { return };
+                if user_id != s.me {
+                    let in_dm_call = state.as_ref().map(|st| st.channel_id).filter(|c| s.direct(*c).is_some());
+                    let mine = self.voice.as_ref().map(|v| v.channel_id).or(self.voice_joining);
+                    match in_dm_call {
+                        Some(c) if mine != Some(c) && self.ringing != Some(c) => {
+                            self.ringing = Some(c);
+                            if self.settings.ping_sound {
+                                crate::sound::ping(self.settings.output_device.clone(), self.settings.output_volume);
+                            }
+                        }
+                        Some(_) => {}
+                        None => {
+                            // They left: stop ringing if nobody else is calling.
+                            if let Some(c) = self.ringing
+                                && !s.voice.values().any(|v| v.channel_id == c && v.user_id != s.me)
+                            {
+                                self.ringing = None;
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1313,14 +1587,16 @@ impl App {
     }
 
     pub(crate) fn select_channel(&mut self, id: ChannelId) -> Task<Message> {
-        let Some(s) = &mut self.session else { return Task::none() };
-        if s.current != Some(id) {
-            self.composer.clear();
+        let Some(current) = self.session.as_ref().map(|s| s.current) else { return Task::none() };
+        if current != Some(id) {
+            self.set_composer(String::new());
+            self.composer_mentions.clear();
             self.editing = None;
             self.last_typing_sent = None;
             self.emoji_picker = None;
             self.pending.clear();
         }
+        let Some(s) = &mut self.session else { return Task::none() };
         s.current = Some(id);
         if s.channels.iter().any(|c| c.id == id) {
             s.view = View::Server;
@@ -1441,7 +1717,13 @@ impl App {
             server_version: ready.server_version,
             gif_provider: ready.gif_provider,
             max_upload_mb: ready.max_upload_mb,
+            roles: ready.roles,
+            blocked: ready.blocked.into_iter().collect(),
+            mention_counts: ready.mentions.into_iter().map(|m| (m.channel_id, m.count)).collect(),
         });
+        if let Some(s) = &mut self.session {
+            s.sort_roles();
+        }
         self.gifs = GifSearch::default();
         if let Some(channel_id) = self.rejoin_voice.take()
             && self.session.as_ref().is_some_and(|s| s.channels.iter().any(|c| c.id == channel_id))
@@ -1449,10 +1731,12 @@ impl App {
             self.voice_joining = Some(channel_id);
             self.send(ClientMsg::JoinVoice { channel_id, encrypted: true });
         }
-        match current {
+        let avatars = self.request_avatars();
+        let open = match current {
             Some(id) => self.select_channel(id),
             None => Task::none(),
-        }
+        };
+        Task::batch([open, avatars])
     }
 
     fn on_server(&mut self, msg: ServerMsg) -> Task<Message> {
@@ -1467,6 +1751,19 @@ impl App {
             self.on_voice(msg);
             return Task::none();
         }
+        if matches!(msg, ServerMsg::RoleUpdated(_) | ServerMsg::RoleDeleted { .. } | ServerMsg::BlockUpdated { .. }) {
+            self.on_people(msg);
+            return Task::none();
+        }
+        if let ServerMsg::MessageCreated(m) = &msg {
+            let ping = self.on_mention(m);
+            let rest = self.on_server_inner(msg);
+            return Task::batch([ping, rest]);
+        }
+        self.on_server_inner(msg)
+    }
+
+    fn on_server_inner(&mut self, msg: ServerMsg) -> Task<Message> {
         if matches!(msg, ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } | ServerMsg::GifResults { .. }) {
             return self.on_social(msg);
         }
@@ -1477,6 +1774,7 @@ impl App {
             ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. } | ServerMsg::Pong => {}
             ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. } => {} // handled in on_voice
             ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } | ServerMsg::GifResults { .. } => {} // on_social
+            ServerMsg::RoleUpdated(_) | ServerMsg::RoleDeleted { .. } | ServerMsg::BlockUpdated { .. } => {} // on_people
             ServerMsg::MessageCreated(m) => {
                 if let Some(t) = s.typing.get_mut(&m.channel_id) {
                     t.remove(&m.author_id);
@@ -1542,7 +1840,10 @@ impl App {
                 }
             }
             ServerMsg::UserJoined(u) | ServerMsg::UserUpdated(u) => {
-                s.users.insert(u.id, u);
+                let showing = matches!(&self.overlay, Some(Overlay::Profile(id)) if *id == u.id);
+                s.users.insert(u.id, u.clone());
+                let avatars = self.request_avatars();
+                return if showing { Task::batch([avatars, self.request_profile_extras(&u)]) } else { avatars };
             }
             ServerMsg::Presence { user_id, online } => {
                 if online {

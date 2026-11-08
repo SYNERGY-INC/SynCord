@@ -4,7 +4,6 @@ use iced::Task;
 use syncord_proto::{ClientMsg, Reaction, ServerMsg};
 
 use crate::app::{App, EmojiPicker, Message, Overlay, PickerTab, PickerTarget, View};
-use crate::emoji;
 use crate::media;
 
 /// Wait this long after the last key press before searching for GIFs.
@@ -13,24 +12,6 @@ const GIF_SEARCH_DELAY: std::time::Duration = std::time::Duration::from_millis(4
 const GIF_TILE_SIDE: u32 = 200;
 
 impl App {
-    /// Emoji suggestions for a half-typed `:code` at the end of the message box.
-    pub(crate) fn emoji_suggestions(&self) -> Vec<(&'static emojis::Emoji, &'static str)> {
-        match emoji::autocomplete_token(&self.composer) {
-            Some((_, code)) => emoji::suggestions(code, 6),
-            None => Vec::new(),
-        }
-    }
-
-    /// Replace the half-typed `:code` with the chosen emoji.
-    pub(crate) fn accept_suggestion(&mut self, emoji: &str) {
-        if let Some((start, _)) = emoji::autocomplete_token(&self.composer) {
-            self.composer.truncate(start);
-            self.composer.push_str(emoji);
-            self.composer.push(' ');
-            self.settings.remember_emoji(emoji);
-            self.settings.save();
-        }
-    }
 
     /// Tell the server we've read the channel being shown, if there's anything new.
     pub(crate) fn mark_current_read(&mut self) {
@@ -43,6 +24,7 @@ impl App {
             return;
         }
         s.read.insert(channel, latest);
+        s.mention_counts.remove(&channel);
         if let Some(conn) = &self.conn {
             conn.send(ClientMsg::MarkRead { channel_id: channel, message_id: latest });
         }
@@ -146,14 +128,11 @@ impl App {
                     }
                     _ => {
                         // Keep the picker open so several emoji can be added.
-                        self.composer.push_str(&e);
+                        crate::composer::insert(&mut self.editor, &e);
+                        self.composer = self.editor.text().trim_end_matches('\n').to_string();
                         return iced::widget::operation::focus(iced::widget::Id::new(crate::app::COMPOSER_ID));
                     }
                 }
-            }
-            Message::PickEmojiSuggestion(e) => {
-                self.accept_suggestion(&e);
-                return iced::widget::operation::focus(iced::widget::Id::new(crate::app::COMPOSER_ID));
             }
             Message::ToggleReaction(message_id, e) => {
                 if self.has_reacted(message_id, &e) {
@@ -270,6 +249,12 @@ impl App {
                 }
                 if !s.directs.iter().any(|x| x.id == d.id) {
                     s.directs.insert(0, d.clone());
+                }
+                if self.pending_call == Some(d.user_id) {
+                    self.pending_call = None;
+                    self.pending_direct = None;
+                    let open = self.select_channel(d.id);
+                    return Task::batch([open, Task::done(crate::app::Message::JoinVoice(d.id))]);
                 }
                 if self.pending_direct == Some(d.user_id) {
                     self.pending_direct = None;

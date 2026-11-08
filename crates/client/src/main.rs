@@ -5,19 +5,30 @@
 
 mod app;
 mod app_media;
+mod app_avatars;
+mod app_people;
+mod composer;
+mod crop;
 mod app_social;
 mod emoji;
 mod icons;
 mod media;
 mod net;
 mod settings;
+mod shortcuts;
+mod sound;
 mod style;
 mod theme;
 mod tls;
 mod updater;
 mod view;
 mod view_extras;
+mod view_menus;
+mod view_people;
+mod view_roles;
+mod view_messages;
 mod voice;
+mod widgets;
 
 use app::App;
 
@@ -55,6 +66,8 @@ fn main() -> iced::Result {
         .font(include_bytes!("../assets/fonts/Inter-Regular.otf").as_slice())
         .font(include_bytes!("../assets/fonts/Inter-SemiBold.otf").as_slice())
         .font(include_bytes!("../assets/fonts/Inter-Bold.otf").as_slice())
+        // The same emoji Discord uses (Twemoji), so they look the same everywhere.
+        .font(include_bytes!("../assets/fonts/Twemoji.ttf").as_slice())
         .default_font(style::INTER)
         .run()
 }
