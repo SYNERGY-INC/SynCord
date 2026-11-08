@@ -187,16 +187,23 @@ impl App {
             body = body.push(self.embed_picture(img, 380.0, 220.0));
         }
         let accent = e.color.map(rgb).unwrap_or(t.hover.0);
-        let bar = container(space()).width(4).height(Length::Fill).style(move |_| container::Style {
-            background: Some(accent.into()),
-            border: Border { radius: iced::border::left(4.0), ..Default::default() },
+        let floating = style::darken(t.chat.0, 0.18);
+        // The coloured left edge is the accent showing through a 4 px gap (a "fill the height"
+        // bar collapses inside the scrolling message list).
+        let inner = container(body).padding([10, 12]).width(Length::Fill).style(move |_| container::Style {
+            background: Some(floating.into()),
+            border: Border { radius: iced::border::right(4.0), ..Default::default() },
             ..Default::default()
         });
-        let floating = style::darken(t.chat.0, 0.18);
-        row![bar, container(body).padding([10, 12]).width(Length::Fill)]
+        container(inner)
+            .padding(Padding { left: 4.0, ..Padding::ZERO })
             .width(Length::Fixed(432.0))
-            .align_y(Alignment::Start)
-            .apply_style(floating)
+            .style(move |_| container::Style {
+                background: Some(accent.into()),
+                border: Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into()
     }
 
     /// A folded-away message from someone blocked or ignored.
@@ -217,23 +224,6 @@ impl App {
         )
         .padding([4, 72])
         .into()
-    }
-}
-
-/// Give a row a rounded background.
-trait ApplyStyle<'a> {
-    fn apply_style(self, color: Color) -> Element<'a, Message>;
-}
-
-impl<'a> ApplyStyle<'a> for iced::widget::Row<'a, Message> {
-    fn apply_style(self, color: Color) -> Element<'a, Message> {
-        container(self)
-            .style(move |_| container::Style {
-                background: Some(color.into()),
-                border: Border { radius: 4.0.into(), ..Default::default() },
-                ..Default::default()
-            })
-            .into()
     }
 }
 

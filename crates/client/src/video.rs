@@ -38,6 +38,8 @@ pub struct ActiveVideo {
     pub player: Arc<Player>,
     pub frame: Option<Handle>,
     serial: u64,
+    /// Keep picking up frames until then (after seeking while paused).
+    refresh_until: std::time::Instant,
 }
 
 /// Downloaded videos live here; only the one being watched is kept.
@@ -62,7 +64,8 @@ fn clock(ms: u64) -> String {
 impl App {
     /// Redraw while a video plays or downloads.
     pub(crate) fn video_busy(&self) -> bool {
-        !self.video_loading.is_empty() || self.video.as_ref().is_some_and(|v| v.player.is_playing())
+        !self.video_loading.is_empty()
+            || self.video.as_ref().is_some_and(|v| v.player.is_playing() || v.refresh_until > std::time::Instant::now())
     }
 
     /// Stop and forget the open video (when leaving the channel, for example).
@@ -119,7 +122,13 @@ impl App {
                         player.set_volume(if self.settings.video_muted { 0.0 } else { self.settings.video_volume });
                         player.play();
                         let frame = player.frame().map(|f| Handle::from_rgba(f.width, f.height, f.rgba.to_vec()));
-                        self.video = Some(ActiveVideo { id, player, frame, serial: 0 });
+                        self.video = Some(ActiveVideo {
+                            id,
+                            player,
+                            frame,
+                            serial: 0,
+                            refresh_until: std::time::Instant::now(),
+                        });
                     }
                     Err(e) => {
                         self.video_errors.insert(id, e);
@@ -136,8 +145,10 @@ impl App {
                 }
             }
             Message::VideoSeek(ms) => {
-                if let Some(v) = &self.video {
+                if let Some(v) = &mut self.video {
                     v.player.seek(ms as u64);
+                    // The new frame takes a moment to decode; show it even if paused.
+                    v.refresh_until = std::time::Instant::now() + std::time::Duration::from_secs(2);
                 }
             }
             Message::VideoVolume(vol) => {

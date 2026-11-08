@@ -770,7 +770,10 @@ impl App {
         } else if grouped {
             row![
                 container(if hovered {
-                    text(short_time(m.created_at)).size(fs * 0.68).color(t.muted.0)
+                    text(short_time(m.created_at))
+                        .size(fs * 0.68)
+                        .color(t.muted.0)
+                        .wrapping(iced::widget::text::Wrapping::None)
                 } else {
                     text("")
                 })
