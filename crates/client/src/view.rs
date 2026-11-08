@@ -1582,6 +1582,10 @@ impl App {
                 .label("Play a sound when someone mentions you or calls you")
                 .on_toggle(Message::TogglePingSound)
                 .text_size(fs),
+            toggler(st.flash_taskbar)
+                .label("Flash the taskbar icon for every new message while SynCord isn't focused (mentions always do)")
+                .on_toggle(Message::ToggleFlashTaskbar)
+                .text_size(fs),
             toggler(st.voice_sounds)
                 .label("Play a sound when people join or leave your voice channel")
                 .on_toggle(Message::ToggleVoiceSounds)

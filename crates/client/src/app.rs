@@ -174,6 +174,7 @@ pub enum Message {
     ToggleServerSound(bool),
     ToggleVoiceSounds(bool),
     TogglePingSound(bool),
+    ToggleFlashTaskbar(bool),
     SoundVolume(f32),
     TestSound,
 
@@ -645,6 +646,8 @@ pub struct App {
     /// Channel being viewed and the last message read before opening it: the red NEW line
     /// goes above the first message after that.
     pub new_since: Option<(ChannelId, MessageId)>,
+    /// The taskbar icon was flashed and hasn't been cleared yet.
+    pub(crate) wants_attention: bool,
     /// Message the next one you send replies to.
     pub replying: Option<MessageId>,
     /// Message whose text is being selected.
@@ -747,6 +750,7 @@ impl App {
             message_menu: None,
             selecting: None,
             replying: None,
+            wants_attention: false,
             new_since: None,
             voice_drag: None,
             voice_hover: None,
@@ -1426,6 +1430,10 @@ impl App {
                 self.settings.voice_sounds = v;
                 self.settings.save();
             }
+            Message::ToggleFlashTaskbar(v) => {
+                self.settings.flash_taskbar = v;
+                self.settings.save();
+            }
             Message::TogglePingSound(v) => {
                 self.settings.ping_sound = v;
                 self.settings.save();
@@ -1585,6 +1593,10 @@ impl App {
                 self.focused = focused;
                 if focused {
                     self.mark_current_read();
+                    if std::mem::take(&mut self.wants_attention) {
+                        // Linux keeps the "urgent" mark until the app clears it.
+                        return iced::window::latest().and_then(|id| iced::window::request_user_attention(id, None));
+                    }
                 }
             }
             Message::Tick => {
@@ -2112,6 +2124,8 @@ impl App {
                         self.settings.play(crate::sounds::Sound::Message);
                     }
                 }
+                // Flash the taskbar icon while SynCord isn't focused (pings flash in on_mention).
+                let flash = Some(m.author_id) != me && !quiet && self.settings.flash_taskbar && !self.focused;
                 let latest = s.latest.entry(channel).or_insert(m.id);
                 *latest = (*latest).max(m.id);
                 if Some(m.author_id) == me {
@@ -2127,10 +2141,12 @@ impl App {
                 if st.loaded && !st.messages.iter().any(|x| x.id == m.id) {
                     st.messages.push(m);
                 }
-                if s.current == Some(channel) {
+                let attention = if flash { self.request_attention() } else { Task::none() };
+                if self.session.as_ref().is_some_and(|s| s.current == Some(channel)) {
                     self.mark_current_read();
-                    return self.request_pictures();
+                    return Task::batch([attention, self.request_pictures()]);
                 }
+                return attention;
             }
             ServerMsg::MessageUpdated(m) => {
                 if let Some(st) = s.chans.get_mut(&m.channel_id)

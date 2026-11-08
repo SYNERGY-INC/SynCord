@@ -44,6 +44,8 @@ pub struct Settings {
     pub server_sound: bool,
     /// Play a sound when people join or leave your voice channel.
     pub voice_sounds: bool,
+    /// Flash the taskbar icon for every new message (mentions always flash) while SynCord isn't focused.
+    pub flash_taskbar: bool,
     /// Volume of notification sounds (0.0 to 1.0).
     pub sound_volume: f32,
 
@@ -95,6 +97,7 @@ impl Default for Settings {
             dm_sound: true,
             server_sound: true,
             voice_sounds: true,
+            flash_taskbar: true,
             sound_volume: 0.6,
             autoplay_gifs: true,
             recent_emoji: Vec::new(),
