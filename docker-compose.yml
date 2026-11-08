@@ -1,0 +1,26 @@
+# Import this in CasaOS: App Store > "+" > Install a customized app > Import.
+name: syncord
+services:
+  syncord-server:
+    image: ghcr.io/synergy-inc/syncord-server:latest
+    container_name: syncord-server
+    restart: unless-stopped
+    ports:
+      - "7878:7878/tcp"   # chat
+      - "7878:7878/udp"   # voice
+    volumes:
+      - /DATA/AppData/syncord:/data
+    x-casaos:
+      architectures: [amd64, arm64]
+      main: syncord-server
+      category: Chat
+      author: SYNERGY-INC
+      developer: bxpo
+      icon: https://raw.githubusercontent.com/SYNERGY-INC/SynCord/HEAD/packaging/icons/syncord-256.png
+      title:
+        en_us: SynCord
+      tagline:
+        en_us: Lightweight self-hosted chat and voice server
+      description:
+        en_us: SynCord server. The invite code is in /DATA/AppData/syncord/syncord-server.toml.
+      port_map: "7878"
