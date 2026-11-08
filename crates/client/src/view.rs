@@ -539,13 +539,14 @@ impl App {
         let content = row![
             self.avatar_status(me, 32.0, !self.reconnecting, t.user_panel.0),
             column![
-                text(truncate(me.name(), 11)).size(fs * 0.9).font(semibold()).color(t.header.0),
+                text(truncate(me.name(), 9)).size(fs * 0.9).font(semibold()).color(t.header.0),
                 text(status).size(fs * 0.75).color(t.muted.0),
             ]
             .spacing(1)
             .width(Length::Fill),
             toggle(mic, self.muted || self.deafened, Message::ToggleMute),
             toggle(ears, self.deafened, Message::ToggleDeafen),
+            self.update_button(),
             button(icons::icon(&icons::GEAR, fs * 1.25, t.muted.0))
                 .padding(5)
                 .on_press(Message::OpenSettings)
@@ -554,6 +555,60 @@ impl App {
         .spacing(2)
         .align_y(Alignment::Center);
         container(content).padding([10, 8]).width(Length::Fill).style(bg(t.user_panel.0)).into()
+    }
+
+    /// Update button next to settings: grey normally, green with a "!" when an update is waiting.
+    fn update_button(&self) -> Element<'_, Message> {
+        use crate::updater::Stage;
+        let t = &self.theme;
+        let fs = self.fs();
+        let (available, action, tip) = match &self.update {
+            Stage::Ready { version, .. } => (true, Some(Message::UpdateNow), format!("Install SynCord {version} now")),
+            Stage::Postponed { version } => {
+                (true, Some(Message::CheckForUpdates), format!("SynCord {version} is ready: click to install"))
+            }
+            Stage::Manual { version, .. } => {
+                (true, Some(Message::OpenUpdatePage), format!("SynCord {version} is out: click to download"))
+            }
+            Stage::Checking => (false, None, "Checking for updates...".into()),
+            Stage::Installing(v) => (false, None, format!("Installing {v}...")),
+            Stage::Failed(_) => (false, Some(Message::CheckForUpdates), "Update check failed: click to retry".into()),
+            Stage::UpToDate => (false, Some(Message::CheckForUpdates), "Up to date: click to check again".into()),
+        };
+        let size = fs * 1.25;
+        let btn: Element<'_, Message> = if available {
+            let green = t.online.0;
+            let badge = container(text("!").size(fs * 0.62).font(bold()).color(Color::WHITE))
+                .center_x(fs * 0.85)
+                .center_y(fs * 0.85)
+                .style(move |_| container::Style {
+                    background: Some(t.danger.0.into()),
+                    border: Border { radius: (fs * 0.5).into(), width: 1.5, color: green },
+                    ..Default::default()
+                });
+            let icon = stack![
+                container(icons::icon(&icons::DOWNLOAD, size, contrast_text(green))).padding(5),
+                container(badge).align_right(size + 10.0).align_top(size + 10.0),
+            ];
+            button(icon).padding(0).on_press_maybe(action).style(style::solid_button(green, t.radius * 0.6)).into()
+        } else {
+            let color = if matches!(self.update, Stage::Checking | Stage::Installing(_)) {
+                with_alpha(t.muted.0, 0.5)
+            } else {
+                t.muted.0
+            };
+            button(icons::icon(&icons::DOWNLOAD, size, color))
+                .padding(5)
+                .on_press_maybe(action)
+                .style(style::icon_button(t))
+                .into()
+        };
+        iced::widget::tooltip(
+            btn,
+            container(text(tip).size(fs * 0.8).color(t.header.0)).padding([5, 9]).style(card(t.floating.0, 6.0)),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into()
     }
 
     fn chat_area<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
