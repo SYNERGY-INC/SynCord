@@ -436,6 +436,7 @@ impl ImageCache {
         self.entries.remove(key);
     }
 
+    #[cfg(test)]
     pub fn memory(&self) -> usize {
         self.entries
             .values()
@@ -446,12 +447,30 @@ impl ImageCache {
             .sum()
     }
 
+    /// Still profile pictures stay: they're small, shown everywhere, and only loaded once
+    /// (dropping them left people with just their letter until SynCord restarted).
+    fn pinned(key: &str) -> bool {
+        key.starts_with("pfp:") && !key.ends_with(":anim")
+    }
+
+    /// Memory used by everything but the pinned profile pictures.
+    fn evictable_memory(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|(k, _)| !Self::pinned(k))
+            .map(|(_, (e, _))| match e {
+                Entry::Ready(p) => p.memory(),
+                _ => 0,
+            })
+            .sum()
+    }
+
     fn evict(&mut self) {
-        while self.memory() > CACHE_BUDGET {
+        while self.evictable_memory() > CACHE_BUDGET {
             let oldest = self
                 .entries
                 .iter()
-                .filter(|(_, (e, _))| matches!(e, Entry::Ready(_)))
+                .filter(|(k, (e, _))| matches!(e, Entry::Ready(_)) && !Self::pinned(k))
                 .min_by_key(|(_, (_, used))| *used)
                 .map(|(k, _)| k.clone());
             match oldest {
@@ -544,6 +563,22 @@ mod tests {
         assert!(cache.picture("k9").is_some(), "newest kept");
         assert!(cache.picture("k0").is_none(), "oldest dropped");
         assert!(!cache.start("k9"), "already loaded");
+    }
+
+    #[test]
+    fn profile_pictures_survive_a_full_cache() {
+        let mut cache = ImageCache::default();
+        let key = avatar_key("abc", false);
+        assert!(cache.start(&key));
+        cache.finish(key.clone(), Ok(Arc::new(still(RgbaImage::new(160, 160)))));
+        // Then a channel full of big pictures goes by.
+        for i in 0..20 {
+            let k = format!("k{i}");
+            cache.start(&k);
+            cache.finish(k, Ok(Arc::new(still(RgbaImage::new(2048, 2048)))));
+        }
+        assert!(cache.picture(&key).is_some(), "the avatar is still there");
+        assert!(cache.memory() <= CACHE_BUDGET + 160 * 160 * 4);
     }
 
     /// A big file goes up and comes back down in pieces, with progress counted both ways.

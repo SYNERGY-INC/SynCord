@@ -131,6 +131,8 @@ impl App {
     pub(crate) fn update_presence(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::PresenceTick => {
+                // Also retry profile pictures that failed to download (loaded ones are skipped).
+                let avatars = self.request_avatars();
                 let away = idle_for() >= IDLE_AFTER;
                 if away != self.away {
                     self.away = away;
@@ -138,11 +140,13 @@ impl App {
                     self.send_presence();
                 }
                 if self.settings.detect_games && self.session.is_some() {
-                    return Task::perform(
+                    let game = Task::perform(
                         async { tokio::task::spawn_blocking(find_game).await.ok().flatten() },
                         Message::GameDetected,
                     );
+                    return Task::batch([avatars, game]);
                 }
+                return avatars;
             }
             Message::BackFromIdle => {
                 if self.away {

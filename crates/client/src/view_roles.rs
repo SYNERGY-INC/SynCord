@@ -13,7 +13,11 @@ impl App {
         let Some(s) = &self.session else { return Task::none() };
         match message {
             Message::CreateRole => self.send(ClientMsg::CreateRole { name: "new role".into() }),
-            Message::SelectRole(id) => self.role_editing = s.role(id).map(RoleDraft::from_role),
+            Message::SelectRole(id) => {
+                self.role_editing = s.role(id).map(RoleDraft::from_role);
+                self.role_member_query.clear();
+            }
+            Message::RoleMemberQuery(q) => self.role_member_query = q.chars().take(32).collect(),
             Message::RoleName(name) => {
                 if let Some(d) = &mut self.role_editing {
                     d.name = name.chars().take(32).collect();
@@ -137,6 +141,73 @@ impl App {
         row![container(scrollable(list).style(style::scroll(t))).width(240), editor].spacing(24).into()
     }
 
+    /// Who has this role, with Remove buttons, and a search to add people.
+    fn role_members<'a>(&'a self, s: &'a Session, role: &'a Role, editable: bool) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let mut people: Vec<&syncord_proto::User> = s.users.values().collect();
+        people.sort_by_key(|u| u.name().to_lowercase());
+        // Only the owner can change the owner's roles.
+        let changeable = |u: &syncord_proto::User| editable && (!u.is_owner || s.is_owner());
+        let (members, others): (Vec<_>, Vec<_>) = people.into_iter().partition(|u| u.roles.contains(&role.id));
+
+        let person = |u: &'a syncord_proto::User, action: Option<(&'static str, Message)>| {
+            let mut r = row![
+                self.avatar(u, 28.0),
+                column![
+                    text(u.name().to_owned()).size(fs * 0.9).color(t.header.0),
+                    text(u.username.clone()).size(fs * 0.75).color(t.muted.0),
+                ]
+                .width(Length::Fill),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center);
+            if let Some((label, msg)) = action {
+                r = r.push(
+                    button(text(label).size(fs * 0.8))
+                        .padding([4, 10])
+                        .on_press(msg)
+                        .style(style::solid_button(t.floating.0, t.radius * 0.6)),
+                );
+            }
+            container(r).padding([4, 6])
+        };
+
+        let mut col = column![label(t, &format!("Members ({})", members.len()), fs)].spacing(6);
+        if members.is_empty() {
+            col = col.push(text("Nobody has this role yet.").size(fs * 0.85).color(t.muted.0));
+        }
+        for u in &members {
+            let action = changeable(u).then(|| ("Remove", Message::ToggleUserRole(u.id, role.id)));
+            col = col.push(person(u, action));
+        }
+        if editable {
+            col = col.push(
+                text_input("Add people: type a name", &self.role_member_query)
+                    .on_input(Message::RoleMemberQuery)
+                    .padding(8)
+                    .size(fs * 0.9)
+                    .style(style::input(t, t.rail.0)),
+            );
+            let q = self.role_member_query.trim().to_lowercase();
+            if !q.is_empty() {
+                let matches: Vec<_> = others
+                    .into_iter()
+                    .filter(|u| changeable(u))
+                    .filter(|u| u.name().to_lowercase().contains(&q) || u.username.to_lowercase().contains(&q))
+                    .take(8)
+                    .collect();
+                if matches.is_empty() {
+                    col = col.push(text("Nobody else matches.").size(fs * 0.85).color(t.muted.0));
+                }
+                for u in matches {
+                    col = col.push(person(u, Some(("Add", Message::ToggleUserRole(u.id, role.id)))));
+                }
+            }
+        }
+        col.into()
+    }
+
     fn role_editor<'a>(&'a self, s: &'a Session, d: &'a RoleDraft) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
@@ -188,6 +259,7 @@ impl App {
                 );
             }
             col = col.push(moves);
+            col = col.push(self.role_members(s, role, editable));
         }
 
         // Nobody can hand out a permission they don't have themselves.

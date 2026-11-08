@@ -260,6 +260,8 @@ pub enum Message {
     CreateRole,
     SelectRole(syncord_proto::RoleId),
     RoleName(String),
+    /// Search box for adding people to the role being edited.
+    RoleMemberQuery(String),
     RoleColor(String),
     RoleHoist(bool),
     RolePermission(u64, bool),
@@ -742,6 +744,7 @@ pub struct App {
     /// Whether the window has keyboard focus (mentions don't ping while you're reading).
     pub focused: bool,
     pub role_editing: Option<RoleDraft>,
+    pub role_member_query: String,
     /// Folded-away messages the user chose to see.
     pub revealed: HashSet<MessageId>,
     pub crop: Option<crate::crop::CropState>,
@@ -847,6 +850,7 @@ impl App {
             identity_changed: None,
             focused: true,
             role_editing: None,
+            role_member_query: String::new(),
             revealed: HashSet::new(),
             crop: None,
             video: None,
@@ -1729,6 +1733,7 @@ impl App {
             Message::CreateRole
             | Message::SelectRole(_)
             | Message::RoleName(_)
+            | Message::RoleMemberQuery(_)
             | Message::RoleColor(_)
             | Message::RoleHoist(_)
             | Message::RolePermission(..)
