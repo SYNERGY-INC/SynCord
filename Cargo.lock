@@ -4790,7 +4790,7 @@ dependencies = [
 
 [[package]]
 name = "syncord-client"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "axum",
@@ -4818,7 +4818,7 @@ dependencies = [
 
 [[package]]
 name = "syncord-proto"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4826,7 +4826,7 @@ dependencies = [
 
 [[package]]
 name = "syncord-server"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "axum",
