@@ -830,3 +830,47 @@ async fn videos_get_a_preview_and_their_length() {
     assert!(f.video.is_none() && f.width.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A call in a direct message leaves a note: started, who joined, and when it ended.
+#[tokio::test]
+async fn dm_calls_leave_a_note() {
+    use syncord_proto::MessageKind;
+    let url = start_server().await;
+    let (mut alice, r) = register(&url, "alice", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let alice_id = ready.me;
+    let (mut bob, r) = register(&url, "bob", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let bob_id = ready.me;
+    send(&mut alice, ClientMsg::OpenDirect { user_id: bob_id }).await;
+    let ServerMsg::DirectOpened(dm) = expect(&mut alice, |m| matches!(m, ServerMsg::DirectOpened(_))).await else {
+        unreachable!()
+    };
+
+    send(&mut alice, ClientMsg::JoinVoice { channel_id: dm.id, encrypted: true }).await;
+    let ServerMsg::MessageCreated(note) = expect(&mut bob, |m| matches!(m, ServerMsg::MessageCreated(_))).await else {
+        unreachable!()
+    };
+    assert_eq!(note.author_id, alice_id);
+    assert_eq!(note.kind, MessageKind::Call { participants: vec![alice_id], ended_at: None });
+    assert!(note.content.contains("started a call"), "older apps see words: {}", note.content);
+    assert_eq!(note.mentions, vec![bob_id], "it pings the person being called");
+
+    send(&mut bob, ClientMsg::JoinVoice { channel_id: dm.id, encrypted: true }).await;
+    expect(&mut alice, |m| {
+        matches!(m, ServerMsg::MessageUpdated(u) if u.id == note.id
+            && matches!(&u.kind, MessageKind::Call { participants, ended_at: None } if participants.len() == 2))
+    })
+    .await;
+    // Call notes can't be edited.
+    send(&mut alice, ClientMsg::EditMessage { message_id: note.id, content: "hacked".into() }).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
+
+    send(&mut alice, ClientMsg::LeaveVoice).await;
+    send(&mut bob, ClientMsg::LeaveVoice).await;
+    expect(&mut bob, |m| {
+        matches!(m, ServerMsg::MessageUpdated(u) if u.id == note.id
+            && matches!(&u.kind, MessageKind::Call { ended_at: Some(_), .. }))
+    })
+    .await;
+}

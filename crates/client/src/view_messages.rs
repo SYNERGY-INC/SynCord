@@ -5,6 +5,7 @@ use iced::{Alignment, Border, Color, ContentFit, Element, Font, Length, Padding}
 use syncord_proto::{Embed, Message as ChatMessage};
 
 use crate::app::{App, Message, Session};
+use crate::icons;
 use crate::media;
 use crate::style::{self, BOLD, EMOJI_FONT, SEMIBOLD, card};
 use crate::theme::{rgb, with_alpha};
@@ -206,6 +207,51 @@ impl App {
             .into()
     }
 
+    /// The note a call in a direct message leaves: started / lasted / missed.
+    pub(crate) fn call_note<'a>(&'a self, s: &'a Session, m: &'a ChatMessage) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let syncord_proto::MessageKind::Call { participants, ended_at } = &m.kind else { return text("").into() };
+        let name = |id: i64| s.users.get(&id).map(|u| u.name().to_string()).unwrap_or_else(|| "Someone".into());
+        let mine = m.author_id == s.me;
+        let answered = participants.len() > 1;
+        let (line, missed) = match ended_at {
+            None => (format!("{} started a call.", if mine { "You".to_string() } else { name(m.author_id) }), false),
+            Some(end) => {
+                let length = describe_length((*end - m.created_at).max(0) as u64);
+                match (answered, mine) {
+                    (true, _) => (
+                        format!(
+                            "{} started a call that lasted {length}.",
+                            if mine { "You".to_string() } else { name(m.author_id) }
+                        ),
+                        false,
+                    ),
+                    (false, true) => ("You started a call that nobody answered.".to_string(), false),
+                    (false, false) => (format!("You missed a call from {}.", name(m.author_id)), true),
+                }
+            }
+        };
+        let color = if missed { t.danger.0 } else { t.online.0 };
+        let mut r = row![
+            icons::icon(&icons::PHONE, fs * 1.2, color),
+            text(line).size(fs * 0.95).color(t.text.0),
+            text(crate::view::short_time_pub(m.created_at)).size(fs * 0.75).color(t.muted.0),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let in_it = self.voice.as_ref().is_some_and(|v| v.channel_id == m.channel_id);
+        if ended_at.is_none() && !in_it {
+            r = r.push(
+                button(text("Join Call").size(fs * 0.85))
+                    .padding([4, 12])
+                    .on_press(Message::JoinVoice(m.channel_id))
+                    .style(style::solid_button(t.online.0, t.radius * 0.6)),
+            );
+        }
+        container(r).padding(Padding { top: 6.0, bottom: 6.0, left: 30.0, right: 16.0 }).into()
+    }
+
     /// A folded-away message from someone blocked or ignored.
     pub(crate) fn hidden_message<'a>(&'a self, s: &'a Session, m: &'a ChatMessage) -> Element<'a, Message> {
         let t = &self.theme;
@@ -232,9 +278,28 @@ fn _unused(_: &App) -> Element<'_, Message> {
     text("").font(BOLD).into()
 }
 
+/// "a few seconds", "1 minute", "12 minutes", "2 hours".
+pub fn describe_length(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    match minutes {
+        0 => "a few seconds".into(),
+        1 => "a minute".into(),
+        2..=59 => format!("{minutes} minutes"),
+        60..=119 => "an hour".into(),
+        _ => format!("{} hours", minutes / 60),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Piece, pieces};
+
+    #[test]
+    fn call_lengths() {
+        assert_eq!(super::describe_length(20_000), "a few seconds");
+        assert_eq!(super::describe_length(12 * 60_000 + 5), "12 minutes");
+        assert_eq!(super::describe_length(3 * 3_600_000), "3 hours");
+    }
 
     #[test]
     fn splits_links_mentions_and_emoji() {

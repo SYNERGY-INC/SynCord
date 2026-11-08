@@ -338,7 +338,7 @@ impl Connection {
                     let updated = db
                         .call(move |c| match db::get_message(c, message_id)? {
                             // A message needs text unless it has files.
-                            Some(m) if m.author_id == me && (!content.is_empty() || !m.attachments.is_empty()) => {
+                            Some(m) if m.author_id == me && m.kind.is_normal() && (!content.is_empty() || !m.attachments.is_empty()) => {
                                 db::edit_message(c, message_id, &content)?;
                                 let pinged = db::resolve_mentions(c, me, m.channel_id, &content)?;
                                 db::set_mentions(c, message_id, m.channel_id, &pinged)?;
@@ -637,9 +637,13 @@ impl Connection {
                         if to.is_some() {
                             self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: me, state: None }, to);
                         }
+                        crate::calls::left(&self.state, old).await;
                     }
                     let to = voice_audience(&db, channel_id).await?;
                     self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(joined.state) }, to);
+                    if previous != Some(channel_id) {
+                        crate::calls::joined(&self.state, channel_id, me).await;
+                    }
                 }
                 ClientMsg::LeaveVoice => {
                     let channel = self.state.voice.channel_of(me);
@@ -648,6 +652,9 @@ impl Connection {
                         None => None,
                     };
                     self.leave_voice_to(me, to);
+                    if let Some(c) = channel {
+                        crate::calls::left(&self.state, c).await;
+                    }
                 }
                 ClientMsg::SetVoiceState { muted, deafened } => {
                     if let Some(state) = self.state.voice.set_state(me, self.conn_id, muted, deafened) {
@@ -842,6 +849,9 @@ impl Connection {
                 None => None,
             };
             state.broadcast(&ServerMsg::VoiceStateUpdate { user_id: id, state: None }, to);
+            if let Some(c) = channel {
+                crate::calls::left(&state, c).await;
+            }
         });
     }
 

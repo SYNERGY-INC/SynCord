@@ -1,6 +1,7 @@
 //! SynCord server library: the binary in `main.rs` is a thin wrapper so the
 //! server can also be started from integration tests.
 
+pub mod calls;
 pub mod db;
 pub mod embeds;
 pub mod gateway;
@@ -102,6 +103,8 @@ pub struct AppState {
     pub gifs: Option<gifs::GifSearch>,
     /// Link previews.
     pub previews: embeds::Fetcher,
+    /// Calls going on in direct messages.
+    pub calls: calls::Calls,
     /// UDP port voice is served on (0 until [`start_udp`] runs).
     pub udp_port: AtomicU16,
     pub next_conn_id: AtomicU64,
@@ -115,6 +118,7 @@ impl AppState {
         let gifs = gifs::GifSearch::from_config(&config);
         Arc::new(Self {
             gifs,
+            calls: calls::Calls::default(),
             previews: if config.unsafe_allow_private_link_previews {
                 embeds::Fetcher::new_for_tests()
             } else {

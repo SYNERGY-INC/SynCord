@@ -379,6 +379,31 @@ pub struct Message {
     /// everyone for @everyone. Mentions are written `<@user id>`, `<@&role id>` and `@everyone`.
     #[serde(default)]
     pub mentions: Vec<UserId>,
+    /// Ordinary messages, or a note the server posts (a call in a direct message).
+    #[serde(default, skip_serializing_if = "MessageKind::is_normal")]
+    pub kind: MessageKind,
+}
+
+/// What a message is. Older apps only see `content`, which describes it in words.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MessageKind {
+    #[default]
+    Normal,
+    /// A call in a direct message: started by the author, joined by `participants`.
+    Call {
+        #[serde(default)]
+        participants: Vec<UserId>,
+        /// Set when everyone has left (unix ms).
+        #[serde(default)]
+        ended_at: Option<i64>,
+    },
+}
+
+impl MessageKind {
+    pub fn is_normal(&self) -> bool {
+        *self == MessageKind::Normal
+    }
 }
 
 /// Snapshot sent right after a successful login.

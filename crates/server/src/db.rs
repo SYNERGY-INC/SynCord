@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 use syncord_proto::{
     Attachment, Channel, ChannelId, ChannelKind, DirectChannel, EVERYONE_ROLE, Embed, HISTORY_PAGE, MentionCount,
-    Message, MessageId, Profile, Reaction, ReadState, Role, RoleId, User, UserId, parse_mentions, perms,
+    Message, MessageId, MessageKind, Profile, Reaction, ReadState, Role, RoleId, User, UserId, parse_mentions, perms,
 };
 
 #[derive(Clone)]
@@ -165,6 +165,7 @@ impl Db {
 
     fn seed(&self) -> DbResult<()> {
         let conn = self.lock();
+        end_stale_calls(&conn)?;
         conn.execute(
             "INSERT OR IGNORE INTO roles (id, name, color, permissions, position) VALUES (?1, '@everyone', NULL, ?2, 0)",
             params![EVERYONE_ROLE, perms::DEFAULT as i64],
@@ -205,6 +206,7 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         ("messages", "embeds", "ALTER TABLE messages ADD COLUMN embeds TEXT NOT NULL DEFAULT '[]'"),
         ("attachments", "video", "ALTER TABLE attachments ADD COLUMN video TEXT"),
         ("attachments", "is_embed", "ALTER TABLE attachments ADD COLUMN is_embed INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "kind", "ALTER TABLE messages ADD COLUMN kind TEXT"),
     ] {
         if conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 0")).is_err() {
             conn.execute_batch(ddl)?;
@@ -658,7 +660,30 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         reactions: Vec::new(),
         embeds: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
         mentions: Vec::new(),
+        kind: r.get::<_, Option<String>>(7)?.and_then(|k| serde_json::from_str(&k).ok()).unwrap_or_default(),
     })
+}
+
+/// Change what kind of message this is (calls: who joined, when it ended).
+pub fn set_kind(conn: &Connection, id: MessageId, kind: &MessageKind) -> DbResult<()> {
+    let json = (!kind.is_normal()).then(|| serde_json::to_string(kind).unwrap());
+    conn.execute("UPDATE messages SET kind = ?1 WHERE id = ?2", params![json, id])?;
+    Ok(())
+}
+
+/// Calls still marked as going on (after a restart nobody is in them any more): end them now.
+pub fn end_stale_calls(conn: &Connection) -> DbResult<Vec<MessageId>> {
+    let mut stmt = conn.prepare("SELECT id, kind FROM messages WHERE kind LIKE '%\"ended_at\":null%'")?;
+    let rows: Vec<(MessageId, String)> =
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<DbResult<_>>()?;
+    let mut ended = Vec::new();
+    for (id, json) in rows {
+        if let Ok(MessageKind::Call { participants, ended_at: None }) = serde_json::from_str(&json) {
+            set_kind(conn, id, &MessageKind::Call { participants, ended_at: Some(now_ms()) })?;
+            ended.push(id);
+        }
+    }
+    Ok(ended)
 }
 
 /// Why a message with attachments couldn't be sent.
@@ -708,13 +733,14 @@ pub fn insert_message(
         reactions: Vec::new(),
         embeds: Vec::new(),
         mentions: Vec::new(),
+        kind: MessageKind::Normal,
     }))
 }
 
 pub fn get_message(conn: &Connection, id: MessageId) -> DbResult<Option<Message>> {
     let msg = conn
         .query_row(
-            "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds FROM messages WHERE id = ?1",
+            "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind FROM messages WHERE id = ?1",
             params![id],
             row_to_message,
         )
@@ -743,7 +769,7 @@ pub fn delete_message(conn: &Connection, id: MessageId) -> DbResult<Vec<String>>
 /// Returns up to [`HISTORY_PAGE`] messages older than `before`, oldest first.
 pub fn history(conn: &Connection, channel_id: ChannelId, before: Option<MessageId>) -> DbResult<Vec<Message>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds FROM messages
+        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind FROM messages
          WHERE channel_id = ?1 AND (?2 IS NULL OR id < ?2)
          ORDER BY id DESC LIMIT ?3",
     )?;

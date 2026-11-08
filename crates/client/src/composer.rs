@@ -220,6 +220,16 @@ pub fn key_binding(kp: KeyPress, suggestions: usize, empty: bool) -> Option<Bind
         keyboard::Key::Named(Named::ArrowUp) if suggestions > 0 => Some(Binding::Custom(Message::SuggestionMove(-1))),
         keyboard::Key::Named(Named::ArrowDown) if suggestions > 0 => Some(Binding::Custom(Message::SuggestionMove(1))),
         keyboard::Key::Named(Named::ArrowUp) if empty => Some(Binding::Custom(Message::EditLast)),
+        // Ctrl+Backspace / Ctrl+Delete remove a whole word (Alt on a Mac; Cmd removes to the line start).
+        keyboard::Key::Named(Named::Backspace) if kp.modifiers.macos_command() => {
+            Some(Binding::Sequence(vec![Binding::Select(Motion::Home), Binding::Backspace]))
+        }
+        keyboard::Key::Named(Named::Backspace) if kp.modifiers.jump() => {
+            Some(Binding::Sequence(vec![Binding::Select(Motion::WordLeft), Binding::Backspace]))
+        }
+        keyboard::Key::Named(Named::Delete) if kp.modifiers.jump() => {
+            Some(Binding::Sequence(vec![Binding::Select(Motion::WordRight), Binding::Delete]))
+        }
         _ => Binding::from_key_press(kp),
     }
 }
@@ -239,6 +249,29 @@ mod tests {
         assert_eq!(mention_token("@"), Some((0, "")));
         assert_eq!(mention_token("mail me@home"), None);
         assert_eq!(mention_token("@sam hi"), None);
+    }
+
+    #[test]
+    fn ctrl_backspace_deletes_a_word() {
+        let mut c: text_editor::Content = text_editor::Content::with_text("hello there friend");
+        c.perform(Action::Move(Motion::DocumentEnd));
+        let kp = KeyPress {
+            key: keyboard::Key::Named(keyboard::key::Named::Backspace),
+            modified_key: keyboard::Key::Named(keyboard::key::Named::Backspace),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Backspace),
+            modifiers: if cfg!(target_os = "macos") { keyboard::Modifiers::ALT } else { keyboard::Modifiers::CTRL },
+            text: None,
+            status: Status::Focused { is_hovered: false },
+        };
+        let Some(Binding::Sequence(steps)) = key_binding(kp, 0, false) else { panic!("a word deletion") };
+        for step in steps {
+            match step {
+                Binding::Select(m) => c.perform(Action::Select(m)),
+                Binding::Backspace => c.perform(Action::Edit(Edit::Backspace)),
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(c.text().trim_end(), "hello there");
     }
 
     #[test]

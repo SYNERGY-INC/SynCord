@@ -276,6 +276,20 @@ impl App {
                 container(divider(t.hover.0)).width(32),
                 entry(server_pill, {
                     let mut t2 = stack![tile(label.into(), accent, server_selected, Message::ShowServer)];
+                    // A speaker while anyone is talking in one of the server's voice channels.
+                    let voice_active = s.voice.values().any(|v| s.channels.iter().any(|c| c.id == v.channel_id));
+                    if voice_active {
+                        let green = t.online.0;
+                        let rail = t.rail.0;
+                        let speaker = container(icons::icon(&icons::SPEAKER, 11.0, Color::WHITE))
+                            .center(20)
+                            .style(move |_| container::Style {
+                                background: Some(green.into()),
+                                border: Border { radius: 10.0.into(), width: 3.0, color: rail },
+                                ..Default::default()
+                            });
+                        t2 = t2.push(container(speaker).width(48).height(48).align_x(Alignment::Start).align_y(Alignment::End));
+                    }
                     if server_pings > 0 {
                         t2 = t2.push(
                             container(mention_badge(t, server_pings, fs))
@@ -674,7 +688,12 @@ impl App {
         let mut prev: Option<&ChatMessage> = None;
         for m in messages {
             let grouped = !self.settings.compact
-                && prev.is_some_and(|p| p.author_id == m.author_id && m.created_at - p.created_at < GROUP_WINDOW_MS);
+                && prev.is_some_and(|p| {
+                    p.author_id == m.author_id
+                        && p.kind.is_normal()
+                        && m.kind.is_normal()
+                        && m.created_at - p.created_at < GROUP_WINDOW_MS
+                });
             if !grouped && prev.is_some() && !self.settings.compact {
                 list = list.push(space().height(14));
             }
@@ -695,6 +714,9 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let author = s.users.get(&m.author_id);
+        if !m.kind.is_normal() {
+            return self.call_note(s, m);
+        }
         if self.hides(s, m.author_id) && !self.revealed.contains(&m.id) {
             return self.hidden_message(s, m);
         }
@@ -1758,6 +1780,10 @@ fn dimmed(
 
 /// Shorten to `max` characters with an ellipsis so sidebars stay on one line.
 /// The red count of unread pings.
+pub(crate) fn short_time_pub(ms: i64) -> String {
+    short_time(ms)
+}
+
 pub(crate) fn mention_badge<'a>(t: &AppTheme, count: u32, fs: f32) -> Element<'a, Message> {
     let danger = t.danger.0;
     container(text(count.min(99).to_string()).size(fs * 0.7).font(BOLD).color(Color::WHITE))
