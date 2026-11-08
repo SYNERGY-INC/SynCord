@@ -42,7 +42,9 @@ Open SynCord, click **Register**, and enter the **server address**, a username, 
 
 ## Hosting
 
-Run the server installer on a PC that stays on. On Windows it starts automatically with the PC,
+Run the server installer on a PC that stays on. If setup reports a problem, or friends can't
+connect, see [server troubleshooting](https://github.com/bxpo/SynCord#server-troubleshooting).
+Open <http://localhost:7878> on the server PC to check it's running. On Windows it starts automatically with the PC,
 opens the firewall, and shows the invite code at the end (later: Start menu → **SynCord Server →
 Server settings and invite code**). Register your own account first: the first account becomes
 the server owner. See the [setup guide](https://github.com/bxpo/SynCord#hosting-on-a-friends-pc)

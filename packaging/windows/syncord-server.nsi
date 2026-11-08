@@ -5,6 +5,7 @@
 
 Unicode true
 !include "MUI2.nsh"
+!include "x64.nsh"
 
 !ifndef VERSION
   !error "Pass -DVERSION=x.y.z"
@@ -20,7 +21,8 @@ Unicode true
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SynCordServer"
 !define DATA "$DataDir"
 Var DataDir
-!define PS 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File'
+; Always use 64-bit PowerShell (the installer itself is 32-bit; see DisableX64FSRedirection below).
+!define PS '"$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File'
 
 Name "${APP}"
 OutFile "${OUT_FILE}"
@@ -41,8 +43,8 @@ VIAddVersionKey "LegalCopyright" "MIT licensed"
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "Set up a SynCord server"
 !define MUI_WELCOMEPAGE_TEXT "Install this on the one PC that will host your SynCord server, ideally one that stays on.$\r$\n$\r$\nThe server will:$\r$\n  - run in the background and start automatically with Windows$\r$\n  - be allowed through Windows Firewall (port 7878)$\r$\n  - keep all messages in C:\ProgramData\SynCord Server$\r$\n$\r$\nYour friends install the regular SynCord app, not this."
-!define MUI_FINISHPAGE_TITLE "Your SynCord server is running"
-!define MUI_FINISHPAGE_TEXT "Friends connect by typing this PC's address into SynCord. On your home network that's its local IP (run 'ipconfig'); over the internet use Tailscale or forward port 7878 (TCP and UDP) on your router.$\r$\n$\r$\nThey'll also need the invite code from the settings file. The first account created becomes the server owner, so register yours first.$\r$\n$\r$\nFind 'SynCord Server' in the Start menu to change settings or restart it."
+!define MUI_FINISHPAGE_TITLE "SynCord Server is set up"
+!define MUI_FINISHPAGE_TEXT "Friends connect by typing this PC's address into SynCord. On your home network that's its local IP (run 'ipconfig'); over the internet use Tailscale or forward port 7878 (TCP and UDP) on your router.$\r$\n$\r$\nThey'll also need the invite code from the settings file. The first account created becomes the server owner, so register yours first.$\r$\n$\r$\nFind 'SynCord Server' in the Start menu to change settings, restart it, or run it in a window to see what it's doing."
 !define MUI_FINISHPAGE_SHOWREADME
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "Show the invite code and settings"
 !define MUI_FINISHPAGE_SHOWREADME_FUNCTION ShowSettings
@@ -77,6 +79,7 @@ FunctionEnd
 
 Section "Install"
   SetShellVarContext all
+  ${DisableX64FSRedirection}
   ; Stop an older version that's already running.
   IfFileExists "$INSTDIR\server-remove.ps1" 0 +2
     nsExec::ExecToLog '${PS} "$INSTDIR\server-remove.ps1"'
@@ -91,12 +94,31 @@ Section "Install"
   DetailPrint "Starting the server and adding it to Windows startup..."
   nsExec::ExecToLog '${PS} "$INSTDIR\server-setup.ps1" -Exe "$INSTDIR\syncord-server.exe" -DataDir "${DATA}"'
   Pop $0
-  StrCmp $0 "0" +2
-    MessageBox MB_ICONEXCLAMATION "The server was installed, but setting it up to start automatically failed (code $0).$\r$\nYou can still start it by running syncord-server.exe."
+  ; $0 is the script's exit code: a sum of problems (see server-setup.ps1), or "error".
+  StrCpy $1 ""
+  StrCmp $0 "error" 0 +3
+    StrCpy $1 "- PowerShell couldn't be started, so the server wasn't set up. Use 'Run server in a window' from the Start menu.$\r$\n"
+    Goto report
+  IntOp $2 $0 & 1
+  IntCmp $2 0 +2
+    StrCpy $1 "$1- The setup script stopped unexpectedly (code $0).$\r$\n"
+  IntOp $2 $0 & 2
+  IntCmp $2 0 +2
+    StrCpy $1 "$1- Windows Firewall couldn't be set up (another firewall or antivirus may be in charge). If friends can't connect, allow syncord-server.exe in it.$\r$\n"
+  IntOp $2 $0 & 4
+  IntCmp $2 0 +2
+    StrCpy $1 "$1- It couldn't be set to start with Windows. It's running now; after restarting the PC, use 'Restart server' from the Start menu.$\r$\n"
+  IntOp $2 $0 & 8
+  IntCmp $2 0 +2
+    StrCpy $1 "$1- The server isn't answering. Use 'Run server in a window' from the Start menu to see the error.$\r$\n"
+  report:
+  StrCmp $1 "" +2
+    MessageBox MB_ICONEXCLAMATION "SynCord Server was installed, but:$\r$\n$\r$\n$1$\r$\nDetails: ${DATA}\setup.log" /SD IDOK
 
   CreateDirectory "$SMPROGRAMS\${APP}"
   CreateShortcut "$SMPROGRAMS\${APP}\Server settings and invite code.lnk" "notepad.exe" '"${DATA}\syncord-server.toml"'
   CreateShortcut "$SMPROGRAMS\${APP}\Restart server.lnk" "powershell.exe" '-NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\restart-server.ps1"' "$INSTDIR\syncord-server.exe"
+  CreateShortcut "$SMPROGRAMS\${APP}\Run server in a window (troubleshooting).lnk" "$WINDIR\System32\cmd.exe" '/k ""$INSTDIR\syncord-server.exe" "${DATA}\syncord-server.toml""' "$INSTDIR\syncord-server.exe"
   CreateShortcut "$SMPROGRAMS\${APP}\Open data folder.lnk" "${DATA}"
   CreateShortcut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\Uninstall.exe"
 
@@ -114,6 +136,7 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext all
+  ${DisableX64FSRedirection}
   nsExec::ExecToLog '${PS} "$INSTDIR\server-remove.ps1"'
   Delete "$INSTDIR\syncord-server.exe"
   Delete "$INSTDIR\server-setup.ps1"

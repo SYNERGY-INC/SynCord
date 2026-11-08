@@ -194,6 +194,31 @@ Open `syncord`, click **Register**, enter the server address, a username, a pass
 invite code. **The first account created becomes the server owner**, so the host should
 register first. Only the owner can create and delete channels.
 
+### Server troubleshooting
+
+**Is it running?** On the server PC, open <http://localhost:7878> in a browser. It should say
+*SynCord server is running.*
+
+**Windows server installer:**
+- If setup finds a problem it says what it was, and writes the details to
+  `C:\ProgramData\SynCord Server\setup.log`.
+- Start menu → **SynCord Server → Run server in a window (troubleshooting)** runs the server in a
+  window so you can read any error. If it says the port is already in use, the server is already
+  running in the background, which is good.
+- The server's own log is `C:\ProgramData\SynCord Server\syncord-server.log`.
+- **Firewall:** if another antivirus or firewall manages your PC's firewall instead of Windows (Norton,
+  McAfee, Bitdefender and so on), allow `syncord-server.exe` in that program.
+- **Starting it by hand:** open PowerShell **as administrator** and run:
+
+  ```powershell
+  & "C:\Program Files\SynCord Server\syncord-server.exe" "C:\ProgramData\SynCord Server\syncord-server.toml"
+  ```
+
+  It runs until you close that window.
+
+**Linux service:** check `sudo systemctl status syncord-server`, and see the log with
+`sudo journalctl -u syncord-server`.
+
 ### Voice tips
 
 - **Use headphones.** There's no echo cancellation yet, so speakers can feed your friends' voices

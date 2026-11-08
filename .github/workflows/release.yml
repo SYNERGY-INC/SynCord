@@ -106,17 +106,37 @@ jobs:
           Start-Process "$app\Uninstall.exe" -ArgumentList '/S', "_?=$app" -Wait
           if (Test-Path "$app\SynCord.exe") { throw 'Uninstall left SynCord.exe behind' }
 
-          # Server installer (admin): startup task, firewall rule, running server
-          Start-Process "dist\SynCord-Server-Setup-$v.exe" -ArgumentList '/S' -Wait
+          # Server installer (admin): startup task, firewall rule, running server.
+          # Installed twice to also cover upgrading over an existing install.
+          $data = "$env:ProgramData\SynCord Server"
+          foreach ($round in 1, 2) {
+            Start-Process "dist\SynCord-Server-Setup-$v.exe" -ArgumentList '/S' -Wait
+            Write-Host "---- setup.log after install $round"
+            Get-Content "$data\setup.log" | Select-Object -Last 12
+            $last = Get-Content "$data\setup.log" | Select-Object -Last 1
+            if ($last -notmatch 'Done \(problems: 0\)') { throw "Setup reported problems on install $round" }
+          }
           $task = Get-ScheduledTask -TaskName 'SynCord Server'
           if ($task.Settings.ExecutionTimeLimit -ne 'PT0S') { throw "Task time limit is $($task.Settings.ExecutionTimeLimit)" }
+          if ($task.Principal.UserId -notin @('SYSTEM', 'S-1-5-18', 'NT AUTHORITY\SYSTEM')) { throw "Task runs as $($task.Principal.UserId)" }
           Get-NetFirewallRule -DisplayName 'SynCord Server' | Out-Null
-          $config = "$env:ProgramData\SynCord Server\syncord-server.toml"
+          $config = "$data\syncord-server.toml"
           if (-not (Select-String -Path $config -Pattern 'invite_code' -Quiet)) { throw 'No settings file' }
           $reply = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7878/).Content
           if ($reply -notmatch 'SynCord server is running') { throw "Unexpected reply: $reply" }
-          if (-not (Test-Path "$env:ProgramData\SynCord Server\syncord.db")) { throw 'Database not next to settings' }
+          if (-not (Test-Path "$data\syncord.db")) { throw 'Database not next to settings' }
+          if (-not (Select-String -Path "$data\syncord-server.log" -Pattern 'invite code' -Quiet)) { throw 'No server log' }
+          $menu = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\SynCord Server"
+          if (-not (Test-Path "$menu\Run server in a window (troubleshooting).lnk")) { throw 'Missing troubleshooting shortcut' }
           Write-Host "Server is up: $reply"
+
+          # Running a second copy must fail with a clear message, not silently.
+          Set-Content "$env:TEMP\empty.txt" ''
+          $p = Start-Process -FilePath "$env:ProgramFiles\SynCord Server\syncord-server.exe" -ArgumentList "`"$config`"" `
+            -RedirectStandardInput "$env:TEMP\empty.txt" -RedirectStandardError "$env:TEMP\second.txt" `
+            -RedirectStandardOutput "$env:TEMP\second-out.txt" -NoNewWindow -Wait -PassThru
+          $out = Get-Content "$env:TEMP\second.txt" -Raw
+          if ($p.ExitCode -ne 1 -or $out -notmatch 'already in use') { throw "Unexpected result from a second copy ($($p.ExitCode)): $out" }
 
           $dir = "$env:ProgramFiles\SynCord Server"
           Start-Process "$dir\Uninstall.exe" -ArgumentList '/S', "_?=$dir" -Wait
