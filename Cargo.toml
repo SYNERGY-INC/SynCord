@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/server", "crates/client", "crates/update", "crates/video"]
+members = ["crates/proto", "crates/server", "crates/client", "crates/update", "crates/video", "crates/stream"]
 
 [workspace.package]
 version = "0.5.0"
@@ -11,6 +11,7 @@ license = "MIT"
 syncord-proto = { path = "crates/proto" }
 syncord-update = { path = "crates/update" }
 syncord-video = { path = "crates/video" }
+syncord-stream = { path = "crates/stream" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "fs"] }
