@@ -191,7 +191,7 @@ impl Converter {
                 if same {
                     for (cy, (ur, vr)) in up.chunks_exact_mut(cw).zip(vp.chunks_exact_mut(cw)).enumerate() {
                         let row = uv.get(cy * uv_stride..cy * uv_stride + cw * 2).unwrap_or(&[]);
-                        for ((u, v), p) in ur.iter_mut().zip(vr.iter_mut()).zip(row.chunks_exact(2)) {
+                        for ((u, v), p) in ur.iter_mut().zip(vr.iter_mut()).zip(row.as_chunks::<2>().0.iter()) {
                             *u = p[0];
                             *v = p[1];
                         }
@@ -349,7 +349,7 @@ fn copy_row(row: &[u8], step: usize, out: &mut [u8]) {
 
 #[inline]
 fn hpass<const K: usize>(acc: &[u32], t: &Taps, out: &mut [u8]) {
-    for ((o, &s), w) in out.iter_mut().zip(&t.start).zip(t.w.chunks_exact(K)) {
+    for ((o, &s), w) in out.iter_mut().zip(&t.start).zip(t.w.as_chunks::<K>().0.iter()) {
         let a = &acc[s as usize..s as usize + K];
         let mut sum = 0u32;
         for j in 0..K {
@@ -384,7 +384,13 @@ fn rgb_full<const BGR: bool>(data: &[u8], stride: usize, out: &mut I420Frame) {
         if r0.is_empty() || r1.is_empty() {
             continue;
         }
-        let it = r0.chunks_exact(8).zip(r1.chunks_exact(8)).zip(y0.chunks_exact_mut(2)).zip(y1.chunks_exact_mut(2));
+        let it = r0
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .zip(r1.as_chunks::<8>().0.iter())
+            .zip(y0.as_chunks_mut::<2>().0.iter_mut())
+            .zip(y1.as_chunks_mut::<2>().0.iter_mut());
         for ((((p, q), ya), yb), (u, v)) in it.zip(ur.iter_mut().zip(vr.iter_mut())) {
             let px = |s: &[u8], o: usize| [s[o + ri] as i32, s[o + 1] as i32, s[o + bi] as i32];
             let (a, b, c, d) = (px(p, 0), px(p, 4), px(q, 0), px(q, 4));
@@ -411,7 +417,13 @@ fn packed422_full(data: &[u8], stride: usize, o: [usize; 3], out: &mut I420Frame
         if r0.is_empty() || r1.is_empty() {
             continue;
         }
-        let it = r0.chunks_exact(4).zip(r1.chunks_exact(4)).zip(y0.chunks_exact_mut(2)).zip(y1.chunks_exact_mut(2));
+        let it = r0
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(r1.as_chunks::<4>().0.iter())
+            .zip(y0.as_chunks_mut::<2>().0.iter_mut())
+            .zip(y1.as_chunks_mut::<2>().0.iter_mut());
         for ((((p, q), ya), yb), (u, v)) in it.zip(ur.iter_mut().zip(vr.iter_mut())) {
             ya[0] = p[o[0]];
             ya[1] = p[o[0] + 2];
@@ -550,10 +562,12 @@ fn yuv_full_to_rgba(pic: &YuvView<'_>, w: usize, h: usize, out: &mut [u8]) {
         let yr = &pic.y[y * pic.stride_y..][..w];
         let ur = &pic.u[(y / 2) * pic.stride_uv..][..w / 2];
         let vr = &pic.v[(y / 2) * pic.stride_uv..][..w / 2];
-        for (((px, ys), &u), &v) in row.chunks_exact_mut(8).zip(yr.chunks_exact(2)).zip(ur).zip(vr) {
+        for (((px, ys), &u), &v) in
+            row.as_chunks_mut::<8>().0.iter_mut().zip(yr.as_chunks::<2>().0.iter()).zip(ur).zip(vr)
+        {
             let (u, v) = (u as i32 - 128, v as i32 - 128);
             let (cr, cg, cb) = (RV * v, GU * u + GV * v, BU * u);
-            for (p, &yv) in px.chunks_exact_mut(4).zip(ys) {
+            for (p, &yv) in px.as_chunks_mut::<4>().0.iter_mut().zip(ys) {
                 let yy = (yv as i32 - 16) * Y_MUL + 2048;
                 p[0] = ((yy + cr) >> 12).clamp(0, 255) as u8;
                 p[1] = ((yy - cg) >> 12).clamp(0, 255) as u8;
