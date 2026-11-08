@@ -281,14 +281,17 @@ impl App {
                     if voice_active {
                         let green = t.online.0;
                         let rail = t.rail.0;
-                        let speaker = container(icons::icon(&icons::SPEAKER, 11.0, Color::WHITE))
-                            .center(20)
-                            .style(move |_| container::Style {
-                                background: Some(green.into()),
-                                border: Border { radius: 10.0.into(), width: 3.0, color: rail },
-                                ..Default::default()
+                        let speaker =
+                            container(icons::icon(&icons::SPEAKER, 11.0, Color::WHITE)).center(20).style(move |_| {
+                                container::Style {
+                                    background: Some(green.into()),
+                                    border: Border { radius: 10.0.into(), width: 3.0, color: rail },
+                                    ..Default::default()
+                                }
                             });
-                        t2 = t2.push(container(speaker).width(48).height(48).align_x(Alignment::Start).align_y(Alignment::End));
+                        t2 = t2.push(
+                            container(speaker).width(48).height(48).align_x(Alignment::Start).align_y(Alignment::End),
+                        );
                     }
                     if server_pings > 0 {
                         t2 = t2.push(
@@ -1717,6 +1720,17 @@ impl App {
                     .text_size(fs),
             )
             .push(text("Takes effect the next time you open SynCord.").size(fs * 0.8).color(t.muted.0))
+            .push(label(t, "Closing the window", fs))
+            .push(if crate::tray::SUPPORTED {
+                Element::from(
+                    toggler(self.settings.close_to_tray)
+                        .label("Keep SynCord running in the tray when you close it (calls and messages keep working)")
+                        .on_toggle(Message::ToggleCloseToTray)
+                        .text_size(fs),
+                )
+            } else {
+                text("On Linux, closing the window quits SynCord.").size(fs * 0.85).color(t.muted.0).into()
+            })
             .push(self.updates_section());
         col.into()
     }

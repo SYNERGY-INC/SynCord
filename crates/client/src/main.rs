@@ -23,6 +23,7 @@ mod style;
 mod theme;
 mod theme_editor;
 mod tls;
+mod tray;
 mod updater;
 mod video;
 mod view;
@@ -39,6 +40,10 @@ use app::App;
 fn main() -> iced::Result {
     // HTTPS (for servers behind a proxy like Caddy) uses the same small crypto library as the WebSocket.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    // Already running (maybe in the tray)? Bring that copy to the front instead.
+    if !tray::claim_single_instance() {
+        return Ok(());
+    }
     // Videos downloaded to watch last time aren't needed any more.
     video::clear_cache();
     // Pick the renderer before iced starts. An explicit ICED_BACKEND wins.
@@ -51,6 +56,8 @@ fn main() -> iced::Result {
         .title(App::title)
         .theme(App::iced_theme)
         .subscription(App::subscription)
+        // The X button may hide SynCord to the tray instead (see App::update).
+        .exit_on_close_request(false)
         .window(iced::window::Settings {
             size: iced::Size::new(1280.0, 800.0),
             min_size: Some(iced::Size::new(940.0, 560.0)),

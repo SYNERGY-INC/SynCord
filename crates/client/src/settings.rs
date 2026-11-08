@@ -58,6 +58,8 @@ pub struct Settings {
     /// Play a sound when someone mentions you.
     pub ping_sound: bool,
     pub video_volume: f32,
+    /// The X button hides SynCord to the tray (Windows and macOS) instead of quitting.
+    pub close_to_tray: bool,
     pub video_muted: bool,
 }
 
@@ -97,6 +99,7 @@ impl Default for Settings {
             ignored: HashMap::new(),
             ping_sound: true,
             video_volume: 0.8,
+            close_to_tray: true,
             video_muted: false,
         }
     }

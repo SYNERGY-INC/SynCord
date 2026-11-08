@@ -228,6 +228,11 @@ pub enum Message {
     /// Not now, to an incoming call.
     DismissCall,
     Shortcut(crate::shortcuts::Shortcut),
+    /// The window's X button.
+    CloseRequested(iced::window::Id),
+    /// The tray icon, or SynCord being started again.
+    Wake(crate::tray::Wake),
+    ToggleCloseToTray(bool),
     SwitcherQuery(String),
     /// Go to a quick switcher result (`usize::MAX`: the highlighted one).
     SwitcherGo(usize),
@@ -618,6 +623,8 @@ pub struct App {
     pub video_errors: HashMap<String, String>,
     /// A direct-message call someone started that you haven't joined or dismissed.
     pub ringing: Option<ChannelId>,
+    /// The tray icon, while SynCord closes to the tray.
+    pub(crate) tray: Option<crate::tray::Tray>,
     /// When the current dialog, picker and call card opened (for their pop-in).
     pub(crate) popped: Instant,
     pub(crate) picker_popped: Instant,
@@ -701,6 +708,7 @@ impl App {
             video_loading: HashMap::new(),
             video_errors: HashMap::new(),
             ringing: None,
+            tray: None,
             popped: Instant::now(),
             picker_popped: Instant::now(),
             call_popped: Instant::now(),
@@ -709,6 +717,10 @@ impl App {
             pending_call: None,
             update: crate::updater::Stage::Checking,
         };
+
+        if app.settings.close_to_tray && crate::tray::SUPPORTED {
+            app.tray = crate::tray::create().map_err(|e| eprintln!("no tray icon: {e}")).ok();
+        }
 
         // Log straight back in if we have a saved session.
         let task = match (&app.settings.token, app.settings.server.is_empty()) {
@@ -786,6 +798,8 @@ impl App {
             }
             _ => None,
         })];
+        subs.push(iced::window::close_requests().map(Message::CloseRequested));
+        subs.push(Subscription::run(crate::tray::events).map(Message::Wake));
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
         if someone_typing {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
@@ -1375,6 +1389,28 @@ impl App {
                 self.revealed.insert(id);
             }
             Message::DismissCall => self.ringing = None,
+            Message::CloseRequested(id) => {
+                if self.settings.close_to_tray && self.tray.is_some() {
+                    // Keep running (calls and messages still work); the tray brings it back.
+                    return iced::window::set_mode(id, iced::window::Mode::Hidden);
+                }
+                return iced::exit();
+            }
+            Message::Wake(crate::tray::Wake::Show) => {
+                return iced::window::latest().and_then(|id| {
+                    Task::batch([
+                        iced::window::set_mode(id, iced::window::Mode::Windowed),
+                        iced::window::gain_focus(id),
+                    ])
+                });
+            }
+            Message::Wake(crate::tray::Wake::Quit) => return iced::exit(),
+            Message::ToggleCloseToTray(on) => {
+                self.settings.close_to_tray = on;
+                self.settings.save();
+                self.tray =
+                    if on { crate::tray::create().map_err(|e| eprintln!("no tray icon: {e}")).ok() } else { None };
+            }
             Message::Shortcut(sc) => {
                 // Arrow keys only drive the switcher when it's open (they're for typing otherwise).
                 let switcher_open = matches!(self.overlay, Some(Overlay::Switcher { .. }));

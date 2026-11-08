@@ -338,7 +338,11 @@ impl Connection {
                     let updated = db
                         .call(move |c| match db::get_message(c, message_id)? {
                             // A message needs text unless it has files.
-                            Some(m) if m.author_id == me && m.kind.is_normal() && (!content.is_empty() || !m.attachments.is_empty()) => {
+                            Some(m)
+                                if m.author_id == me
+                                    && m.kind.is_normal()
+                                    && (!content.is_empty() || !m.attachments.is_empty()) =>
+                            {
                                 db::edit_message(c, message_id, &content)?;
                                 let pinged = db::resolve_mentions(c, me, m.channel_id, &content)?;
                                 db::set_mentions(c, message_id, m.channel_id, &pinged)?;

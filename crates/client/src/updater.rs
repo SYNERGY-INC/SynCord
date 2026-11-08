@@ -180,7 +180,8 @@ fn install_mac(dmg: &Path, app: &Path) -> Result<(), String> {
         return Err(format!("couldn't replace the app: {e}"));
     }
     let _ = std::fs::remove_dir_all(&old);
-    run(Command::new("open").arg("-n").arg(app))
+    // The new copy waits for this one to exit instead of handing over to it.
+    run(Command::new("open").arg("-n").arg("--env").arg(format!("{}=1", crate::tray::REPLACING_ENV)).arg(app))
 }
 
 fn install_linux(archive: &Path, exe: &Path) -> Result<(), String> {
@@ -205,7 +206,10 @@ fn install_linux(archive: &Path, exe: &Path) -> Result<(), String> {
     }
     std::fs::rename(&staged, exe).map_err(|e| format!("couldn't install the update: {e}"))?;
     let _ = std::fs::remove_dir_all(&work);
-    Command::new(exe).spawn().map_err(|e| format!("couldn't restart SynCord: {e}"))?;
+    Command::new(exe)
+        .env(crate::tray::REPLACING_ENV, "1")
+        .spawn()
+        .map_err(|e| format!("couldn't restart SynCord: {e}"))?;
     Ok(())
 }
 

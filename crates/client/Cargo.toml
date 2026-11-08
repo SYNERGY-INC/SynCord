@@ -36,6 +36,10 @@ emojis = "0.9"
 syncord-update.workspace = true
 syncord-video = { workspace = true, features = ["playback"] }
 
+# The tray icon (Linux would need GTK libraries for it, so there closing just quits).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = "0.26"
+
 [dev-dependencies]
 syncord-server = { path = "../server" }
 axum = "0.8"
