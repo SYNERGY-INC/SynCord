@@ -26,13 +26,82 @@ pub fn mention_token(text: &str) -> Option<(usize, &str)> {
     (preceded_ok && valid).then_some((start, query))
 }
 
+/// Most undo steps kept.
+const UNDO_LIMIT: usize = 100;
+/// Typing faster than this is one undo step (until a space or a pause).
+const UNDO_GROUP: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// Undo and redo for the message box (iced's text box has none).
+#[derive(Default)]
+pub struct History {
+    undo: Vec<String>,
+    redo: Vec<String>,
+    /// When the current group of typing started being typed.
+    last: Option<std::time::Instant>,
+}
+
+impl History {
+    /// Remember `before` as an undo step, unless it's part of the same burst of typing.
+    fn record(&mut self, before: &str, typed: Option<char>) {
+        let now = std::time::Instant::now();
+        let same_burst = typed.is_some_and(|c| !c.is_whitespace())
+            && self.last.is_some_and(|t| now.duration_since(t) < UNDO_GROUP)
+            && !self.undo.is_empty();
+        if !same_burst {
+            self.undo.push(before.to_string());
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
+        }
+        self.last = typed.map(|_| now);
+        self.redo.clear();
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+}
+
+/// The right-click menu in the message box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
 impl App {
-    /// Replace the message box text (cursor at the end).
+    /// Replace the message box text (cursor at the end). Emptying it (sending, switching
+    /// channels) also forgets the undo history.
     pub(crate) fn set_composer(&mut self, text: String) {
+        if text.is_empty() {
+            self.history = History::default();
+        }
+        self.restore_composer(text);
+    }
+
+    fn restore_composer(&mut self, text: String) {
         self.editor = text_editor::Content::with_text(&text);
         self.editor.perform(Action::Move(Motion::DocumentEnd));
         self.composer = text;
         self.suggestion_index = 0;
+    }
+
+    fn undo(&mut self, redo: bool) -> Task<Message> {
+        let (from, to) =
+            if redo { (&mut self.history.redo, &mut self.history.undo) } else { (&mut self.history.undo, &mut self.history.redo) };
+        let Some(text) = from.pop() else { return Task::none() };
+        to.push(self.composer.clone());
+        self.history.last = None;
+        self.restore_composer(text);
+        self.typed()
     }
 
     /// What could finish the word being typed.
@@ -128,13 +197,58 @@ impl App {
         match message {
             Message::EditorAction(action) => {
                 let edits = action.is_edit();
+                let typed = match &action {
+                    Action::Edit(Edit::Insert(c)) => Some(*c),
+                    _ => None,
+                };
+                let before = edits.then(|| self.composer.clone());
                 self.editor.perform(action);
-                if edits {
+                if let Some(before) = before {
                     self.composer = self.editor.text().trim_end_matches('\n').to_string();
+                    if self.composer != before {
+                        self.history.record(&before, typed);
+                    }
                     self.suggestion_index = 0;
                     return self.typed();
                 }
             }
+            Message::Undo => return self.undo(false),
+            Message::Redo => return self.undo(true),
+            Message::ComposerMenu(action) => {
+                let focus = iced::widget::operation::focus(iced::widget::Id::new(crate::app::COMPOSER_ID));
+                let then = match action {
+                    MenuAction::Undo => self.undo(false),
+                    MenuAction::Redo => self.undo(true),
+                    MenuAction::Cut | MenuAction::Copy => {
+                        if let Some(sel) = self.editor.selection() {
+                            let copy = self.update(Message::CopyText(sel));
+                            if action == MenuAction::Cut {
+                                return Task::batch([copy, self.update_composer(Message::EditorAction(Action::Edit(Edit::Delete))), focus]);
+                            }
+                            return Task::batch([copy, focus]);
+                        }
+                        Task::none()
+                    }
+                    // Like Ctrl+V: pictures and files are attached, text goes in the box.
+                    MenuAction::Paste => Task::perform(
+                        async { tokio::task::spawn_blocking(crate::app_media::read_clipboard_any).await.ok().flatten() },
+                        Message::PastedFromMenu,
+                    ),
+                    MenuAction::SelectAll => {
+                        self.editor.perform(Action::SelectAll);
+                        Task::none()
+                    }
+                };
+                return Task::batch([then, focus]);
+            }
+            Message::PastedFromMenu(clip) => match clip {
+                Some(crate::app_media::AnyClip::Text(text)) => {
+                    return self
+                        .update_composer(Message::EditorAction(Action::Edit(Edit::Paste(std::sync::Arc::new(text)))));
+                }
+                Some(crate::app_media::AnyClip::Other(clip)) => return self.update(Message::Pasted(Some(clip))),
+                None => {}
+            },
             Message::SuggestionMove(step) => {
                 let n = self.composer_suggestions().len() as i32;
                 if n > 0 {
@@ -143,6 +257,7 @@ impl App {
             }
             Message::AcceptSuggestion(i) => {
                 if let Some(pick) = self.composer_suggestions().get(i).copied() {
+                    self.history.record(&self.composer.clone(), None);
                     self.accept(pick);
                 }
                 return iced::widget::operation::focus(iced::widget::Id::new(crate::app::COMPOSER_ID));
@@ -211,6 +326,15 @@ pub fn key_binding(kp: KeyPress, suggestions: usize, empty: bool) -> Option<Bind
     if !matches!(kp.status, Status::Focused { .. }) {
         return None;
     }
+    // Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes (Cmd on a Mac).
+    if kp.modifiers.command() && !kp.modifiers.alt() {
+        match kp.key.to_latin(kp.physical_key).map(|c| c.to_ascii_lowercase()) {
+            Some('z') if kp.modifiers.shift() => return Some(Binding::Custom(Message::Redo)),
+            Some('z') => return Some(Binding::Custom(Message::Undo)),
+            Some('y') => return Some(Binding::Custom(Message::Redo)),
+            _ => {}
+        }
+    }
     match kp.key.as_ref() {
         keyboard::Key::Named(Named::Enter) if kp.modifiers.shift() => Some(Binding::Enter),
         keyboard::Key::Named(Named::Enter) => Some(Binding::Custom(Message::SendMessage)),
@@ -242,6 +366,40 @@ pub fn insert(editor: &mut text_editor::Content, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_groups_typing_into_words() {
+        let mut h = History::default();
+        let mut text = String::new();
+        for c in "hi there".chars() {
+            let before = text.clone();
+            text.push(c);
+            h.record(&before, Some(c));
+        }
+        // "hi" then " " then "there": undo goes back a word at a time.
+        assert_eq!(h.undo, ["", "hi"]);
+        h.record(&text, None); // a paste is its own step
+        assert_eq!(h.undo.len(), 3);
+        assert!(h.can_undo() && !h.can_redo());
+    }
+
+    #[test]
+    fn undo_keys() {
+        let press = |c: &str, m: keyboard::Modifiers| KeyPress {
+            key: keyboard::Key::Character(c.into()),
+            modified_key: keyboard::Key::Character(c.into()),
+            physical_key: keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
+            modifiers: m,
+            text: None,
+            status: Status::Focused { is_hovered: false },
+        };
+        let ctrl = keyboard::Modifiers::COMMAND;
+        assert!(matches!(key_binding(press("z", ctrl), 0, false), Some(Binding::Custom(Message::Undo))));
+        let shift = ctrl | keyboard::Modifiers::SHIFT;
+        assert!(matches!(key_binding(press("Z", shift), 0, false), Some(Binding::Custom(Message::Redo))));
+        assert!(matches!(key_binding(press("y", ctrl), 0, false), Some(Binding::Custom(Message::Redo))));
+        assert!(matches!(key_binding(press("a", ctrl), 0, false), Some(Binding::SelectAll)));
+    }
 
     #[test]
     fn mention_tokens() {

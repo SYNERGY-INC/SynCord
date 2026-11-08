@@ -72,6 +72,10 @@ pub enum Message {
     SelectChannel(ChannelId),
     /// Typing in the message box.
     EditorAction(iced::widget::text_editor::Action),
+    Undo,
+    Redo,
+    ComposerMenu(crate::composer::MenuAction),
+    PastedFromMenu(Option<crate::app_media::AnyClip>),
     SuggestionMove(i32),
     /// Pick a suggestion (`usize::MAX`: the highlighted one).
     AcceptSuggestion(usize),
@@ -683,6 +687,7 @@ pub struct App {
     /// The message box's text (kept in step with `editor`).
     pub composer: String,
     pub editor: iced::widget::text_editor::Content,
+    pub history: crate::composer::History,
     /// Mentions picked from suggestions: how they're shown, and how they're sent.
     pub(crate) composer_mentions: Vec<(String, String)>,
     pub suggestion_index: usize,
@@ -806,6 +811,7 @@ impl App {
             session: None,
             composer: String::new(),
             editor: iced::widget::text_editor::Content::new(),
+            history: Default::default(),
             composer_mentions: Vec::new(),
             suggestion_index: 0,
             edit_mentions: Vec::new(),
@@ -1167,7 +1173,12 @@ impl App {
                 self.live.stage = false;
                 return self.select_channel(id);
             }
-            Message::EditorAction(_) | Message::SuggestionMove(_) => return self.update_composer(message),
+            Message::EditorAction(_)
+            | Message::SuggestionMove(_)
+            | Message::Undo
+            | Message::Redo
+            | Message::ComposerMenu(_)
+            | Message::PastedFromMenu(_) => return self.update_composer(message),
             Message::AcceptSuggestion(i) => {
                 let i = if i == usize::MAX { self.suggestion_index } else { i };
                 return self.update_composer(Message::AcceptSuggestion(i));
@@ -1787,6 +1798,20 @@ impl App {
                     return self.update_theme_editor(Message::CloseThemeEditor);
                 } else if self.settings_tab.is_some() {
                     self.settings_tab = None;
+                } else if self.live.stage {
+                    self.live.stage = false;
+                } else {
+                    // Nothing to close: jump to the newest message, like Discord.
+                    let detached = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.current.and_then(|c| s.chans.get(&c)))
+                        .is_some_and(|st| st.detached);
+                    if detached {
+                        return self.update_search(Message::JumpToPresent);
+                    }
+                    self.mark_current_read();
+                    return Self::snap_to_end();
                 }
             }
         }

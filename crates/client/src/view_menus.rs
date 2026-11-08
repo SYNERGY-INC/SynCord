@@ -19,6 +19,49 @@ impl App {
         context_menu(base, move || self.user_menu(user)).into()
     }
 
+    /// Right-click in the message box.
+    pub(crate) fn composer_menu(&self) -> Element<'_, Message> {
+        use crate::composer::MenuAction::*;
+        let t = &self.theme;
+        let fs = self.fs();
+        let selected = self.editor.selection().is_some_and(|s| !s.is_empty());
+        let item = |label: &'static str, keys: &'static str, action, on: bool| {
+            let color = if on { t.text.0 } else { t.muted.0 };
+            button(
+                row![
+                    text(label).size(fs * 0.9).color(color).width(Length::Fill),
+                    text(keys).size(fs * 0.75).color(t.muted.0)
+                ]
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding([6, 10])
+            .on_press_maybe(on.then_some(Message::ComposerMenu(action)))
+            .style(style::row_button(t, false))
+        };
+        let sep = || container(style::divider(t.hover.0)).padding([4, 6]);
+        let col = column![
+            item("Undo", "Ctrl+Z", Undo, self.history.can_undo()),
+            item("Redo", "Ctrl+Y", Redo, self.history.can_redo()),
+            sep(),
+            item("Cut", "Ctrl+X", Cut, selected),
+            item("Copy", "Ctrl+C", Copy, selected),
+            item("Paste", "Ctrl+V", Paste, true),
+            sep(),
+            item("Select All", "Ctrl+A", SelectAll, !self.composer.is_empty()),
+        ]
+        .spacing(1);
+        container(col)
+            .padding(6)
+            .width(220)
+            .style(move |_| container::Style {
+                background: Some(style::darken(t.floating.0, 0.12).into()),
+                border: Border { radius: (t.radius * 0.8).into(), width: 1.0, color: t.hover.0 },
+                ..Default::default()
+            })
+            .into()
+    }
+
     fn user_menu(&self, user: UserId) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();

@@ -440,6 +440,21 @@ impl App {
 }
 
 /// What's on the clipboard that can be sent: copied files first, then a picture.
+/// What the clipboard holds, for the Paste menu item (Ctrl+V's text is pasted by the text box itself).
+#[derive(Debug, Clone)]
+pub enum AnyClip {
+    Text(String),
+    Other(Clip),
+}
+
+pub(crate) fn read_clipboard_any() -> Option<AnyClip> {
+    if let Some(clip) = read_clipboard() {
+        return Some(AnyClip::Other(clip));
+    }
+    let text = arboard::Clipboard::new().ok()?.get_text().ok()?;
+    (!text.is_empty()).then_some(AnyClip::Text(text))
+}
+
 fn read_clipboard() -> Option<Clip> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     if let Ok(files) = clipboard.get().file_list()

@@ -1133,7 +1133,7 @@ impl App {
                     .padding(8)
                     .on_press(Message::AttachFiles)
                     .style(style::icon_button(t)),
-                input,
+                crate::widgets::context_menu(input, move || self.composer_menu()),
                 button(
                     container(text("GIF").size(fs * 0.7).font(style::bold()).color(t.muted.0)).padding([1, 4]).style(
                         move |_| container::Style {

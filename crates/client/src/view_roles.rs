@@ -173,7 +173,7 @@ impl App {
             container(r).padding([4, 6])
         };
 
-        let mut col = column![label(t, &format!("Members ({})", members.len()), fs)].spacing(6);
+        let mut col = column![label(t, format!("Members ({})", members.len()), fs)].spacing(6);
         if members.is_empty() {
             col = col.push(text("Nobody has this role yet.").size(fs * 0.85).color(t.muted.0));
         }

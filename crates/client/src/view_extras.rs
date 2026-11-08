@@ -583,12 +583,19 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let full = self.images.picture(&media::key(&a.id, true)).or_else(|| self.preview(a));
+        // The picture takes only its own size, so a click beside it closes the viewer.
+        let (w, h) = (a.width.unwrap_or(0) as f32, a.height.unwrap_or(0) as f32);
         let picture: Element<'a, Message> = match full {
-            Some(p) => image(p.frame(self.animation_ms(None)).clone())
-                .content_fit(ContentFit::ScaleDown)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
+            Some(p) => {
+                let handle = p.frame(self.animation_ms(None)).clone();
+                iced::widget::responsive(move |area| {
+                    let scale = if w > 0.0 && h > 0.0 { (area.width / w).min(area.height / h).min(1.0) } else { 1.0 };
+                    let (pw, ph) = if w > 0.0 { (w * scale, h * scale) } else { (area.width, area.height) };
+                    let pic = image(handle.clone()).content_fit(ContentFit::Contain).width(pw).height(ph);
+                    center(iced::widget::opaque(mouse_area(pic))).into()
+                })
+                .into()
+            }
             None => center(text("Loading...").color(Color::WHITE)).into(),
         };
         let bar = row![
@@ -626,13 +633,13 @@ impl App {
         ]
         .spacing(14)
         .align_y(Alignment::Center);
-        // Clicks on the picture itself shouldn't close the viewer.
-        column![
-            container(iced::widget::opaque(mouse_area(picture))).padding(24).height(Length::Fill),
-            container(bar).padding([10, 24])
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill)
+        // Clicks on the picture itself or the buttons don't close it; anywhere else does.
+        mouse_area(
+            column![container(picture).padding(24).height(Length::Fill), container(bar).padding([10, 24])]
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .on_press(Message::CloseOverlay)
         .into()
     }
 
