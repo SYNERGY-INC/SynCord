@@ -428,6 +428,9 @@ pub struct Message {
     /// The message this one replies to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<ReplyRef>,
+    /// Pinned to its channel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     /// Ordinary messages, or a note the server posts (a call in a direct message).
     #[serde(default, skip_serializing_if = "MessageKind::is_normal")]
     pub kind: MessageKind,
@@ -447,7 +450,12 @@ pub enum MessageKind {
         #[serde(default)]
         ended_at: Option<i64>,
     },
+    /// The author pinned `message_id` to the channel.
+    Pinned { message_id: MessageId },
 }
+
+/// Most pinned messages a channel can have.
+pub const MAX_PINS: usize = 50;
 
 impl MessageKind {
     pub fn is_normal(&self) -> bool {
@@ -750,6 +758,15 @@ pub enum ClientMsg {
     },
     /// Search messages in every channel and direct message you can see (newest first).
     Search(SearchQuery),
+    /// Pin or unpin a message (Manage messages in server channels; either person in a DM).
+    SetPinned {
+        message_id: MessageId,
+        pinned: bool,
+    },
+    /// A channel's pinned messages (answered with [`ServerMsg::Pins`]).
+    FetchPins {
+        channel_id: ChannelId,
+    },
     /// Load the messages around one (to jump to a search result).
     FetchAround {
         channel_id: ChannelId,
@@ -837,6 +854,11 @@ pub enum ServerMsg {
     },
     Error {
         message: String,
+    },
+    /// A channel's pinned messages, most recently pinned first.
+    Pins {
+        channel_id: ChannelId,
+        messages: Vec<Message>,
     },
     SearchResults {
         /// The query these answer.

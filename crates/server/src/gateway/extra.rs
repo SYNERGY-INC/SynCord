@@ -1,6 +1,7 @@
 //! Requests added in 0.5: roles, blocking and profile pictures.
 
 use super::*;
+use syncord_proto::{MAX_PINS, MessageKind};
 
 impl Connection {
     /// Handle a 0.5 request; `None` if `msg` isn't one of them.
@@ -164,6 +165,66 @@ impl Connection {
                     }
                     self.broadcast(&ServerMsg::UserUpdated(user));
                 }
+            }
+            ClientMsg::SetPinned { message_id, pinned } => {
+                let done = db
+                    .call(move |c| {
+                        let Some(m) = db::get_message(c, message_id)? else {
+                            return Ok(Err("That message no longer exists"));
+                        };
+                        // Server channels need Manage messages; in a DM either person can pin.
+                        let allowed = match db::accessible_kind(c, me, m.channel_id)? {
+                            Some(ChannelKind::Direct) => true,
+                            Some(ChannelKind::Text) => db::access(c, me)?.can(perms::MANAGE_MESSAGES),
+                            _ => return Ok(Err("That message no longer exists")),
+                        };
+                        if !allowed {
+                            return Ok(Err("You need the Manage messages permission to pin messages"));
+                        }
+                        if !m.kind.is_normal() || m.pinned == pinned {
+                            return Ok(Ok(None));
+                        }
+                        if pinned && db::pin_count(c, m.channel_id)? >= MAX_PINS {
+                            return Ok(Err("This channel has as many pins as it can have. Unpin one first."));
+                        }
+                        db::set_pinned(c, message_id, pinned)?;
+                        let updated = db::get_message(c, message_id)?;
+                        // Pinning leaves a note in the chat, like Discord.
+                        let note = if pinned {
+                            let name = db::get_user(c, me)?.map(|u| u.name().to_string()).unwrap_or_default();
+                            let text = format!("📌 {name} pinned a message to this channel.");
+                            match db::insert_message(c, m.channel_id, me, &text, &[], None)? {
+                                Ok(n) => {
+                                    db::set_kind(c, n.id, &MessageKind::Pinned { message_id })?;
+                                    db::mark_read(c, me, m.channel_id, n.id)?;
+                                    db::get_message(c, n.id)?
+                                }
+                                Err(_) => None,
+                            }
+                        } else {
+                            None
+                        };
+                        Ok(Ok(updated.map(|u| (u, note))))
+                    })
+                    .await?;
+                match done {
+                    Ok(Some((updated, note))) => {
+                        let to = super::audience(&db, me, updated.channel_id).await?.and_then(|(_, to)| to);
+                        self.broadcast_to(&ServerMsg::MessageUpdated(updated), to.clone());
+                        if let Some(note) = note {
+                            self.broadcast_to(&ServerMsg::MessageCreated(note), to);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => return Ok(self.error(e).await),
+                }
+            }
+            ClientMsg::FetchPins { channel_id } => {
+                if super::audience(&db, me, channel_id).await?.is_none() {
+                    return Ok(self.error("You can't see that channel").await);
+                }
+                let messages = db.call(move |c| db::pins(c, channel_id)).await?;
+                self.send(&ServerMsg::Pins { channel_id, messages }).await;
             }
             ClientMsg::Search(query) => {
                 let q = query.clone();

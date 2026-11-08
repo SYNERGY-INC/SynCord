@@ -1077,3 +1077,67 @@ async fn voice_moderation_is_limited() {
     send(&mut bob, mute(carol_id)).await;
     expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("voice channels"))).await;
 }
+
+/// Pinning needs Manage messages in server channels (either person in a DM), leaves a
+/// note, and only people who can see the channel can list its pins.
+#[tokio::test]
+async fn pinned_messages() {
+    use syncord_proto::MessageKind;
+    let url = start_server().await;
+    let (mut alice, r) = register(&url, "alice", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let general = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+    let (mut bob, r) = register(&url, "bob", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let bob_id = ready.me;
+    let (mut eve, _) = register(&url, "eve", "letmein").await;
+    let say = |ch, text: &str| ClientMsg::SendMessage {
+        channel_id: ch,
+        content: text.into(),
+        attachments: vec![],
+        reply_to: None,
+    };
+    send(&mut bob, say(general, "remember this")).await;
+    let ServerMsg::MessageCreated(m) = expect(&mut bob, |m| matches!(m, ServerMsg::MessageCreated(_))).await else {
+        unreachable!()
+    };
+    // Bob can't pin in a server channel; Alice (the owner) can.
+    send(&mut bob, ClientMsg::SetPinned { message_id: m.id, pinned: true }).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("Manage messages"))).await;
+    send(&mut alice, ClientMsg::SetPinned { message_id: m.id, pinned: true }).await;
+    expect(&mut bob, |x| matches!(x, ServerMsg::MessageUpdated(u) if u.id == m.id && u.pinned)).await;
+    let note = expect(&mut bob, |x| matches!(x, ServerMsg::MessageCreated(_))).await;
+    let ServerMsg::MessageCreated(note) = note else { unreachable!() };
+    assert_eq!(note.kind, MessageKind::Pinned { message_id: m.id });
+    send(&mut bob, ClientMsg::FetchPins { channel_id: general }).await;
+    let ServerMsg::Pins { messages, .. } = expect(&mut bob, |m| matches!(m, ServerMsg::Pins { .. })).await else {
+        unreachable!()
+    };
+    assert_eq!(messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), ["remember this"]);
+    // History shows it as pinned too, and unpinning takes it off the list.
+    send(&mut alice, ClientMsg::SetPinned { message_id: m.id, pinned: false }).await;
+    expect(&mut bob, |x| matches!(x, ServerMsg::MessageUpdated(u) if u.id == m.id && !u.pinned)).await;
+    send(&mut bob, ClientMsg::FetchPins { channel_id: general }).await;
+    let ServerMsg::Pins { messages, .. } = expect(&mut bob, |m| matches!(m, ServerMsg::Pins { .. })).await else {
+        unreachable!()
+    };
+    assert!(messages.is_empty());
+
+    // In a DM either person can pin, and nobody else can see the pins.
+    send(&mut alice, ClientMsg::OpenDirect { user_id: bob_id }).await;
+    let ServerMsg::DirectOpened(dm) = expect(&mut alice, |m| matches!(m, ServerMsg::DirectOpened(_))).await else {
+        unreachable!()
+    };
+    send(&mut alice, say(dm.id, "our secret")).await;
+    let ServerMsg::MessageCreated(secret) =
+        expect(&mut bob, |m| matches!(m, ServerMsg::MessageCreated(x) if x.content == "our secret")).await
+    else {
+        unreachable!()
+    };
+    send(&mut bob, ClientMsg::SetPinned { message_id: secret.id, pinned: true }).await;
+    expect(&mut alice, |x| matches!(x, ServerMsg::MessageUpdated(u) if u.id == secret.id && u.pinned)).await;
+    send(&mut eve, ClientMsg::FetchPins { channel_id: dm.id }).await;
+    expect(&mut eve, |m| matches!(m, ServerMsg::Error { .. })).await;
+    send(&mut eve, ClientMsg::SetPinned { message_id: secret.id, pinned: false }).await;
+    expect(&mut eve, |m| matches!(m, ServerMsg::Error { .. })).await;
+}

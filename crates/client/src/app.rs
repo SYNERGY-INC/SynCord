@@ -308,6 +308,11 @@ pub enum Message {
     CameraDevice(String),
     LiveTick,
 
+    // Pinned messages
+    TogglePins,
+    /// Pin (true) or unpin a message.
+    MenuPin(MessageId, bool),
+
     // Searching messages
     OpenSearch,
     SearchInput(String),
@@ -778,6 +783,8 @@ pub struct App {
     /// The activity being typed in the status picker.
     pub activity_draft: (syncord_proto::ActivityKind, String),
     pub search: crate::app_search::Search,
+    /// The pinned messages panel, while open.
+    pub pins: Option<crate::app_search::Pins>,
     pub live: crate::live::Live,
     /// When the current dialog, picker and call card opened (for their pop-in).
     pub(crate) popped: Instant,
@@ -878,6 +885,7 @@ impl App {
             sent_presence: None,
             activity_draft: (syncord_proto::ActivityKind::Playing, String::new()),
             search: Default::default(),
+            pins: None,
             live: Default::default(),
             popped: Instant::now(),
             picker_popped: Instant::now(),
@@ -1752,7 +1760,9 @@ impl App {
             | Message::FocusVideo(_)
             | Message::CameraDevice(_)
             | Message::LiveTick => return self.update_live(message),
-            Message::OpenSearch
+            Message::TogglePins
+            | Message::MenuPin(..)
+            | Message::OpenSearch
             | Message::SearchInput(_)
             | Message::SubmitSearch
             | Message::SearchMore
@@ -2138,6 +2148,7 @@ impl App {
         self.overlay = None;
         self.editing = None;
         self.search = Default::default();
+        self.pins = None;
         self.reconnecting = false;
         self.login.busy = false;
         self.login.password.clear();
@@ -2146,6 +2157,11 @@ impl App {
 
     pub(crate) fn select_channel(&mut self, id: ChannelId) -> Task<Message> {
         let Some(current) = self.session.as_ref().map(|s| s.current) else { return Task::none() };
+        // The pins panel follows you to the new channel.
+        if let Some(p) = self.pins.as_mut().filter(|p| p.channel != id) {
+            *p = crate::app_search::Pins { channel: id, messages: None };
+            self.send(ClientMsg::FetchPins { channel_id: id });
+        }
         if current != Some(id) {
             // Remember where you'd read up to, for the NEW line (before marking it all read).
             self.new_since =
@@ -2331,6 +2347,12 @@ impl App {
             return Task::none();
         }
         match msg {
+            ServerMsg::Pins { channel_id, messages } => {
+                if let Some(p) = self.pins.as_mut().filter(|p| p.channel == channel_id) {
+                    p.messages = Some(messages);
+                }
+                return self.request_avatars();
+            }
             ServerMsg::SearchResults { query, results, more } => {
                 self.on_search_results(query, results, more);
                 return self.request_avatars();
@@ -2357,7 +2379,10 @@ impl App {
 
         match msg {
             ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. } | ServerMsg::Pong => {}
-            ServerMsg::SearchResults { .. } | ServerMsg::Around { .. } | ServerMsg::KeyframeRequest { .. } => {} // on_server
+            ServerMsg::SearchResults { .. }
+            | ServerMsg::Around { .. }
+            | ServerMsg::KeyframeRequest { .. }
+            | ServerMsg::Pins { .. } => {} // on_server
             ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. } => {} // handled in on_voice
             ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } | ServerMsg::GifResults { .. } => {} // on_social
             ServerMsg::RoleUpdated(_) | ServerMsg::RoleDeleted { .. } | ServerMsg::BlockUpdated { .. } => {} // on_people
@@ -2408,6 +2433,15 @@ impl App {
                 return attention;
             }
             ServerMsg::MessageUpdated(m) => {
+                // Keep an open pins list in step.
+                if let Some(list) =
+                    self.pins.as_mut().filter(|p| p.channel == m.channel_id).and_then(|p| p.messages.as_mut())
+                {
+                    list.retain(|x| x.id != m.id);
+                    if m.pinned {
+                        list.insert(0, m.clone());
+                    }
+                }
                 if let Some(st) = s.chans.get_mut(&m.channel_id)
                     && let Some(slot) = st.messages.iter_mut().find(|x| x.id == m.id)
                 {
@@ -2525,7 +2559,6 @@ fn friendly_error(message: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::friendly_error;
-
 
     #[test]
     fn link_sites() {

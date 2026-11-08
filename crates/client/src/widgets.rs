@@ -185,7 +185,12 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for MenuOverlay<'_, '_,
         } else {
             self.position.x
         };
-        let y = (self.position.y).min((bounds.height - size.height).max(0.0));
+        // Near the bottom (like the message box), open upwards instead.
+        let y = if self.position.y + size.height > bounds.height {
+            (self.position.y - size.height).max(0.0)
+        } else {
+            self.position.y
+        };
         node.move_to(Point::new(x, y))
     }
 

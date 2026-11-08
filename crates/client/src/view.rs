@@ -204,6 +204,8 @@ impl App {
             let mut layout = row![self.server_rail(s), self.home_sidebar(s), self.chat_area(s)];
             if self.search.open {
                 layout = layout.push(self.search_panel(s));
+            } else if let Some(p) = &self.pins {
+                layout = layout.push(self.pins_panel(s, p));
             }
             return layout.height(Length::Fill).into();
         }
@@ -221,6 +223,8 @@ impl App {
         let mut layout = row![self.server_rail(s), self.channel_sidebar(s), self.chat_area(s)];
         if self.search.open {
             layout = layout.push(self.search_panel(s));
+        } else if let Some(p) = &self.pins {
+            layout = layout.push(self.pins_panel(s, p));
         } else if self.settings.show_members {
             layout = layout.push(self.member_list(s));
         }
@@ -688,6 +692,15 @@ impl App {
         }
         header = header.push(space::horizontal());
         if channel.is_some() {
+            let open = self.pins.is_some();
+            header = header.push(iced::widget::tooltip(
+                button(icons::icon(&icons::PIN, fs * 1.25, if open { t.header.0 } else { t.muted.0 }))
+                    .padding([4, 6])
+                    .on_press(Message::TogglePins)
+                    .style(style::icon_button(t)),
+                container(text("Pinned messages").size(fs * 0.8)).padding([4, 8]).style(card(t.floating.0, 6.0)),
+                iced::widget::tooltip::Position::Bottom,
+            ));
             header = header.push(self.search_box());
         }
         if let Some(ch) = channel
@@ -887,6 +900,9 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let author = s.users.get(&m.author_id);
+        if matches!(m.kind, syncord_proto::MessageKind::Pinned { .. }) {
+            return self.pin_note(s, m);
+        }
         if !m.kind.is_normal() {
             return self.call_note(s, m);
         }

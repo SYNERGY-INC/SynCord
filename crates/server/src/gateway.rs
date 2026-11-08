@@ -247,6 +247,8 @@ impl Connection {
                 | ClientMsg::ClearProfileImage { .. }
                 | ClientMsg::SetPresence { .. }
                 | ClientMsg::Search(_)
+                | ClientMsg::SetPinned { .. }
+                | ClientMsg::FetchPins { .. }
                 | ClientMsg::FetchAround { .. }) => return self.handle_extra(me, msg).await,
                 ClientMsg::Ping => {
                     self.send(&ServerMsg::Pong).await;

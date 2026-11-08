@@ -95,8 +95,11 @@ impl App {
     }
 
     fn undo(&mut self, redo: bool) -> Task<Message> {
-        let (from, to) =
-            if redo { (&mut self.history.redo, &mut self.history.undo) } else { (&mut self.history.undo, &mut self.history.redo) };
+        let (from, to) = if redo {
+            (&mut self.history.redo, &mut self.history.undo)
+        } else {
+            (&mut self.history.undo, &mut self.history.redo)
+        };
         let Some(text) = from.pop() else { return Task::none() };
         to.push(self.composer.clone());
         self.history.last = None;
@@ -223,7 +226,11 @@ impl App {
                         if let Some(sel) = self.editor.selection() {
                             let copy = self.update(Message::CopyText(sel));
                             if action == MenuAction::Cut {
-                                return Task::batch([copy, self.update_composer(Message::EditorAction(Action::Edit(Edit::Delete))), focus]);
+                                return Task::batch([
+                                    copy,
+                                    self.update_composer(Message::EditorAction(Action::Edit(Edit::Delete))),
+                                    focus,
+                                ]);
                             }
                             return Task::batch([copy, focus]);
                         }
@@ -231,7 +238,9 @@ impl App {
                     }
                     // Like Ctrl+V: pictures and files are attached, text goes in the box.
                     MenuAction::Paste => Task::perform(
-                        async { tokio::task::spawn_blocking(crate::app_media::read_clipboard_any).await.ok().flatten() },
+                        async {
+                            tokio::task::spawn_blocking(crate::app_media::read_clipboard_any).await.ok().flatten()
+                        },
                         Message::PastedFromMenu,
                     ),
                     MenuAction::SelectAll => {

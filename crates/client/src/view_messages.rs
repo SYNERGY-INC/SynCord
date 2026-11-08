@@ -263,6 +263,35 @@ impl App {
         container(r).padding(Padding { top: 6.0, bottom: 6.0, left: 30.0, right: 16.0 }).into()
     }
 
+    /// "So-and-so pinned a message to this channel. See all pinned messages."
+    pub(crate) fn pin_note<'a>(&'a self, s: &'a Session, m: &'a ChatMessage) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let syncord_proto::MessageKind::Pinned { message_id } = m.kind else { return text("").into() };
+        let who = if m.author_id == s.me {
+            "You".to_string()
+        } else {
+            s.users.get(&m.author_id).map(|u| u.name().to_string()).unwrap_or_else(|| "Someone".into())
+        };
+        let link = |label: &'static str, msg: Message| {
+            button(text(label).size(fs * 0.95).font(style::semibold()))
+                .padding(0)
+                .on_press(msg)
+                .style(style::link_button(t.header.0, t.accent.0))
+        };
+        let r = row![
+            icons::icon(&icons::PIN, fs * 1.2, t.muted.0),
+            text(format!("{who} pinned")).size(fs * 0.95).color(t.text.0),
+            link("a message", Message::OpenSearchResult(m.channel_id, message_id)),
+            text("to this channel.").size(fs * 0.95).color(t.text.0),
+            link("See all pinned messages.", Message::TogglePins),
+            text(crate::view::short_time_pub(m.created_at)).size(fs * 0.75).color(t.muted.0),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+        container(r).padding(Padding { top: 6.0, bottom: 6.0, left: 30.0, right: 16.0 }).into()
+    }
+
     /// A folded-away message from someone blocked or ignored.
     pub(crate) fn hidden_message<'a>(&'a self, s: &'a Session, m: &'a ChatMessage) -> Element<'a, Message> {
         let t = &self.theme;

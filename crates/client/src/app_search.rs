@@ -15,6 +15,12 @@ pub const SEARCH_ID: &str = "search";
 /// How long a message you jumped to stays highlighted.
 const HIGHLIGHT_FOR: Duration = Duration::from_secs(3);
 
+/// The pinned messages panel: whose pins, and the list once it arrives.
+pub struct Pins {
+    pub channel: ChannelId,
+    pub messages: Option<Vec<ChatMessage>>,
+}
+
 #[derive(Default)]
 pub struct Search {
     /// What's typed in the search box.
@@ -114,13 +120,28 @@ fn same(a: &SearchQuery, b: &SearchQuery) -> bool {
 impl App {
     pub(crate) fn update_search(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::TogglePins => {
+                if self.pins.take().is_none()
+                    && let Some(channel) = self.session.as_ref().and_then(|s| s.current)
+                {
+                    self.search.open = false;
+                    self.pins = Some(Pins { channel, messages: None });
+                    self.send(ClientMsg::FetchPins { channel_id: channel });
+                }
+            }
+            Message::MenuPin(id, pinned) => {
+                self.message_menu = None;
+                self.send(ClientMsg::SetPinned { message_id: id, pinned });
+            }
             Message::OpenSearch => {
+                self.pins = None;
                 self.search.open = true;
                 return operation::focus(Id::new(SEARCH_ID));
             }
             Message::SearchInput(text) => self.search.input = text,
             Message::SubmitSearch => {
                 let Some(s) = &self.session else { return Task::none() };
+                self.pins = None;
                 self.search.open = true;
                 match parse(&self.search.input, s) {
                     Ok(q) if q.words.is_empty() && q.from.is_none() && q.has.is_none() && q.channel_id.is_none() => {}
@@ -297,58 +318,8 @@ impl App {
             }
             list = list.push(col);
         }
-        let floating = t.floating.0;
         for m in &sr.results {
-            let author = s.users.get(&m.author_id);
-            let name = author.map(|u| u.name()).unwrap_or("Unknown user");
-            let mut snippet = crate::view::truncate(&self.decode_mentions(&m.content).0, 300);
-            if snippet.is_empty() {
-                snippet = match m.attachments.len() {
-                    0 => "(no text)".into(),
-                    1 => format!("📎 {}", m.attachments[0].filename),
-                    n => format!("📎 {n} files"),
-                };
-            }
-            let avatar: Element<'a, Message> = match author {
-                Some(u) => self.avatar(u, 32.0),
-                None => space().width(32).into(),
-            };
-            let card_body = column![
-                text(Self::place(s, m.channel_id)).size(fs * 0.75).font(semibold()).color(t.muted.0),
-                row![
-                    avatar,
-                    column![
-                        row![
-                            text(name.to_string()).size(fs * 0.9).font(semibold()).color(t.header.0),
-                            text(crate::view::long_time(m.created_at)).size(fs * 0.7).color(t.muted.0),
-                        ]
-                        .spacing(6)
-                        .align_y(Alignment::Center),
-                        text(snippet).size(fs * 0.9).color(t.text.0),
-                    ]
-                    .spacing(2)
-                    .width(Length::Fill),
-                ]
-                .spacing(10),
-            ]
-            .spacing(6);
-            list = list.push(
-                button(card_body)
-                    .padding(10)
-                    .width(Length::Fill)
-                    .on_press(Message::OpenSearchResult(m.channel_id, m.id))
-                    .style(move |_, status| button::Style {
-                        background: Some(
-                            match status {
-                                button::Status::Hovered | button::Status::Pressed => style::darken(floating, 0.15),
-                                _ => floating,
-                            }
-                            .into(),
-                        ),
-                        border: iced::Border { radius: 8.0.into(), ..Default::default() },
-                        ..Default::default()
-                    }),
-            );
+            list = list.push(self.message_card(s, m, None));
         }
         if sr.more || (sr.loading && !sr.results.is_empty()) {
             let label = if sr.loading { "Loading..." } else { "Show more" };
@@ -366,6 +337,125 @@ impl App {
             column![
                 container(header).padding([12, 12]),
                 scrollable(list).id(Id::new("search-results")).height(Length::Fill).style(style::scroll(t)),
+            ]
+            .spacing(4),
+        )
+        .width(340)
+        .height(Length::Fill)
+        .style(style::bg(t.sidebar.0))
+        .into()
+    }
+
+    /// A message shown on its own (search results, pins): click to jump to it.
+    /// `extra` goes in the top corner (the Unpin button).
+    pub(crate) fn message_card<'a>(
+        &'a self,
+        s: &'a Session,
+        m: &'a ChatMessage,
+        extra: Option<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let floating = t.floating.0;
+        let author = s.users.get(&m.author_id);
+        let name = author.map(|u| u.name()).unwrap_or("Unknown user");
+        let mut snippet = crate::view::truncate(&self.decode_mentions(&m.content).0, 300);
+        if snippet.is_empty() {
+            snippet = match m.attachments.len() {
+                0 => "(no text)".into(),
+                1 => format!("📎 {}", m.attachments[0].filename),
+                n => format!("📎 {n} files"),
+            };
+        }
+        let avatar: Element<'a, Message> = match author {
+            Some(u) => self.avatar(u, 32.0),
+            None => space().width(32).into(),
+        };
+        let mut top = row![
+            text(Self::place(s, m.channel_id)).size(fs * 0.75).font(semibold()).color(t.muted.0).width(Length::Fill)
+        ]
+        .align_y(Alignment::Center);
+        if let Some(extra) = extra {
+            top = top.push(extra);
+        }
+        let card_body = column![
+            top,
+            row![
+                avatar,
+                column![
+                    row![
+                        text(name.to_string()).size(fs * 0.9).font(semibold()).color(t.header.0),
+                        text(crate::view::long_time(m.created_at)).size(fs * 0.7).color(t.muted.0),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                    text(snippet).size(fs * 0.9).color(t.text.0),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+            ]
+            .spacing(10),
+        ]
+        .spacing(6);
+        button(card_body)
+            .padding(10)
+            .width(Length::Fill)
+            .on_press(Message::OpenSearchResult(m.channel_id, m.id))
+            .style(move |_, status| button::Style {
+                background: Some(
+                    match status {
+                        button::Status::Hovered | button::Status::Pressed => style::darken(floating, 0.15),
+                        _ => floating,
+                    }
+                    .into(),
+                ),
+                border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// The pinned messages panel (in place of the member list).
+    pub(crate) fn pins_panel<'a>(&'a self, s: &'a Session, pins: &'a Pins) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let can_unpin = s.direct(pins.channel).is_some() || s.can(syncord_proto::perms::MANAGE_MESSAGES);
+        let header = row![
+            text("Pinned Messages").size(fs * 0.95).font(bold()).color(t.header.0).width(Length::Fill),
+            button(crate::icons::icon(&crate::icons::CLOSE, fs, t.muted.0))
+                .padding(4)
+                .on_press(Message::TogglePins)
+                .style(style::icon_button(t)),
+        ]
+        .align_y(Alignment::Center);
+        let mut list = column![].spacing(8).padding(Padding { top: 0.0, bottom: 12.0, left: 12.0, right: 12.0 });
+        match &pins.messages {
+            None => list = list.push(text("Loading...").size(fs * 0.85).color(t.muted.0)),
+            Some(ms) if ms.is_empty() => {
+                list = list.push(
+                    text("Nothing's pinned here yet. Right-click a message and choose Pin Message.")
+                        .size(fs * 0.85)
+                        .color(t.muted.0),
+                )
+            }
+            Some(ms) => {
+                for m in ms {
+                    let unpin = can_unpin.then(|| {
+                        Element::from(
+                            button(text("Unpin").size(fs * 0.75))
+                                .padding([2, 8])
+                                .on_press(Message::MenuPin(m.id, false))
+                                .style(style::icon_button(t)),
+                        )
+                    });
+                    list = list.push(self.message_card(s, m, unpin));
+                }
+            }
+        }
+        container(
+            column![
+                container(header).padding([12, 12]),
+                scrollable(list).height(Length::Fill).style(style::scroll(t)),
             ]
             .spacing(4),
         )

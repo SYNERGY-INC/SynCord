@@ -12,7 +12,7 @@ use crate::style::{self, card};
 /// Width of the message menu, used to keep it on screen.
 const MENU_WIDTH: f32 = 200.0;
 /// Rough height of the message menu (five rows), used to keep it on screen.
-const MENU_HEIGHT: f32 = 225.0;
+const MENU_HEIGHT: f32 = 260.0;
 
 /// Where the mouse pointer last was, in window coordinates (two `f32`s packed together).
 /// Kept outside the app state so moving the mouse doesn't redraw the window.
@@ -140,6 +140,10 @@ impl App {
         let can_delete =
             mine || (s.can(syncord_proto::perms::MANAGE_MESSAGES) && s.channels.iter().any(|c| c.id == m.channel_id));
         let has_text = !m.content.is_empty();
+        // Pinning: Manage messages in server channels, anyone in a DM.
+        let in_server = s.channels.iter().any(|c| c.id == m.channel_id);
+        let can_pin = m.kind.is_normal() && (!in_server || s.can(syncord_proto::perms::MANAGE_MESSAGES));
+        let pin_state = can_pin.then_some(m.pinned);
 
         // Clicking anywhere else closes the menu.
         let backdrop = mouse_area(container(text("")).width(Length::Fill).height(Length::Fill))
@@ -148,14 +152,21 @@ impl App {
         let placed = responsive(move |size| {
             let x = at.x.min(size.width - MENU_WIDTH - 8.0).max(0.0);
             let y = at.y.min(size.height - MENU_HEIGHT - 8.0).max(0.0);
-            pin(self.message_menu_items(id, mine, can_delete, has_text)).x(x).y(y).into()
+            pin(self.message_menu_items(id, mine, can_delete, has_text, pin_state)).x(x).y(y).into()
         });
         stack![base, backdrop, placed].into()
     }
 }
 
 impl App {
-    fn message_menu_items(&self, id: MessageId, mine: bool, can_delete: bool, has_text: bool) -> Element<'_, Message> {
+    fn message_menu_items(
+        &self,
+        id: MessageId,
+        mine: bool,
+        can_delete: bool,
+        has_text: bool,
+        pin: Option<bool>,
+    ) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let item = |label: &'static str, msg: Message| {
@@ -173,6 +184,10 @@ impl App {
         }
         if mine {
             items = items.push(item("Edit Message", Message::MenuEdit(id)));
+        }
+        if let Some(pinned) = pin {
+            let label = if pinned { "Unpin Message" } else { "Pin Message" };
+            items = items.push(item(label, Message::MenuPin(id, !pinned)));
         }
         if can_delete {
             let danger = t.danger.0;

@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use syncord_proto::{
-    Attachment, Channel, ChannelId, ChannelKind, DirectChannel, EVERYONE_ROLE, Embed, HISTORY_PAGE, MentionCount,
-    Message, MessageId, MessageKind, Profile, REPLY_SNIPPET_LEN, Reaction, ReadState, ReplyRef, Role, RoleId,
-    SEARCH_PAGE, SearchHas, SearchQuery, User, UserId, parse_mentions, perms,
+    Attachment, Channel, ChannelId, ChannelKind, DirectChannel, EVERYONE_ROLE, Embed, HISTORY_PAGE, MAX_PINS,
+    MentionCount, Message, MessageId, MessageKind, Profile, REPLY_SNIPPET_LEN, Reaction, ReadState, ReplyRef, Role,
+    RoleId, SEARCH_PAGE, SearchHas, SearchQuery, User, UserId, parse_mentions, perms,
 };
 
 #[derive(Clone)]
@@ -211,6 +211,7 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         ("attachments", "is_embed", "ALTER TABLE attachments ADD COLUMN is_embed INTEGER NOT NULL DEFAULT 0"),
         ("messages", "kind", "ALTER TABLE messages ADD COLUMN kind TEXT"),
         ("messages", "reply_to", "ALTER TABLE messages ADD COLUMN reply_to INTEGER"),
+        ("messages", "pinned_at", "ALTER TABLE messages ADD COLUMN pinned_at INTEGER"),
     ] {
         if conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 0")).is_err() {
             conn.execute_batch(ddl)?;
@@ -674,7 +675,36 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
             author_id: None,
             snippet: String::new(),
         }),
+        pinned: r.get::<_, Option<i64>>(9)?.is_some(),
     })
+}
+
+/// Pin or unpin a message.
+pub fn set_pinned(conn: &Connection, id: MessageId, pinned: bool) -> DbResult<()> {
+    let at = pinned.then(now_ms);
+    conn.execute("UPDATE messages SET pinned_at = ?1 WHERE id = ?2", params![at, id])?;
+    Ok(())
+}
+
+pub fn pin_count(conn: &Connection, channel_id: ChannelId) -> DbResult<usize> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND pinned_at IS NOT NULL",
+        params![channel_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n as usize)
+}
+
+/// A channel's pinned messages, most recently pinned first.
+pub fn pins(conn: &Connection, channel_id: ChannelId) -> DbResult<Vec<Message>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at
+         FROM messages WHERE channel_id = ?1 AND pinned_at IS NOT NULL ORDER BY pinned_at DESC LIMIT ?2",
+    )?;
+    let mut msgs: Vec<Message> =
+        stmt.query_map(params![channel_id, MAX_PINS as i64], row_to_message)?.collect::<Result<_, _>>()?;
+    fill_extras(conn, &mut msgs)?;
+    Ok(msgs)
 }
 
 /// Preview of a message for a reply (author `None` if it's gone).
@@ -775,13 +805,14 @@ pub fn insert_message(
         mentions: Vec::new(),
         kind: MessageKind::Normal,
         reply,
+        pinned: false,
     }))
 }
 
 pub fn get_message(conn: &Connection, id: MessageId) -> DbResult<Option<Message>> {
     let msg = conn
         .query_row(
-            "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to FROM messages WHERE id = ?1",
+            "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at FROM messages WHERE id = ?1",
             params![id],
             row_to_message,
         )
@@ -810,7 +841,7 @@ pub fn delete_message(conn: &Connection, id: MessageId) -> DbResult<Vec<String>>
 /// Returns up to [`HISTORY_PAGE`] messages older than `before`, oldest first.
 pub fn history(conn: &Connection, channel_id: ChannelId, before: Option<MessageId>) -> DbResult<Vec<Message>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to FROM messages
+        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at FROM messages
          WHERE channel_id = ?1 AND (?2 IS NULL OR id < ?2)
          ORDER BY id DESC LIMIT ?3",
     )?;
@@ -843,7 +874,7 @@ fn fill_mixed(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
 /// Messages `user` can see that match, newest first (one page, plus whether there are more).
 pub fn search(conn: &Connection, user: UserId, q: &SearchQuery) -> DbResult<(Vec<Message>, bool)> {
     let mut sql = String::from(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to FROM messages m
+        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at FROM messages m
          WHERE (m.channel_id IN (SELECT id FROM channels WHERE kind = 0)
                 OR m.channel_id IN (SELECT channel_id FROM direct_members WHERE user_id = ?))",
     );
@@ -892,7 +923,7 @@ pub fn search(conn: &Connection, user: UserId, q: &SearchQuery) -> DbResult<(Vec
 
 /// Up to 40 messages before `id` and 5 after it (so it shows near the bottom), oldest first.
 pub fn around(conn: &Connection, channel_id: ChannelId, id: MessageId) -> DbResult<(Vec<Message>, bool)> {
-    let cols = "id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to";
+    let cols = "id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at";
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {cols} FROM messages WHERE channel_id = ?1 AND id <= ?2 ORDER BY id DESC LIMIT 41"
     ))?;
