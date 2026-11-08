@@ -24,3 +24,10 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Smaller debug builds (full debug info made target/ huge); backtraces still show lines.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
