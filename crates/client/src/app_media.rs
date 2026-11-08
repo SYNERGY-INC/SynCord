@@ -11,7 +11,6 @@ use syncord_proto::{Attachment, MAX_ATTACHMENTS};
 
 use crate::app::{App, Clip, Download, Message, Overlay, PendingUpload, UploadState};
 use crate::media::{self, Picture, Source};
-use crate::net;
 use crate::settings::FavoriteGif;
 
 /// Largest file the app will try to upload (the server may allow less).
@@ -27,7 +26,7 @@ impl App {
     /// HTTP client, server base URL and login token, if logged in.
     pub(crate) fn http_ctx(&self) -> Option<(reqwest::Client, String, String)> {
         let token = self.settings.token.clone()?;
-        Some((self.http.clone(), media::http_base(&net::server_url(&self.settings.server)), token))
+        Some((self.http.clone(), self.server_base(), token))
     }
 
     /// Keys of the pictures in the channel being shown.

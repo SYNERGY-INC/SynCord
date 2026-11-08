@@ -337,6 +337,9 @@ pub enum ClientMsg {
     },
     JoinVoice {
         channel_id: ChannelId,
+        /// Apps from 0.5 encrypt their audio (see [`voice`]); older ones don't send this.
+        #[serde(default)]
+        encrypted: bool,
     },
     LeaveVoice,
     SetVoiceState {
@@ -399,6 +402,9 @@ pub enum ServerMsg {
         token: String,
         /// UDP port for audio. If UDP can't get through, audio also works over this WebSocket.
         udp_port: u16,
+        /// Hex-encoded audio encryption key, when the app asked for encryption.
+        #[serde(default)]
+        key: Option<String>,
     },
     /// Someone joined, left (`state: None`) or changed mute/deafen.
     VoiceStateUpdate {

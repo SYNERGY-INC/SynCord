@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use syncord_proto::voice::{FRAME_SAMPLES, Packet};
+use syncord_proto::voice::{Direction, FRAME_SAMPLES, Key, Packet, open};
 
 use super::dsp::level_db;
 use super::jitter::{JitterBuffer, Pop};
@@ -36,6 +36,8 @@ struct Inner {
 
 pub struct Mixer {
     inner: Mutex<Inner>,
+    /// Key for opening encrypted audio from the server.
+    key: Mutex<Option<Key>>,
 }
 
 impl Default for Mixer {
@@ -50,6 +52,7 @@ impl Default for Mixer {
                 decoded: vec![0.0; FRAME_SAMPLES],
                 mixed: vec![0.0; FRAME_SAMPLES],
             }),
+            key: Mutex::new(None),
         }
     }
 }
@@ -59,10 +62,22 @@ impl Mixer {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    pub fn set_key(&self, key: Option<Key>) {
+        *self.key.lock().unwrap() = key;
+    }
+
     /// Accept a server -> client audio packet (from UDP or the WebSocket).
     pub fn push_packet(&self, data: &[u8]) {
-        if let Some(Packet::AudioDown { ssrc, seq, opus }) = Packet::parse(data) {
-            self.push(ssrc, seq, opus);
+        let key = *self.key.lock().unwrap();
+        match Packet::parse(data) {
+            // With encryption on, plain audio is refused: it could be forged.
+            Some(Packet::AudioDown { ssrc, seq, opus }) if key.is_none() => self.push(ssrc, seq, opus),
+            Some(Packet::SealedDown { ssrc, counter, sealed }) => {
+                if let Some((seq, opus)) = key.and_then(|k| open(&k, Direction::Down, counter, sealed)) {
+                    self.push(ssrc, seq, &opus);
+                }
+            }
+            _ => {}
         }
     }
 

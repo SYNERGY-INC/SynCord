@@ -39,6 +39,9 @@ pub struct Settings {
     /// Most recently used emoji, newest first.
     pub recent_emoji: Vec<String>,
     pub favorite_gifs: Vec<FavoriteGif>,
+
+    /// Certificate fingerprints of servers we've connected to (host:port -> fingerprint).
+    pub known_servers: HashMap<String, String>,
 }
 
 /// A GIF starred for quick re-sending (remembered per server).
@@ -69,6 +72,7 @@ impl Default for Settings {
             autoplay_gifs: true,
             recent_emoji: Vec::new(),
             favorite_gifs: Vec::new(),
+            known_servers: HashMap::new(),
         }
     }
 }

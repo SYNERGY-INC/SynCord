@@ -514,18 +514,26 @@ impl Connection {
                         Err(e) => return Ok(self.error(e).await),
                     }
                 }
-                ClientMsg::JoinVoice { channel_id } => {
+                ClientMsg::JoinVoice { channel_id, encrypted } => {
                     if db.call(move |c| db::channel_kind(c, channel_id)).await? != Some(ChannelKind::Voice) {
                         return Ok(self.error("That isn't a voice channel").await);
                     }
-                    let joined =
-                        self.state.voice.join(me, channel_id, self.conn_id, self.voice_tx.clone(), false, false);
+                    let joined = self.state.voice.join(
+                        me,
+                        channel_id,
+                        self.conn_id,
+                        self.voice_tx.clone(),
+                        false,
+                        false,
+                        encrypted,
+                    );
                     let udp_port = self.state.udp_port.load(Ordering::Relaxed);
                     self.send(&ServerMsg::VoiceReady {
                         channel_id,
                         ssrc: joined.state.ssrc,
                         token: token_to_hex(&joined.token),
                         udp_port,
+                        key: joined.key.as_ref().map(syncord_proto::voice::key_to_hex),
                     })
                     .await;
                     self.broadcast(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(joined.state) });

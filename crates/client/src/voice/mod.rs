@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use syncord_proto::voice::{FRAME_SAMPLES, Packet, Token};
+use syncord_proto::voice::{Direction, FRAME_SAMPLES, Key, Packet, Token, seal};
 
 use crate::net::Connection;
 use dsp::{CaptureProcessor, CaptureSettings};
@@ -48,7 +48,8 @@ pub struct VoiceConfig {
 /// How audio leaves this computer.
 pub enum Link {
     /// Talk to the server: UDP if it gets through, otherwise the WebSocket.
-    Server { host: String, udp_port: u16, token: Token, conn: Connection },
+    /// With `key`, audio is encrypted both ways.
+    Server { host: String, udp_port: u16, token: Token, key: Option<Key>, conn: Connection },
     /// Play your own microphone back to you (the mic test).
     Loopback,
 }
@@ -147,7 +148,9 @@ impl VoiceEngine {
                 let mixer = mixer.clone();
                 Box::new(move |seq, opus| mixer.push(0, seq, opus))
             }
-            Link::Server { host, udp_port, token, conn } => {
+            Link::Server { host, udp_port, token, key, conn } => {
+                mixer.set_key(key);
+                let mut counter = 0u64;
                 let udp = open_udp(&host, udp_port);
                 if let Some(sock) = &udp {
                     let shared = shared.clone();
@@ -157,7 +160,14 @@ impl VoiceEngine {
                 let udp = udp.and_then(|s| s.try_clone().ok());
                 let shared = shared.clone();
                 Box::new(move |seq, opus| {
-                    let packet = Packet::AudioUp { token, seq, opus }.encode();
+                    let packet = match &key {
+                        Some(key) => {
+                            let sealed = seal(key, Direction::Up, counter, seq, opus);
+                            counter += 1;
+                            Packet::SealedUp { token, counter: counter - 1, sealed: &sealed }.encode()
+                        }
+                        None => Packet::AudioUp { token, seq, opus }.encode(),
+                    };
                     match &udp {
                         Some(sock) if shared.udp_ok.load(Ordering::Relaxed) => {
                             let _ = sock.send(&packet);
@@ -300,7 +310,7 @@ fn udp_loop(sock: UdpSocket, token: Token, shared: Arc<Shared>) {
         match sock.recv(&mut buf) {
             Ok(n) => match Packet::parse(&buf[..n]) {
                 Some(Packet::Ack) => last_ack = Some(Instant::now()),
-                Some(Packet::AudioDown { ssrc, seq, opus }) => shared.mixer.push(ssrc, seq, opus),
+                Some(Packet::AudioDown { .. } | Packet::SealedDown { .. }) => shared.mixer.push_packet(&buf[..n]),
                 _ => {}
             },
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
@@ -342,14 +352,16 @@ mod tests {
         })
     }
 
-    /// Connect with the app's real network code, register, and join voice.
+    /// Connect with the app's real network code, register, and join voice (encrypted).
     async fn join(
-        url: String,
+        address: String,
         name: &str,
         sink: VoiceSink,
-    ) -> (Connection, Token, u16, std::pin::Pin<Box<impl futures::Stream<Item = Event>>>) {
-        let mut events = Box::pin(net::connect(url, sink));
-        let Some(Event::Connected(conn)) = events.next().await else { panic!("connect failed") };
+    ) -> (Connection, Token, Key, u16, std::pin::Pin<Box<impl futures::Stream<Item = Event>>>) {
+        let mut events = Box::pin(net::connect(address, None, sink));
+        let Some(Event::Connected { conn, url, fingerprint }) = events.next().await else { panic!("connect failed") };
+        assert!(url.starts_with("wss://"), "encrypted connection: {url}");
+        assert!(fingerprint.is_some());
         conn.send(ClientMsg::Register { username: name.into(), password: "password123".into(), invite: "x".into() });
         let voice_channel = loop {
             if let Some(Event::Received(msg)) = events.next().await
@@ -358,12 +370,13 @@ mod tests {
                 break r.channels.iter().find(|c| c.kind == ChannelKind::Voice).unwrap().id;
             }
         };
-        conn.send(ClientMsg::JoinVoice { channel_id: voice_channel });
+        conn.send(ClientMsg::JoinVoice { channel_id: voice_channel, encrypted: true });
         loop {
             if let Some(Event::Received(msg)) = events.next().await
-                && let ServerMsg::VoiceReady { token, udp_port, .. } = *msg
+                && let ServerMsg::VoiceReady { token, udp_port, key, .. } = *msg
             {
-                return (conn, token_from_hex(&token).unwrap(), udp_port, events);
+                let key = syncord_proto::voice::key_from_hex(&key.expect("a voice key")).unwrap();
+                return (conn, token_from_hex(&token).unwrap(), key, udp_port, events);
             }
         }
     }
@@ -396,23 +409,33 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn audio_flows_both_ways_over_udp_and_websocket() {
+    async fn encrypted_audio_flows_both_ways_over_udp_and_websocket() {
         use syncord_server::{AppState, Config, db::Db, router, start_udp};
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let config = Config { invite_code: "x".into(), ..Config::default() };
         let state = AppState::new(config, Db::open_in_memory().unwrap());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        let address = listener.local_addr().unwrap().to_string();
         start_udp(&state, "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+        // The real server setup: encrypted and plain connections on one port.
+        let dir = std::env::temp_dir().join(format!("syncord-voice-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tls, _) = syncord_server::tls::load_or_create(&dir).unwrap();
+        let dual = syncord_server::tls::DualListener::new(listener, tls).unwrap();
+        tokio::spawn(async move { axum::serve(dual, router(state)).await.unwrap() });
 
         // Alice only uses the WebSocket; her incoming audio lands in her sink's mixer.
         let alice_mixer = Arc::new(Mixer::default());
         let alice_sink: VoiceSink = Arc::new(Mutex::new(Some(alice_mixer.clone())));
-        let (alice_conn, alice_token, _, mut alice_events) = join(url.clone(), "alice", alice_sink).await;
+        let (alice_conn, alice_token, alice_key, _, mut alice_events) =
+            join(address.clone(), "alice", alice_sink).await;
+        alice_mixer.set_key(Some(alice_key));
 
         // Bob uses UDP, through the engine's real UDP loop.
-        let (_bob_conn, bob_token, udp_port, mut bob_events) = join(url.clone(), "bob", Arc::default()).await;
+        let (_bob_conn, bob_token, bob_key, udp_port, mut bob_events) =
+            join(address.clone(), "bob", Arc::default()).await;
         let bob = shared();
+        bob.mixer.set_key(Some(bob_key));
         let sock = open_udp("127.0.0.1", udp_port).expect("udp socket");
         let bob_send = sock.try_clone().unwrap();
         let loop_shared = bob.clone();
@@ -423,11 +446,21 @@ mod tests {
         tokio::spawn(async move { while alice_events.next().await.is_some() {} });
         tokio::spawn(async move { while bob_events.next().await.is_some() {} });
 
-        // Alice -> server (WebSocket) -> Bob (UDP).
+        // Plain audio from someone who encrypts is refused (it could be forged).
         for (seq, opus) in speech_packets(15) {
             alice_conn.send_binary(Packet::AudioUp { token: alice_token, seq, opus: &opus }.encode());
         }
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let mut heard = vec![0.0; FRAME_SAMPLES * 12];
+        bob.mixer.fill(&mut heard);
+        assert!(level_db(&heard) < -60.0, "plain audio wasn't played");
+
+        // Alice -> server (WebSocket) -> Bob (UDP), sealed both ways.
+        for (i, (seq, opus)) in speech_packets(15).into_iter().enumerate() {
+            let sealed = seal(&alice_key, Direction::Up, i as u64, seq, &opus);
+            alice_conn
+                .send_binary(Packet::SealedUp { token: alice_token, counter: i as u64, sealed: &sealed }.encode());
+        }
         wait_for(|| {
             bob.mixer.fill(&mut heard);
             level_db(&heard) > -25.0
@@ -435,8 +468,9 @@ mod tests {
         .await;
 
         // Bob -> server (UDP) -> Alice (WebSocket).
-        for (seq, opus) in speech_packets(15) {
-            bob_send.send(&Packet::AudioUp { token: bob_token, seq, opus: &opus }.encode()).unwrap();
+        for (i, (seq, opus)) in speech_packets(15).into_iter().enumerate() {
+            let sealed = seal(&bob_key, Direction::Up, i as u64, seq, &opus);
+            bob_send.send(&Packet::SealedUp { token: bob_token, counter: i as u64, sealed: &sealed }.encode()).unwrap();
         }
         wait_for(|| {
             alice_mixer.fill(&mut heard);
@@ -446,5 +480,6 @@ mod tests {
 
         bob.stop.store(true, Ordering::Relaxed);
         udp_thread.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

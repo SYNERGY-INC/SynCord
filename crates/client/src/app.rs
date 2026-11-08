@@ -19,7 +19,7 @@ use crate::net::{self, Connection};
 use crate::settings::Settings;
 use crate::theme::{self, AppTheme, Hex, to_u32};
 use crate::voice::{self, Link, VoiceEngine};
-use syncord_proto::voice::{Token, token_from_hex};
+use syncord_proto::voice::{Key, Token, key_from_hex, token_from_hex};
 use syncord_proto::{Attachment, DirectChannel};
 use syncord_proto::{ChannelKind, VoiceState};
 
@@ -38,6 +38,8 @@ pub enum Message {
     LoginInvite(String),
     ToggleRegister,
     SubmitLogin,
+    /// Accept a server's new certificate after it changed.
+    TrustNewIdentity,
 
     // Connection
     Net(u64, net::Event),
@@ -402,6 +404,7 @@ pub struct ActiveVoice {
     pub channel_id: ChannelId,
     pub ssrc: u32,
     token: Token,
+    key: Option<Key>,
     udp_port: u16,
     pub engine: VoiceEngine,
 }
@@ -457,6 +460,11 @@ pub struct App {
     pub(crate) next_download_id: u64,
     /// Kept open so pictures copied from SynCord stay on the clipboard (needed on Linux).
     pub(crate) clipboard: Option<arboard::Clipboard>,
+    /// Address actually connected to, and the server's certificate fingerprint (`Some(None)`: not encrypted).
+    pub(crate) server_url: Option<String>,
+    pub encrypted: Option<Option<String>>,
+    /// Set when a known server showed a different certificate: the one it showed.
+    pub identity_changed: Option<String>,
     /// Picture being copied from the viewer, and whether it's done.
     pub copying: Option<(String, bool)>,
     pub(crate) pending_direct: Option<UserId>,
@@ -516,6 +524,9 @@ impl App {
             downloads: Vec::new(),
             next_download_id: 1,
             clipboard: None,
+            server_url: None,
+            encrypted: None,
+            identity_changed: None,
             copying: None,
             pending_direct: None,
             update: crate::updater::Stage::Checking,
@@ -617,9 +628,17 @@ impl App {
         self.generation += 1;
         self.conn = None;
         self.pending_auth = Some(auth);
+        self.identity_changed = None;
         let generation = self.generation;
-        let url = net::server_url(&self.settings.server);
-        Task::run(net::connect(url, self.voice_sink.clone()), move |event| Message::Net(generation, event))
+        let pin = self.settings.known_servers.get(&net::server_key(&self.settings.server)).cloned();
+        let stream = net::connect(self.settings.server.clone(), pin, self.voice_sink.clone());
+        Task::run(stream, move |event| Message::Net(generation, event))
+    }
+
+    /// The server's web address for files and pictures (`https://...` when encrypted).
+    pub(crate) fn server_base(&self) -> String {
+        let url = self.server_url.clone().unwrap_or_else(|| net::server_url(&self.settings.server));
+        media::http_base(&url)
     }
 
     pub(crate) fn send(&self, msg: ClientMsg) {
@@ -668,6 +687,20 @@ impl App {
                 self.login.busy = true;
                 self.login.error = None;
                 return self.connect(auth);
+            }
+            Message::TrustNewIdentity => {
+                let Some(seen) = self.identity_changed.take() else { return Task::none() };
+                if !seen.is_empty() {
+                    self.settings.known_servers.insert(net::server_key(&self.settings.server), seen);
+                } else {
+                    self.settings.known_servers.remove(&net::server_key(&self.settings.server));
+                }
+                self.settings.save();
+                self.login.error = None;
+                if let Some(token) = self.settings.token.clone() {
+                    self.login.busy = true;
+                    return self.connect(ClientMsg::Resume { token });
+                }
             }
 
             Message::Net(generation, event) => {
@@ -896,7 +929,7 @@ impl App {
                 self.mic_test = None;
                 self.stop_voice();
                 self.voice_joining = Some(id);
-                self.send(ClientMsg::JoinVoice { channel_id: id });
+                self.send(ClientMsg::JoinVoice { channel_id: id, encrypted: true });
             }
             Message::LeaveVoice => {
                 self.send(ClientMsg::LeaveVoice);
@@ -1132,15 +1165,24 @@ impl App {
         self.voice_status = voice::Status::default();
     }
 
-    fn start_engine(&self, token: Token, udp_port: u16) -> Result<VoiceEngine, String> {
+    fn start_engine(&self, token: Token, key: Option<Key>, udp_port: u16) -> Result<VoiceEngine, String> {
         let conn = self.conn.clone().ok_or("Not connected")?;
-        let host = net::host_of(&net::server_url(&self.settings.server)).unwrap_or_default();
-        let link = Link::Server { host, udp_port, token, conn };
+        let host = net::host_of(&self.server_url.clone().unwrap_or_else(|| net::server_url(&self.settings.server)))
+            .unwrap_or_default();
+        let link = Link::Server { host, udp_port, token, key, conn };
         VoiceEngine::start(self.settings.voice_config(), link, self.muted, self.deafened)
     }
 
     /// Hook a freshly started engine up to the network and per-person volumes.
-    fn install_engine(&mut self, channel_id: ChannelId, ssrc: u32, token: Token, udp_port: u16, engine: VoiceEngine) {
+    fn install_engine(
+        &mut self,
+        channel_id: ChannelId,
+        ssrc: u32,
+        token: Token,
+        key: Option<Key>,
+        udp_port: u16,
+        engine: VoiceEngine,
+    ) {
         *self.voice_sink.lock().unwrap() = Some(engine.mixer());
         if let Some(s) = &self.session {
             for st in s.voice.values() {
@@ -1150,7 +1192,7 @@ impl App {
         if let Some(problem) = engine.status().problem {
             self.notice = Some(problem);
         }
-        self.voice = Some(ActiveVoice { channel_id, ssrc, token, udp_port, engine });
+        self.voice = Some(ActiveVoice { channel_id, ssrc, token, key, udp_port, engine });
     }
 
     fn apply_mute_state(&self) {
@@ -1178,10 +1220,10 @@ impl App {
             return self.restart_mic_test();
         }
         if let Some(v) = self.voice.take() {
-            let (channel_id, ssrc, token, udp_port) = (v.channel_id, v.ssrc, v.token, v.udp_port);
+            let (channel_id, ssrc, token, key, udp_port) = (v.channel_id, v.ssrc, v.token, v.key, v.udp_port);
             drop(v); // release the old devices first
-            match self.start_engine(token, udp_port) {
-                Ok(engine) => self.install_engine(channel_id, ssrc, token, udp_port, engine),
+            match self.start_engine(token, key, udp_port) {
+                Ok(engine) => self.install_engine(channel_id, ssrc, token, key, udp_port, engine),
                 Err(e) => {
                     self.notice = Some(format!("Couldn't switch audio device: {e}"));
                     self.send(ClientMsg::LeaveVoice);
@@ -1200,16 +1242,17 @@ impl App {
 
     fn on_voice(&mut self, msg: ServerMsg) {
         match msg {
-            ServerMsg::VoiceReady { channel_id, ssrc, token, udp_port } => {
+            ServerMsg::VoiceReady { channel_id, ssrc, token, udp_port, key } => {
                 // Ignore answers to joins we've since cancelled or replaced.
                 if self.voice_joining != Some(channel_id) {
                     return;
                 }
                 self.voice_joining = None;
                 let Some(token) = token_from_hex(&token) else { return };
-                match self.start_engine(token, udp_port) {
+                let key = key.as_deref().and_then(key_from_hex);
+                match self.start_engine(token, key, udp_port) {
                     Ok(engine) => {
-                        self.install_engine(channel_id, ssrc, token, udp_port, engine);
+                        self.install_engine(channel_id, ssrc, token, key, udp_port, engine);
                         if self.muted || self.deafened {
                             self.apply_mute_state();
                         }
@@ -1299,11 +1342,36 @@ impl App {
 
     fn on_net(&mut self, event: net::Event) -> Task<Message> {
         match event {
-            net::Event::Connected(conn) => {
+            net::Event::Connected { conn, url, fingerprint } => {
                 if let Some(auth) = self.pending_auth.take() {
                     conn.send(auth);
                 }
                 self.conn = Some(conn);
+                if let Some(print) = &fingerprint {
+                    // First encrypted connection to this server: remember who it is.
+                    let key = net::server_key(&self.settings.server);
+                    if self.settings.known_servers.get(&key) != Some(print) {
+                        self.settings.known_servers.insert(key, print.clone());
+                        self.settings.save();
+                    }
+                }
+                self.http = crate::tls::http_client(fingerprint.clone());
+                self.encrypted = Some(fingerprint);
+                self.server_url = Some(url);
+            }
+            net::Event::IdentityChanged { seen } => {
+                self.conn = None;
+                self.stop_voice();
+                self.session = None;
+                self.reconnecting = false;
+                self.login.busy = false;
+                self.login.error = Some(
+                    "This server's identity has changed since you last connected, so SynCord didn't connect. \
+                     That happens when the server is reinstalled or moved to another PC, but it could also mean \
+                     someone is pretending to be it. Check with whoever runs the server before trusting it."
+                        .into(),
+                );
+                self.identity_changed = Some(seen);
             }
             net::Event::Disconnected(reason) => {
                 self.conn = None;
@@ -1379,7 +1447,7 @@ impl App {
             && self.session.as_ref().is_some_and(|s| s.channels.iter().any(|c| c.id == channel_id))
         {
             self.voice_joining = Some(channel_id);
-            self.send(ClientMsg::JoinVoice { channel_id });
+            self.send(ClientMsg::JoinVoice { channel_id, encrypted: true });
         }
         match current {
             Some(id) => self.select_channel(id),

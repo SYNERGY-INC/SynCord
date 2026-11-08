@@ -27,6 +27,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "stream"] }
 tokio-util = { version = "0.7", features = ["io"] }
 bytes = "1"
+webpki-roots = "1"
+sha2 = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 arboard = { version = "3", default-features = false, features = ["image-data"] }

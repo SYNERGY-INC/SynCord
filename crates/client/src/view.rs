@@ -130,6 +130,29 @@ impl App {
         if let Some(err) = &f.error {
             form = form.push(text(err.clone()).size(fs * 0.9).color(t.danger.0));
         }
+        if let Some(seen) = &self.identity_changed {
+            let mut col = column![].spacing(8);
+            if !seen.is_empty() {
+                col = col.push(
+                    text(format!("New fingerprint: {seen}"))
+                        .size(fs * 0.75)
+                        .font(iced::Font::MONOSPACE)
+                        .color(t.muted.0),
+                );
+                col = col.push(
+                    text("The server owner can find the right one at the top of syncord-server.log.")
+                        .size(fs * 0.8)
+                        .color(t.muted.0),
+                );
+            }
+            col = col.push(
+                button(text("Trust the new identity").size(fs * 0.9))
+                    .padding([8, 14])
+                    .on_press(Message::TrustNewIdentity)
+                    .style(style::solid_button(t.danger.0, t.radius * 0.6)),
+            );
+            form = form.push(col);
+        }
 
         let label_text = if f.busy { "Connecting..." } else { action };
         form = form.push(

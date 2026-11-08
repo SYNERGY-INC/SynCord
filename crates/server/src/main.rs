@@ -197,13 +197,24 @@ async fn main() {
         info!("invite code for new accounts: {}", state.config.invite_code);
     }
 
-    if let Err(e) = axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            stop_requested().await;
-            info!("shutting down");
-        })
-        .await
-    {
+    let stopped = async {
+        stop_requested().await;
+        info!("shutting down");
+    };
+    let result = match syncord_server::tls::load_or_create(&dir) {
+        Ok((tls, fingerprint)) => {
+            info!("connections are encrypted (certificate fingerprint {fingerprint})");
+            match syncord_server::tls::DualListener::new(listener, tls) {
+                Ok(dual) => axum::serve(dual, app).with_graceful_shutdown(stopped).await,
+                Err(e) => fail(format!("Could not listen on {addr}: {e}")),
+            }
+        }
+        Err(e) => {
+            warn!("encrypted connections are off: {e}");
+            axum::serve(listener, app).with_graceful_shutdown(stopped).await
+        }
+    };
+    if let Err(e) = result {
         fail(format!("Server stopped unexpectedly: {e}"));
     }
 }

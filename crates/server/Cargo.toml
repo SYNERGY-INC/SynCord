@@ -22,7 +22,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 syncord-update.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "json"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Encrypted connections: a self-signed certificate made on first start.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"

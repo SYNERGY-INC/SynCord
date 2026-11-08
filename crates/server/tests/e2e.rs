@@ -198,11 +198,11 @@ async fn voice_relay_udp_and_websocket() {
     // Text messages can't go to a voice channel, and you can't "join" a text channel.
     send(&mut alice, ClientMsg::SendMessage { channel_id: voice, content: "hi".into(), attachments: vec![] }).await;
     expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
-    send(&mut alice, ClientMsg::JoinVoice { channel_id: text }).await;
+    send(&mut alice, ClientMsg::JoinVoice { channel_id: text, encrypted: false }).await;
     expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
 
     // Both join.
-    send(&mut alice, ClientMsg::JoinVoice { channel_id: voice }).await;
+    send(&mut alice, ClientMsg::JoinVoice { channel_id: voice, encrypted: false }).await;
     let ServerMsg::VoiceReady { token: alice_token, udp_port: port, ssrc: alice_ssrc, .. } =
         expect(&mut alice, |m| matches!(m, ServerMsg::VoiceReady { .. })).await
     else {
@@ -213,7 +213,7 @@ async fn voice_relay_udp_and_websocket() {
     expect(&mut bob, |m| matches!(m, ServerMsg::VoiceStateUpdate { user_id, state: Some(_) } if *user_id == alice_id))
         .await;
 
-    send(&mut bob, ClientMsg::JoinVoice { channel_id: voice }).await;
+    send(&mut bob, ClientMsg::JoinVoice { channel_id: voice, encrypted: false }).await;
     let ServerMsg::VoiceReady { token: bob_token, ssrc: bob_ssrc, .. } =
         expect(&mut bob, |m| matches!(m, ServerMsg::VoiceReady { .. })).await
     else {

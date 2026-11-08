@@ -6,6 +6,7 @@ pub mod gateway;
 pub mod gifs;
 pub mod http;
 pub mod media;
+pub mod tls;
 pub mod update;
 pub mod voice;
 
@@ -99,6 +100,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config, db: db::Db) -> Arc<Self> {
+        // HTTPS (GIF search, updates) and encrypted connections use the same small crypto library.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let (events, _) = broadcast::channel(1024);
         let gifs = gifs::GifSearch::from_config(&config);
         Arc::new(Self {

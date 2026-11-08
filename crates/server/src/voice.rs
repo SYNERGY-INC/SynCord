@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use rand::Rng;
-use syncord_proto::voice::{MAX_PACKET, Packet, Token};
+use syncord_proto::voice::{Direction, Key, MAX_PACKET, Packet, Token, open, seal};
 use syncord_proto::{ChannelId, UserId, VoiceState};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -24,6 +24,12 @@ const MAX_PACKETS_PER_SEC: u32 = 75;
 struct Member {
     state: VoiceState,
     token: Token,
+    /// Set when this person's audio is encrypted.
+    key: Option<Key>,
+    /// Next counter for packets sealed for this person.
+    down_counter: u64,
+    /// Highest counter seen from them (old packets are dropped, so they can't be replayed).
+    up_counter: Option<u64>,
     /// Which WebSocket connection owns this voice session.
     conn_id: u64,
     /// Binary frames queued for that WebSocket.
@@ -44,6 +50,7 @@ pub struct Voice {
 pub struct Joined {
     pub state: VoiceState,
     pub token: Token,
+    pub key: Option<Key>,
     /// Set if the user was already in voice on another connection and got moved.
     pub replaced_conn: Option<u64>,
 }
@@ -61,6 +68,7 @@ impl Voice {
         self.lock().values().map(|m| m.state.clone()).collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn join(
         &self,
         user_id: UserId,
@@ -69,13 +77,18 @@ impl Voice {
         ws: mpsc::Sender<Bytes>,
         muted: bool,
         deafened: bool,
+        encrypted: bool,
     ) -> Joined {
         let token: Token = rand::rng().random();
+        let key: Option<Key> = encrypted.then(|| rand::rng().random());
         let ssrc = self.next_ssrc.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         let state = VoiceState { user_id, channel_id, muted, deafened, ssrc };
         let member = Member {
             state: state.clone(),
             token,
+            key,
+            down_counter: 0,
+            up_counter: None,
             conn_id,
             ws,
             udp: None,
@@ -83,7 +96,7 @@ impl Voice {
             window_count: 0,
         };
         let previous = self.lock().insert(user_id, member);
-        Joined { state, token, replaced_conn: previous.map(|m| m.conn_id).filter(|c| *c != conn_id) }
+        Joined { state, token, key, replaced_conn: previous.map(|m| m.conn_id).filter(|c| *c != conn_id) }
     }
 
     /// Remove the user if `conn_id` owns their voice session. Returns true if they left.
@@ -128,17 +141,35 @@ impl Voice {
                 Some(Packet::Ack.encode())
             }
             Packet::AudioUp { token, seq, opus } => {
-                self.relay(token, seq, opus, from);
+                self.relay(token, None, seq, opus, from);
                 None
             }
-            Packet::Ack | Packet::AudioDown { .. } => None,
+            Packet::SealedUp { token, counter, sealed } => {
+                let key = self.lock().values().find(|m| m.token == token).and_then(|m| m.key)?;
+                let (seq, opus) = open(&key, Direction::Up, counter, sealed)?;
+                self.relay(token, Some(counter), seq, &opus, from);
+                None
+            }
+            Packet::Ack | Packet::AudioDown { .. } | Packet::SealedDown { .. } => None,
         }
     }
 
-    fn relay(&self, token: Token, seq: u16, opus: &[u8], from: Option<SocketAddr>) {
+    /// Forward audio to the others in the channel. `counter` is set for sealed packets.
+    fn relay(&self, token: Token, counter: Option<u64>, seq: u16, opus: &[u8], from: Option<SocketAddr>) {
         let udp = self.udp.lock().unwrap().clone();
         let mut members = self.lock();
         let Some(sender) = members.values_mut().find(|m| m.token == token) else { return };
+        match (sender.key.is_some(), counter) {
+            // Someone who encrypts never sends plain audio: refuse it (it could be forged).
+            (true, None) => return,
+            (true, Some(c)) => {
+                if sender.up_counter.is_some_and(|last| c <= last) {
+                    return; // repeated or very late: drop
+                }
+                sender.up_counter = Some(c);
+            }
+            (false, _) => {}
+        }
 
         if let Some(addr) = from {
             sender.udp = Some((addr, Instant::now()));
@@ -153,13 +184,22 @@ impl Voice {
         }
 
         let (sender_id, channel_id, ssrc) = (sender.state.user_id, sender.state.channel_id, sender.state.ssrc);
-        let packet = Packet::AudioDown { ssrc, seq, opus }.encode();
-        let bytes = Bytes::from(packet);
+        let plain = Bytes::from(Packet::AudioDown { ssrc, seq, opus }.encode());
 
-        for m in members.values() {
+        for m in members.values_mut() {
             if m.state.user_id == sender_id || m.state.channel_id != channel_id || m.state.deafened {
                 continue;
             }
+            // Each listener gets the audio sealed with their own key (or plain, for old apps).
+            let bytes = match m.key {
+                Some(key) => {
+                    let counter = m.down_counter;
+                    m.down_counter += 1;
+                    let sealed = seal(&key, Direction::Down, counter, seq, opus);
+                    Bytes::from(Packet::SealedDown { ssrc, counter, sealed: &sealed }.encode())
+                }
+                None => plain.clone(),
+            };
             let fresh_udp = m.udp.filter(|(_, seen)| seen.elapsed() < UDP_FRESH).map(|(addr, _)| addr);
             match (fresh_udp, &udp) {
                 (Some(addr), Some(sock)) => {
@@ -169,7 +209,7 @@ impl Voice {
                     }
                 }
                 _ => {
-                    let _ = m.ws.try_send(bytes.clone());
+                    let _ = m.ws.try_send(bytes);
                 }
             }
         }
@@ -201,8 +241,47 @@ mod tests {
 
     fn join(v: &Voice, user: UserId, channel: ChannelId) -> (Token, mpsc::Receiver<Bytes>) {
         let (tx, rx) = mpsc::channel(16);
-        let j = v.join(user, channel, user as u64, tx, false, false);
+        let j = v.join(user, channel, user as u64, tx, false, false, false);
         (j.token, rx)
+    }
+
+    #[test]
+    fn encrypted_and_plain_members_hear_each_other() {
+        let v = Voice::default();
+        let (tx, mut alice_rx) = mpsc::channel(16);
+        let alice = v.join(1, 10, 1, tx, false, false, true);
+        let alice_key = alice.key.unwrap();
+        let (tx, mut bob_rx) = mpsc::channel(16);
+        let bob = v.join(2, 10, 2, tx, false, false, true);
+        let bob_key = bob.key.unwrap();
+        assert_ne!(alice_key, bob_key);
+        let (old_token, mut old_rx) = join(&v, 3, 10); // an app older than 0.5
+
+        // Alice (encrypted) speaks: Bob gets it sealed with his key, the old app gets it plain.
+        let alice_sealed = seal(&alice_key, Direction::Up, 0, 42, &[7, 7]);
+        let first = Packet::SealedUp { token: alice.token, counter: 0, sealed: &alice_sealed }.encode();
+        v.handle_packet(&first, None);
+        let got = bob_rx.try_recv().unwrap();
+        let Some(Packet::SealedDown { counter, sealed, .. }) = Packet::parse(&got) else { panic!("sealed for bob") };
+        assert_eq!(open(&bob_key, Direction::Down, counter, sealed), Some((42, vec![7, 7])));
+        assert_eq!(open(&alice_key, Direction::Down, counter, sealed), None, "only bob's key opens it");
+        let got = old_rx.try_recv().unwrap();
+        assert!(matches!(Packet::parse(&got), Some(Packet::AudioDown { seq: 42, .. })));
+
+        // Replays and plain packets with Alice's token are refused.
+        v.handle_packet(&first, None);
+        v.handle_packet(&Packet::AudioUp { token: alice.token, seq: 1, opus: &[1] }.encode(), None);
+        assert!(bob_rx.try_recv().is_err());
+        // Garbage sealed with the wrong key goes nowhere.
+        let forged = seal(&[0; 32], Direction::Up, 5, 1, &[1]);
+        v.handle_packet(&Packet::SealedUp { token: alice.token, counter: 5, sealed: &forged }.encode(), None);
+        assert!(bob_rx.try_recv().is_err());
+
+        // The old app speaks plain: Alice gets it sealed.
+        v.handle_packet(&Packet::AudioUp { token: old_token, seq: 3, opus: &[5] }.encode(), None);
+        let got = alice_rx.try_recv().unwrap();
+        let Some(Packet::SealedDown { counter, sealed, .. }) = Packet::parse(&got) else { panic!() };
+        assert_eq!(open(&alice_key, Direction::Down, counter, sealed), Some((3, vec![5])));
     }
 
     #[test]
@@ -268,7 +347,7 @@ mod tests {
         let v = Voice::default();
         let (alice, _a) = join(&v, 1, 10);
         let (tx, mut bob_rx) = mpsc::channel(1000);
-        v.join(2, 10, 2, tx, false, false);
+        v.join(2, 10, 2, tx, false, false, false);
         for seq in 0..200u16 {
             v.handle_packet(&Packet::AudioUp { token: alice, seq, opus: &[1] }.encode(), None);
         }

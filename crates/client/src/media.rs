@@ -482,8 +482,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
 
-        let mut events = Box::pin(crate::net::connect(format!("ws://{addr}/ws"), Default::default()));
-        let Some(crate::net::Event::Connected(conn)) = events.next().await else { panic!("connect failed") };
+        let mut events = Box::pin(crate::net::connect(format!("ws://{addr}/ws"), None, Default::default()));
+        let Some(crate::net::Event::Connected { conn, .. }) = events.next().await else { panic!("connect failed") };
         conn.send(ClientMsg::Register { username: "sam".into(), password: "password123".into(), invite: "x".into() });
         let (token, channel, limit) = loop {
             if let Some(crate::net::Event::Received(msg)) = events.next().await
