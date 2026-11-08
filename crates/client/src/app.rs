@@ -113,6 +113,7 @@ pub enum Message {
     UserVolume(UserId, f32),
     ToggleDmSound(bool),
     ToggleServerSound(bool),
+    ToggleVoiceSounds(bool),
     SoundVolume(f32),
     TestSound,
 
@@ -938,6 +939,9 @@ impl App {
                 self.send(ClientMsg::JoinVoice { channel_id: id });
             }
             Message::LeaveVoice => {
+                if self.voice.is_some() && self.settings.voice_sounds {
+                    self.settings.play(crate::sounds::Sound::Leave);
+                }
                 self.send(ClientMsg::LeaveVoice);
                 self.voice_joining = None;
                 self.rejoin_voice = None;
@@ -1009,6 +1013,10 @@ impl App {
             }
             Message::ToggleServerSound(v) => {
                 self.settings.server_sound = v;
+                self.settings.save();
+            }
+            Message::ToggleVoiceSounds(v) => {
+                self.settings.voice_sounds = v;
                 self.settings.save();
             }
             Message::SoundVolume(v) => {
@@ -1283,6 +1291,9 @@ impl App {
                 match self.start_engine(token, udp_port) {
                     Ok(engine) => {
                         self.install_engine(channel_id, ssrc, token, udp_port, engine);
+                        if self.settings.voice_sounds && !self.deafened {
+                            self.settings.play(crate::sounds::Sound::Join);
+                        }
                         if self.muted || self.deafened {
                             self.apply_mute_state();
                         }
@@ -1296,6 +1307,20 @@ impl App {
             ServerMsg::VoiceStateUpdate { user_id, state } => {
                 let Some(s) = &mut self.session else { return };
                 let me = s.me;
+                // Someone else came into or left the voice channel we're in.
+                if let Some(mine) = self.voice.as_ref().map(|v| v.channel_id)
+                    && user_id != me
+                    && self.settings.voice_sounds
+                    && !self.deafened
+                {
+                    let was_here = s.voice.get(&user_id).is_some_and(|v| v.channel_id == mine);
+                    let is_here = state.as_ref().is_some_and(|v| v.channel_id == mine);
+                    match (was_here, is_here) {
+                        (false, true) => self.settings.play(crate::sounds::Sound::Join),
+                        (true, false) => self.settings.play(crate::sounds::Sound::Leave),
+                        _ => {}
+                    }
+                }
                 match &state {
                     Some(st) => s.voice.insert(user_id, st.clone()),
                     None => s.voice.remove(&user_id),

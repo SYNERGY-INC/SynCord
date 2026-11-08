@@ -1286,6 +1286,10 @@ impl App {
                 .label("Play a sound for new messages in server channels")
                 .on_toggle(Message::ToggleServerSound)
                 .text_size(fs),
+            toggler(st.voice_sounds)
+                .label("Play a sound when people join or leave your voice channel")
+                .on_toggle(Message::ToggleVoiceSounds)
+                .text_size(fs),
             row![
                 text("Sound volume").size(fs * 0.9).color(t.text.0),
                 slider(0.0..=1.0, st.sound_volume, Message::SoundVolume).step(0.05_f32).width(240),
