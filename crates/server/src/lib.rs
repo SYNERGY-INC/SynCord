@@ -2,6 +2,7 @@
 //! server can also be started from integration tests.
 
 pub mod db;
+pub mod embeds;
 pub mod gateway;
 pub mod gifs;
 pub mod http;
