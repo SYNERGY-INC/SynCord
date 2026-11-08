@@ -99,7 +99,12 @@ async fn full_flow() {
     // Bob sends a message; both see it.
     send(
         &mut bob,
-        ClientMsg::SendMessage { channel_id: general, content: "  hello alice  ".into(), attachments: vec![] },
+        ClientMsg::SendMessage {
+            channel_id: general,
+            content: "  hello alice  ".into(),
+            attachments: vec![],
+            reply_to: None,
+        },
     )
     .await;
     let created = expect(&mut alice, |m| matches!(m, ServerMsg::MessageCreated(_))).await;
@@ -168,8 +173,11 @@ async fn full_flow() {
     expect(&mut after, |m| matches!(m, ServerMsg::AuthFailed { .. })).await;
 
     // Requests before logging in are refused.
-    send(&mut after, ClientMsg::SendMessage { channel_id: general, content: "sneaky".into(), attachments: vec![] })
-        .await;
+    send(
+        &mut after,
+        ClientMsg::SendMessage { channel_id: general, content: "sneaky".into(), attachments: vec![], reply_to: None },
+    )
+    .await;
     expect(&mut after, |m| matches!(m, ServerMsg::AuthFailed { .. })).await;
 }
 
@@ -196,7 +204,11 @@ async fn voice_relay_udp_and_websocket() {
     let (mut bob, _) = register(&url, "bob", "letmein").await;
 
     // Text messages can't go to a voice channel, and you can't "join" a text channel.
-    send(&mut alice, ClientMsg::SendMessage { channel_id: voice, content: "hi".into(), attachments: vec![] }).await;
+    send(
+        &mut alice,
+        ClientMsg::SendMessage { channel_id: voice, content: "hi".into(), attachments: vec![], reply_to: None },
+    )
+    .await;
     expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
     send(&mut alice, ClientMsg::JoinVoice { channel_id: text, encrypted: false }).await;
     expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
@@ -349,14 +361,22 @@ async fn direct_messages_files_and_reactions() {
     assert_eq!(download(&alice_token, "../../etc/passwd", false).await.unwrap().status(), 404);
 
     // Alice sends it in the DM. Bob gets it; Eve never sees it.
-    let msg = ClientMsg::SendMessage { channel_id: dm.id, content: "look".into(), attachments: vec![att.id.clone()] };
+    let msg = ClientMsg::SendMessage {
+        channel_id: dm.id,
+        content: "look".into(),
+        attachments: vec![att.id.clone()],
+        reply_to: None,
+    };
     send(&mut alice, msg).await;
     let ServerMsg::MessageCreated(m) = expect(&mut bob, |m| matches!(m, ServerMsg::MessageCreated(_))).await else {
         unreachable!()
     };
     assert_eq!(m.attachments.len(), 1);
-    send(&mut alice, ClientMsg::SendMessage { channel_id: general, content: "public".into(), attachments: vec![] })
-        .await;
+    send(
+        &mut alice,
+        ClientMsg::SendMessage { channel_id: general, content: "public".into(), attachments: vec![], reply_to: None },
+    )
+    .await;
     let is_private = |x: &ServerMsg| matches!(x, ServerMsg::MessageCreated(m) if m.channel_id == dm.id);
     expect_not_before(&mut eve, is_private, |x| matches!(x, ServerMsg::MessageCreated(m) if m.content == "public"))
         .await;
@@ -372,8 +392,11 @@ async fn direct_messages_files_and_reactions() {
     // Reactions reach the members only.
     send(&mut bob, ClientMsg::AddReaction { message_id: m.id, emoji: "👍".into() }).await;
     expect(&mut alice, |x| matches!(x, ServerMsg::ReactionUpdate { added: true, .. })).await;
-    send(&mut alice, ClientMsg::SendMessage { channel_id: general, content: "public2".into(), attachments: vec![] })
-        .await;
+    send(
+        &mut alice,
+        ClientMsg::SendMessage { channel_id: general, content: "public2".into(), attachments: vec![], reply_to: None },
+    )
+    .await;
     let private_reaction = |x: &ServerMsg| matches!(x, ServerMsg::ReactionUpdate { .. });
     expect_not_before(
         &mut eve,
@@ -659,7 +682,12 @@ async fn roles_mentions_blocks_calls_previews_and_profile_pictures() {
     // Taking Send messages away from everyone silences Carol.
     send(&mut alice, ClientMsg::UpdateRole(syncord_proto::Role { permissions: 0, ..everyone.clone() })).await;
     expect(&mut alice, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.id == EVERYONE_ROLE && r.permissions == 0)).await;
-    let say = |text: &str| ClientMsg::SendMessage { channel_id: general, content: text.into(), attachments: vec![] };
+    let say = |text: &str| ClientMsg::SendMessage {
+        channel_id: general,
+        content: text.into(),
+        attachments: vec![],
+        reply_to: None,
+    };
     send(&mut carol, say("can I talk?")).await;
     expect(&mut carol, |m| matches!(m, ServerMsg::Error { message } if message.contains("permission"))).await;
     send(&mut alice, ClientMsg::UpdateRole(everyone.clone())).await;

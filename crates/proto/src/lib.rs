@@ -379,7 +379,23 @@ pub struct Message {
     /// everyone for @everyone. Mentions are written `<@user id>`, `<@&role id>` and `@everyone`.
     #[serde(default)]
     pub mentions: Vec<UserId>,
+    /// The message this one replies to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<ReplyRef>,
 }
+
+/// A short preview of the message being replied to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyRef {
+    pub message_id: MessageId,
+    /// `None` if the original message has been deleted.
+    pub author_id: Option<UserId>,
+    /// The start of the original message (empty if deleted or only files).
+    pub snippet: String,
+}
+
+/// Longest reply preview, in characters.
+pub const REPLY_SNIPPET_LEN: usize = 120;
 
 /// Snapshot sent right after a successful login.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -439,6 +455,9 @@ pub enum ClientMsg {
         /// Ids of files uploaded beforehand (see [`UPLOAD_PATH`]).
         #[serde(default)]
         attachments: Vec<String>,
+        /// Message in the same channel this one replies to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<MessageId>,
     },
     EditMessage {
         message_id: MessageId,
@@ -673,7 +692,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let msg = ClientMsg::SendMessage { channel_id: 3, content: "hi".into(), attachments: vec![] };
+        let msg = ClientMsg::SendMessage { channel_id: 3, content: "hi".into(), attachments: vec![], reply_to: None };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"op":"SendMessage","d":{"channel_id":3,"content":"hi","attachments":[]}}"#);
         // Older clients that don't send attachments still work.

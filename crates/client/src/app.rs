@@ -70,6 +70,9 @@ pub enum Message {
     SelectAction(iced::widget::text_editor::Action),
     StopSelecting,
     MenuReact(MessageId),
+    /// Reply to a message: shows "Replying to" above the message box.
+    StartReply(MessageId),
+    CancelReply,
     MenuEdit(MessageId),
     MenuDelete(MessageId),
     ToggleMembers,
@@ -568,6 +571,8 @@ pub struct App {
     pub editing: Option<(MessageId, String)>,
     /// Message whose right-click menu is open, and where (window coordinates).
     pub message_menu: Option<(MessageId, iced::Point)>,
+    /// Message the next one you send replies to.
+    pub replying: Option<MessageId>,
     /// Message whose text is being selected.
     pub selecting: Option<crate::app_messages::Selecting>,
     pub overlay: Option<Overlay>,
@@ -664,6 +669,7 @@ impl App {
             editing: None,
             message_menu: None,
             selecting: None,
+            replying: None,
             overlay: None,
             settings_tab: None,
             draft: ProfileDraft::default(),
@@ -1002,7 +1008,8 @@ impl App {
                         self.notice = Some("Not connected right now; your message wasn't sent.".into());
                         return Task::none();
                     }
-                    self.send(ClientMsg::SendMessage { channel_id, content, attachments });
+                    let reply_to = self.replying.take();
+                    self.send(ClientMsg::SendMessage { channel_id, content, attachments, reply_to });
                     self.set_composer(String::new());
                     self.composer_mentions.clear();
                     self.pending.clear();
@@ -1350,7 +1357,9 @@ impl App {
             | Message::StopSelecting
             | Message::MenuReact(_)
             | Message::MenuEdit(_)
-            | Message::MenuDelete(_) => return self.update_messages(message),
+            | Message::MenuDelete(_)
+            | Message::StartReply(_)
+            | Message::CancelReply => return self.update_messages(message),
             Message::OpenThemeEditor
             | Message::ThemeEditorAction(_)
             | Message::ThemeEditorFormat(_)
@@ -1436,6 +1445,8 @@ impl App {
                     self.message_menu = None;
                 } else if self.selecting.is_some() {
                     self.selecting = None;
+                } else if self.replying.is_some() {
+                    self.replying = None;
                 } else if self.emoji_picker.is_some() {
                     self.emoji_picker = None;
                 } else if self.overlay.is_some() {
@@ -1730,6 +1741,7 @@ impl App {
             self.editing = None;
             self.message_menu = None;
             self.selecting = None;
+            self.replying = None;
             self.last_typing_sent = None;
             self.emoji_picker = None;
             self.pending.clear();

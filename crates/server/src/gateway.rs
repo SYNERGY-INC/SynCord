@@ -257,7 +257,7 @@ impl Connection {
                     }
                     return Ok(Flow::Close);
                 }
-                ClientMsg::SendMessage { channel_id, content, attachments } => {
+                ClientMsg::SendMessage { channel_id, content, attachments, reply_to } => {
                     let content = content.trim().to_owned();
                     if content.is_empty() && attachments.is_empty() {
                         return Ok(Flow::Continue);
@@ -305,7 +305,7 @@ impl Connection {
                     }
                     let sent = db
                         .call(move |c| {
-                            let sent = db::insert_message(c, channel_id, me, &content, &attachments)?;
+                            let sent = db::insert_message(c, channel_id, me, &content, &attachments, reply_to)?;
                             if let Ok(m) = &sent {
                                 db::mark_read(c, me, channel_id, m.id)?;
                                 let pinged = db::resolve_mentions(c, me, channel_id, &m.content)?;
@@ -505,7 +505,7 @@ impl Connection {
                     let ids = vec![attachment.id];
                     let sent = db
                         .call(move |c| {
-                            let sent = db::insert_message(c, channel_id, me, "", &ids)?;
+                            let sent = db::insert_message(c, channel_id, me, "", &ids, None)?;
                             if let Ok(m) = &sent {
                                 db::mark_read(c, me, channel_id, m.id)?;
                             }

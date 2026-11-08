@@ -674,6 +674,7 @@ impl App {
         let mut prev: Option<&ChatMessage> = None;
         for m in messages {
             let grouped = !self.settings.compact
+                && m.reply.is_none()
                 && prev.is_some_and(|p| p.author_id == m.author_id && m.created_at - p.created_at < GROUP_WINDOW_MS);
             if !grouped && prev.is_some() && !self.settings.compact {
                 list = list.push(space().height(14));
@@ -831,7 +832,11 @@ impl App {
                 button(icons::icon(&icons::SMILE, fs * 1.1, t.muted.0))
                     .padding([3, 6])
                     .on_press(Message::OpenEmojiPicker(PickerTarget::Reaction(m.id)))
-                    .style(style::icon_button(t))
+                    .style(style::icon_button(t)),
+                button(icons::icon(&icons::REPLY, fs * 1.1, t.muted.0))
+                    .padding([3, 6])
+                    .on_press(Message::StartReply(m.id))
+                    .style(style::icon_button(t)),
             ]
             .spacing(2)
             .align_y(Alignment::Center);
@@ -869,6 +874,12 @@ impl App {
             (true, false) => Some(with_alpha(gold, 0.09)),
             (false, true) => Some(with_alpha(style::darken(t.chat.0, 0.12), 1.0)),
             (false, false) => None,
+        };
+        // The message being replied to stays tinted so you can see which one it is.
+        let hover_bg = if self.replying == Some(m.id) { Some(with_alpha(t.accent.0, 0.12)) } else { hover_bg };
+        let line: Element<'a, Message> = match &m.reply {
+            Some(r) => column![self.reply_preview(r), line].into(),
+            None => line.into(),
         };
         let bar_color = if pinged { gold } else { Color::TRANSPARENT };
         let bar = container(space())
@@ -960,6 +971,9 @@ impl App {
         // The extras live in their own column that's always there, so the message box keeps
         // its place in the widget tree (and its keyboard focus) when they appear.
         let mut extras = column![].spacing(6);
+        if let Some(reply) = self.reply_bar() {
+            extras = extras.push(reply);
+        }
         if let Some(suggestions) = self.suggestions_view() {
             extras = extras.push(suggestions);
         }

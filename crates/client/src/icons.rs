@@ -115,6 +115,10 @@ icon!(
     )
 );
 icon!(
+    REPLY,
+    r#"<path d="M10 7L4 12l6 5M4.5 12H14a6 6 0 0 1 6 6v1" stroke="black" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#
+);
+icon!(
     MORE,
     r#"<circle cx="5" cy="12" r="2.2" fill="black"/><circle cx="12" cy="12" r="2.2" fill="black"/><circle cx="19" cy="12" r="2.2" fill="black"/>"#
 );

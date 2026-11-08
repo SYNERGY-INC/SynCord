@@ -12,7 +12,7 @@ use crate::style::{self, card};
 /// Width of the message menu, used to keep it on screen.
 const MENU_WIDTH: f32 = 200.0;
 /// Rough height of the message menu (five rows), used to keep it on screen.
-const MENU_HEIGHT: f32 = 190.0;
+const MENU_HEIGHT: f32 = 225.0;
 
 /// Where the mouse pointer last was, in window coordinates (two `f32`s packed together).
 /// Kept outside the app state so moving the mouse doesn't redraw the window.
@@ -84,6 +84,13 @@ impl App {
                 self.message_menu = None;
                 return self.update(Message::OpenEmojiPicker(PickerTarget::Reaction(id)));
             }
+            Message::StartReply(id) => {
+                self.message_menu = None;
+                self.selecting = None;
+                self.replying = Some(id);
+                return operation::focus(Id::new(crate::app::COMPOSER_ID));
+            }
+            Message::CancelReply => self.replying = None,
             Message::MenuEdit(id) => {
                 self.message_menu = None;
                 self.selecting = None;
@@ -158,7 +165,8 @@ impl App {
                 .on_press(msg)
                 .style(style::row_button(t, false))
         };
-        let mut items = column![item("Add Reaction", Message::MenuReact(id))].spacing(2);
+        let mut items =
+            column![item("Add Reaction", Message::MenuReact(id)), item("Reply", Message::StartReply(id))].spacing(2);
         if has_text {
             items = items.push(item("Copy Text", Message::CopyMessageText(id)));
             items = items.push(item("Select Text", Message::SelectMessageText(id)));
@@ -202,4 +210,50 @@ fn row_hint<'a>(t: &crate::theme::AppTheme, size: f32) -> Element<'a, Message> {
     ]
     .spacing(8)
     .into()
+}
+
+impl App {
+    /// "Replying to <name>" bar above the message box.
+    pub(crate) fn reply_bar(&self) -> Option<Element<'_, Message>> {
+        let id = self.replying?;
+        let s = self.session.as_ref()?;
+        let t = &self.theme;
+        let fs = self.fs();
+        let name =
+            self.find_message(id).and_then(|m| s.users.get(&m.author_id)).map(|u| u.name()).unwrap_or("a message");
+        let bar = iced::widget::row![
+            text("Replying to ").size(fs * 0.85).color(t.muted.0),
+            text(name.to_owned()).size(fs * 0.85).font(style::SEMIBOLD).color(t.header.0),
+            iced::widget::space::horizontal(),
+            button(crate::icons::icon(&crate::icons::CLOSE, fs * 0.9, t.muted.0))
+                .padding(4)
+                .on_press(Message::CancelReply)
+                .style(style::icon_button(t)),
+        ]
+        .align_y(iced::Alignment::Center);
+        Some(container(bar).padding([4, 12]).width(Length::Fill).style(style::card(t.rail.0, t.radius * 0.6)).into())
+    }
+
+    /// The line above a reply showing who and what it answers.
+    pub(crate) fn reply_preview<'a>(&'a self, r: &'a syncord_proto::ReplyRef) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs() * 0.82;
+        let s = self.session.as_ref();
+        let mut line = iced::widget::row![crate::icons::icon(&crate::icons::REPLY, fs * 1.1, t.muted.0)]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+        match r.author_id.and_then(|a| s.and_then(|s| s.users.get(&a).map(|u| (s, u)))) {
+            Some((s, u)) => {
+                let snippet: String = r.snippet.lines().next().unwrap_or("").chars().take(90).collect();
+                let snippet = if snippet.is_empty() { "(attachment)".to_string() } else { snippet };
+                let color =
+                    s.role_color(u.id).map(crate::theme::rgb).unwrap_or(crate::theme::rgb(u.profile.accent_color));
+                line = line
+                    .push(text(u.name().to_owned()).size(fs).font(style::SEMIBOLD).color(color))
+                    .push(text(snippet).size(fs).color(t.muted.0));
+            }
+            None => line = line.push(text("Original message was deleted").size(fs).color(t.muted.0)),
+        }
+        container(line).padding(iced::Padding { left: 56.0, bottom: 2.0, ..iced::Padding::ZERO }).into()
+    }
 }
