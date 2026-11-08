@@ -53,7 +53,11 @@ impl VideoDecoder {
         self.misses > 300
     }
 
-    pub fn step(&mut self, video: &VideoTrack) -> Result<Step<'_>, String> {
+    /// Feeds the next access unit (or drains the decoder at the end). Non-reference frames that
+    /// end at or before `drop_before_ms` (track presentation time) are not decoded at all: callers
+    /// pass the seek target or the current playback position so frames that would be thrown away
+    /// anyway cost nothing. Pass `i64::MIN` to decode everything.
+    pub fn step(&mut self, video: &VideoTrack, drop_before_ms: i64) -> Result<Step<'_>, String> {
         let samples = &video.track.samples;
         if self.next >= samples.len() {
             // The decoder holds a few pictures for reordering; drain them (bounded, in case it
@@ -76,6 +80,13 @@ impl VideoDecoder {
             self.annexb.extend_from_slice(&self.param_sets);
         }
         let data = self.reader.read(&s)?;
+        if drop_before_ms > i64::MIN
+            && !s.sync
+            && video.track.to_ms(video.track.pts(idx) + s.dur as i64) <= drop_before_ms
+            && h264::is_nonref(data, video.nal_len)
+        {
+            return Ok(Step::Nothing);
+        }
         h264::append_annexb(data, video.nal_len, &mut self.annexb);
         if self.annexb.is_empty() {
             self.misses += 1;

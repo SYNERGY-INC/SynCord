@@ -297,6 +297,28 @@ pub(crate) fn append_annexb(sample: &[u8], nal_len: usize, out: &mut Vec<u8>) {
     }
 }
 
+/// `true` if the access unit (length-prefixed, as in MP4) is a non-reference picture
+/// (`nal_ref_idc == 0`): no other picture is predicted from it, so it can be skipped without
+/// affecting the frames after it.
+pub(crate) fn is_nonref(sample: &[u8], nal_len: usize) -> bool {
+    let mut p = 0usize;
+    while p + nal_len < sample.len() {
+        let n = sample[p..p + nal_len].iter().fold(0usize, |n, &b| (n << 8) | b as usize);
+        p += nal_len;
+        if n == 0 || p + n > sample.len() {
+            return false;
+        }
+        let hdr = sample[p];
+        match hdr & 0x1f {
+            1 => return hdr & 0x60 == 0,
+            5 => return false,
+            _ => {}
+        }
+        p += n;
+    }
+    false
+}
+
 pub(crate) fn param_sets_annexb(sets: &[Vec<u8>]) -> Vec<u8> {
     let mut out = Vec::new();
     for s in sets {
@@ -454,6 +476,17 @@ mod tests {
         let mut out = Vec::new();
         append_annexb(&[0, 0, 0, 2, 0xaa, 0xbb, 0, 0, 0, 1, 0xcc], 4, &mut out);
         assert_eq!(out, [0, 0, 0, 1, 0xaa, 0xbb, 0, 0, 0, 1, 0xcc]);
+    }
+
+    #[test]
+    fn nonref_detection() {
+        // SEI, then a non-reference slice (nal_ref_idc 0, type 1).
+        assert!(is_nonref(&[0, 0, 0, 2, 0x06, 0xff, 0, 0, 0, 2, 0x01, 0x88], 4));
+        // Reference P slice (nal_ref_idc 2), IDR, and garbage.
+        assert!(!is_nonref(&[0, 0, 0, 2, 0x41, 0x88], 4));
+        assert!(!is_nonref(&[0, 0, 0, 2, 0x65, 0x88], 4));
+        assert!(!is_nonref(&[0, 0, 0, 9, 0x01], 4));
+        assert!(!is_nonref(&[], 4));
     }
 
     #[test]

@@ -14,17 +14,59 @@
 //! - Audio: AAC-LC, mono or stereo. Other audio (HE-AAC, surround, Opus, MP3, PCM...) does not
 //!   make a file unplayable; the video then plays silently and [`Info::has_audio`] is `false`.
 //!
-//! # Layers
+//! Rotation metadata (portrait phone videos) is applied: sizes are reported as displayed and frames
+//! come out upright.
 //!
-//! - [`probe`] and [`poster`] are always available (the server uses these at upload time).
-//! - [`Player`] needs the `playback` feature, which adds `cpal` (audio output) and `symphonia`
-//!   (AAC decoding).
+//! # API
+//!
+//! Always available (the server uses these at upload time, without the `playback` feature):
+//!
+//! ```text
+//! pub struct Info { pub width: u32, pub height: u32, pub duration_ms: u64, pub has_audio: bool }
+//! pub fn probe(path: &Path) -> Result<Info, String>
+//! pub fn poster(path: &Path, max_side: u32) -> Result<(Info, image::RgbaImage), String>
+//! pub struct Frame { pub width: u32, pub height: u32, pub rgba: Arc<Vec<u8>>, pub serial: u64, pub pts_ms: u64 }
+//! ```
+//!
+//! With the `playback` feature (adds `cpal` for audio output and `symphonia` for AAC decoding):
+//!
+//! ```text
+//! impl Player {                          // Send + Sync; share it as Arc<Player>
+//!     pub fn open(path: &Path, max_side: u32) -> Result<Player, String>  // starts paused at 0
+//!     pub fn info(&self) -> Info
+//!     pub fn play(&self)                 // after the end: restarts from 0
+//!     pub fn pause(&self)
+//!     pub fn is_playing(&self) -> bool
+//!     pub fn seek(&self, ms: u64)        // exact frame, also while paused
+//!     pub fn set_volume(&self, v: f32)   // 0.0 ..= 2.0, 1.0 = unchanged
+//!     pub fn volume(&self) -> f32
+//!     pub fn position_ms(&self) -> u64
+//!     pub fn duration_ms(&self) -> u64
+//!     pub fn ended(&self) -> bool
+//!     pub fn frame(&self) -> Option<Frame>   // frame for the current position
+//!     pub fn audio_level(&self) -> f32       // output peak 0..1, for a level meter
+//!     pub fn has_audio_output(&self) -> bool // false: no audio track or no device
+//! }
+//! ```
+//!
+//! All `Player` methods are cheap (a mutex lock, never decoding), meant to be called from the UI
+//! thread every frame; upload `frame()` to a texture when its `serial` changes. Dropping the
+//! player stops its threads (joined) and closes the audio stream.
+//!
+//! # Threads and timing
+//!
+//! A `Player` runs one video decode thread and, if the file has decodable audio, one audio decode
+//! thread that feeds a cpal output stream. The clock follows the audio output while audio plays,
+//! and the wall clock otherwise (no audio track, no or broken output device, audio ended or
+//! stalled). Frames are reordered to presentation order (B-frames). Late frames are decoded (they
+//! may be references) but not converted. Seeking restarts the decoder at the previous keyframe and
+//! decodes forward to the target, so a seek costs up to one GOP of decoding.
 //!
 //! # Memory
 //!
 //! Only the `moov` header and a compact per-sample index are kept in memory; sample data is read
 //! from disk on demand. Frames are converted straight from YUV to RGBA at the requested reduced
-//! size. A playing [`Player`] holds at most a handful of scaled frames and ~0.25 s of audio.
+//! size. A playing `Player` holds at most a handful of scaled frames and ~0.25 s of audio.
 
 use std::path::Path;
 
@@ -47,7 +89,8 @@ mod tests;
 /// Basic facts about a playable video.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Info {
-    /// Display width in pixels (sample aspect ratio applied, rotation metadata ignored).
+    /// Display width in pixels (sample aspect ratio and rotation metadata applied, so a portrait
+    /// phone video is taller than wide).
     pub width: u32,
     /// Display height in pixels.
     pub height: u32,
@@ -71,7 +114,8 @@ pub struct Frame {
 }
 
 fn info_of(movie: &demux::Movie) -> Info {
-    let (width, height) = movie.video.sps.display_size();
+    let (w, h) = movie.video.sps.display_size();
+    let (width, height) = if movie.video.rotation % 180 == 90 { (h, w) } else { (w, h) };
     Info { width, height, duration_ms: movie.duration_ms, has_audio: movie.audio.is_some() }
 }
 
@@ -107,7 +151,7 @@ pub fn poster(path: &Path, max_side: u32) -> Result<(Info, image::RgbaImage), St
     let mut rgba = Vec::new();
     let mut best: Option<i64> = None; // pts of the frame currently in `rgba`
     loop {
-        match dec.step(v)? {
+        match dec.step(v, i64::MIN)? {
             video::Step::Picture(p) => {
                 let i = (p.ts as usize).min(track.samples.len() - 1);
                 let pts = track.pts(i);
@@ -115,7 +159,7 @@ pub fn poster(path: &Path, max_side: u32) -> Result<(Info, image::RgbaImage), St
                     continue;
                 }
                 if best.is_none_or(|b| pts < b) {
-                    convert::to_rgba(&p, ow, oh, v.sps.matrix, v.sps.full_range, &mut rgba);
+                    convert::to_rgba(&p, ow, oh, v.rotation, v.sps.matrix, v.sps.full_range, &mut rgba);
                     best = Some(pts);
                 }
                 if i == first {

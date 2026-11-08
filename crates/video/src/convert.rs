@@ -98,22 +98,33 @@ fn box_row(
 }
 
 /// Converts `pic` to RGBA8 at `out_w` x `out_h` into `out` (resized as needed), averaging the
-/// source pixels covered by each output pixel (separable box filter).
-pub(crate) fn to_rgba(pic: &Picture<'_>, out_w: u32, out_h: u32, matrix: Matrix, full_range: bool, out: &mut Vec<u8>) {
+/// source pixels covered by each output pixel (separable box filter), and rotating clockwise by
+/// `rotation` degrees (0, 90, 180 or 270; `out_w` x `out_h` is the size after rotation).
+pub(crate) fn to_rgba(
+    pic: &Picture<'_>,
+    out_w: u32,
+    out_h: u32,
+    rotation: u16,
+    matrix: Matrix,
+    full_range: bool,
+    out: &mut Vec<u8>,
+) {
     let (ow, oh) = (out_w.max(1) as usize, out_h.max(1) as usize);
+    // Size before rotation.
+    let (uw, uh) = if rotation % 180 == 90 { (oh, ow) } else { (ow, oh) };
     out.clear();
     out.resize(ow * oh * 4, 255);
     let c = Coeffs::new(matrix, full_range);
     let (cw, ch) = (pic.width.div_ceil(2), pic.height.div_ceil(2));
-    let xs = spans(pic.width, ow);
-    let ys = spans(pic.height, oh);
+    let xs = spans(pic.width, uw);
+    let ys = spans(pic.height, uh);
     // Chroma span for a luma span: [a/2, ceil(b/2)).
     let cxs: Vec<(u32, u32)> = xs.iter().map(|&(a, b)| (a / 2, b.div_ceil(2).min(cw as u32).max(a / 2 + 1))).collect();
 
     let mut acc_y = vec![0u32; pic.width];
     let mut acc_c = vec![0u32; cw];
     let (mut ry, mut rc) = ((0u32, Vec::new()), (0u32, Vec::new()));
-    let (mut ya, mut ua, mut va) = (vec![0i32; ow], vec![0i32; ow], vec![0i32; ow]);
+    let (mut ya, mut ua, mut va) = (vec![0i32; uw], vec![0i32; uw], vec![0i32; uw]);
     let mut last_cy = (u32::MAX, u32::MAX);
 
     for (oy, &(y0, y1)) in ys.iter().enumerate() {
@@ -125,17 +136,35 @@ pub(crate) fn to_rgba(pic: &Picture<'_>, out_w: u32, out_h: u32, matrix: Matrix,
             box_row(pic.u, pic.stride_uv, cw, cy, &cxs, &mut acc_c, &mut rc, &mut ua);
             box_row(pic.v, pic.stride_uv, cw, cy, &cxs, &mut acc_c, &mut rc, &mut va);
         }
-        let row = &mut out[oy * ow * 4..(oy + 1) * ow * 4];
-        for (((px, &y), &u), &v) in row.chunks_exact_mut(4).zip(&ya).zip(&ua).zip(&va) {
-            let (u, v) = (u - 128, v - 128);
-            let yy = (y - c.y_off) * c.y_mul;
-            let r = (yy + c.rv * v + 2048) >> 12;
-            let g = (yy - c.gu * u - c.gv * v + 2048) >> 12;
-            let b = (yy + c.bu * u + 2048) >> 12;
-            px[0] = r.clamp(0, 255) as u8;
-            px[1] = g.clamp(0, 255) as u8;
-            px[2] = b.clamp(0, 255) as u8;
+        let pixels = ya.iter().zip(&ua).zip(&va).map(|((&y, &u), &v)| c.rgb(y, u, v));
+        if rotation == 0 {
+            let row = &mut out[oy * ow * 4..(oy + 1) * ow * 4];
+            for (px, rgb) in row.chunks_exact_mut(4).zip(pixels) {
+                px[..3].copy_from_slice(&rgb);
+            }
+        } else {
+            for (ox, rgb) in pixels.enumerate() {
+                let (dx, dy) = match rotation {
+                    90 => (uh - 1 - oy, ox),
+                    180 => (uw - 1 - ox, uh - 1 - oy),
+                    _ => (oy, uw - 1 - ox), // 270
+                };
+                let i = (dy * ow + dx) * 4;
+                out[i..i + 3].copy_from_slice(&rgb);
+            }
         }
+    }
+}
+
+impl Coeffs {
+    #[inline]
+    fn rgb(&self, y: i32, u: i32, v: i32) -> [u8; 3] {
+        let (u, v) = (u - 128, v - 128);
+        let yy = (y - self.y_off) * self.y_mul;
+        let r = (yy + self.rv * v + 2048) >> 12;
+        let g = (yy - self.gu * u - self.gv * v + 2048) >> 12;
+        let b = (yy + self.bu * u + 2048) >> 12;
+        [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8]
     }
 }
 
@@ -161,10 +190,10 @@ mod tests {
         let v = [128u8; 4];
         let pic = Picture { y: &y, u: &u, v: &v, width: 3, height: 3, stride_y: 3, stride_uv: 2, ts: 0 };
         let mut out = Vec::new();
-        to_rgba(&pic, 3, 3, Matrix::Bt709, false, &mut out);
+        to_rgba(&pic, 3, 3, 0, Matrix::Bt709, false, &mut out);
         assert_eq!(out.len(), 36);
         assert!(out.chunks(4).all(|p| p == [255, 255, 255, 255]));
-        to_rgba(&pic, 1, 1, Matrix::Bt601, false, &mut out);
+        to_rgba(&pic, 1, 1, 0, Matrix::Bt601, false, &mut out);
         assert_eq!(out, [255, 255, 255, 255]);
 
         // Pure red in BT.601 limited: Y=81, U=90, V=240.
@@ -172,8 +201,30 @@ mod tests {
         let u = [90u8; 1];
         let v = [240u8; 1];
         let pic = Picture { y: &y, u: &u, v: &v, width: 2, height: 2, stride_y: 2, stride_uv: 1, ts: 0 };
-        to_rgba(&pic, 2, 2, Matrix::Bt601, false, &mut out);
+        to_rgba(&pic, 2, 2, 0, Matrix::Bt601, false, &mut out);
         let p = &out[0..4];
         assert!(p[0] > 250 && p[1] < 5 && p[2] < 5, "{p:?}");
+    }
+
+    #[test]
+    fn rotation() {
+        // 4x2 picture, white only at the top-left pixel (full range, no scaling).
+        let y = [255, 0, 0, 0, 0, 0, 0, 0];
+        let (u, v) = ([128u8; 2], [128u8; 2]);
+        let pic = Picture { y: &y, u: &u, v: &v, width: 4, height: 2, stride_y: 4, stride_uv: 2, ts: 0 };
+        let mut out = Vec::new();
+        let white = |out: &[u8], w: usize| -> Vec<(usize, usize)> {
+            (0..out.len() / 4).filter(|i| out[i * 4] > 128).map(|i| (i % w, i / w)).collect()
+        };
+        to_rgba(&pic, 4, 2, 0, Matrix::Bt601, true, &mut out);
+        assert_eq!(white(&out, 4), [(0, 0)]);
+        // Clockwise rotations; 90 and 270 swap the output size to 2x4.
+        to_rgba(&pic, 2, 4, 90, Matrix::Bt601, true, &mut out);
+        assert_eq!(white(&out, 2), [(1, 0)]);
+        to_rgba(&pic, 4, 2, 180, Matrix::Bt601, true, &mut out);
+        assert_eq!(white(&out, 4), [(3, 1)]);
+        to_rgba(&pic, 2, 4, 270, Matrix::Bt601, true, &mut out);
+        assert_eq!(white(&out, 2), [(0, 3)]);
+        assert!(out.len() == 2 * 4 * 4 && out.chunks(4).all(|p| p[3] == 255));
     }
 }

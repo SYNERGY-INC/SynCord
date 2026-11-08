@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use super::{AudioOut, Player};
-use crate::tests::{SRC, counter_clip, fixture, high_aac};
+use crate::tests::{SRC, counter_clip, fixture, high_aac, rotated_clip};
 
 fn wait_until(timeout_ms: u64, mut f: impl FnMut() -> bool) -> bool {
     let end = Instant::now() + Duration::from_millis(timeout_ms);
@@ -133,6 +133,20 @@ fn audio_drives_clock() {
     assert_eq!(player.position_ms(), player.duration_ms());
 }
 
+/// An audio device that opens but never consumes samples must not freeze playback.
+#[test]
+fn stuck_audio_device_falls_back_to_wall_clock() {
+    let Some(p) = high_aac() else { return };
+    let player = Player::open_with(&p, 64, AudioOut::Stuck).unwrap();
+    assert!(wait_until(2000, || player.has_audio_output()));
+    player.play();
+    std::thread::sleep(Duration::from_millis(500));
+    // Waiting for audio: the clock stops at the extrapolation cap.
+    assert!(player.position_ms() <= 300, "{}", player.position_ms());
+    assert!(wait_until(2000, || player.position_ms() > 1000), "clock stuck at {}", player.position_ms());
+    assert!(wait_until(4000, || player.ended()), "never ended");
+}
+
 #[test]
 fn device_fallback_and_drop_is_prompt() {
     // On machines without a sound card the device can't be opened; playback still works.
@@ -143,6 +157,18 @@ fn device_fallback_and_drop_is_prompt() {
     let t = Instant::now();
     drop(player);
     assert!(t.elapsed() < Duration::from_millis(500), "drop took {:?}", t.elapsed());
+}
+
+#[test]
+fn rotated_frames() {
+    let Some(p) = rotated_clip(90) else { return };
+    let player = Player::open(&p, 64).unwrap();
+    assert!(wait_until(3000, || player.frame().is_some()));
+    let f = player.frame().unwrap();
+    assert_eq!((f.width, f.height), (32, 64));
+    // The white top-left quadrant is now top-right.
+    let lum = |x: usize, y: usize| f.rgba[(y * 32 + x) * 4];
+    assert!(lum(24, 16) > 200 && lum(8, 48) < 50);
 }
 
 #[test]

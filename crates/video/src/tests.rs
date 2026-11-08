@@ -182,6 +182,47 @@ fn mov_container() {
     poster(&p, 64).unwrap();
 }
 
+/// A 128x64 clip, white only in the top-left quadrant, with a clockwise display rotation of `cw`
+/// degrees in its track header.
+pub(crate) fn rotated_clip(cw: i32) -> Option<PathBuf> {
+    let base = fixture(
+        "rot_base.mp4",
+        "-f lavfi -i nullsrc=size=128x64:rate=25,geq=lum='if(lt(X,W/2)*lt(Y,H/2),235,16)':cb=128:cr=128 \
+         -frames:v 5 -c:v libx264 -pix_fmt yuv420p",
+    )?;
+    // ffmpeg's -display_rotation is counter-clockwise.
+    fixture(&format!("rot{cw}.mp4"), &format!("-display_rotation {} -i {} -c copy", -cw, base.display()))
+}
+
+/// Phone videos are stored landscape with a rotation in the track header matrix; `probe` reports
+/// the displayed size and frames come out upright.
+#[test]
+fn rotation_metadata() {
+    if !have_ffmpeg() {
+        return;
+    }
+    // (clockwise rotation, displayed size, where the white quadrant ends up as (right, bottom))
+    let cases = [
+        (0, (128, 64), (false, false)),
+        (90, (64, 128), (true, false)),
+        (180, (128, 64), (true, true)),
+        (270, (64, 128), (false, true)),
+    ];
+    for (cw, size, (right, bottom)) in cases {
+        let p = rotated_clip(cw).unwrap();
+        assert_eq!(crate::demux::open(&p).unwrap().video.rotation, cw as u16, "rotation {cw}");
+        let info = probe(&p).unwrap();
+        assert_eq!((info.width, info.height), size, "rotation {cw}");
+        let (_, img) = poster(&p, 32).unwrap();
+        let (w, h) = img.dimensions();
+        assert_eq!((w, h), (size.0 / 4, size.1 / 4), "rotation {cw}");
+        let lum = |x: u32, y: u32| img.get_pixel(x, y).0[0];
+        let (x, y) = (if right { w * 3 / 4 } else { w / 4 }, if bottom { h * 3 / 4 } else { h / 4 });
+        assert!(lum(x, y) > 200, "rotation {cw}: white quadrant not at ({x}, {y})");
+        assert!(lum(w - 1 - x, h - 1 - y) < 50, "rotation {cw}");
+    }
+}
+
 #[test]
 fn rejects_hevc() {
     if !have_ffmpeg() || !have_encoder("libx265") {
@@ -286,7 +327,7 @@ fn bframes_presentation_order() {
     let mut dec = crate::video::VideoDecoder::new(&p, v).unwrap();
     let mut out = Vec::new();
     loop {
-        match dec.step(v).unwrap() {
+        match dec.step(v, i64::MIN).unwrap() {
             crate::video::Step::Picture(pic) => {
                 let i = pic.ts as usize;
                 let luma = pic.y[pic.stride_y * 32 + 32];
@@ -308,9 +349,9 @@ fn bframes_presentation_order() {
     eprintln!("decoder output order: {} of {} steps increasing", in_order, out.len() - 1);
 }
 
-/// Decodes from sample `start` to the end; returns (pts_ms, center luma) per output picture in
-/// output order.
-fn decode_all(p: &Path, start: usize) -> (crate::demux::Movie, Vec<(i64, u8)>) {
+/// Decodes from sample `start` to the end, skipping non-reference frames when `skip_nonref`;
+/// returns (pts_ms, center luma) per output picture in output order.
+fn decode_all(p: &Path, start: usize, skip_nonref: bool) -> (crate::demux::Movie, Vec<(i64, u8)>) {
     let movie = crate::demux::open(p).unwrap();
     let mut out = Vec::new();
     {
@@ -318,7 +359,7 @@ fn decode_all(p: &Path, start: usize) -> (crate::demux::Movie, Vec<(i64, u8)>) {
         let mut dec = crate::video::VideoDecoder::new(p, v).unwrap();
         dec.restart_at(start).unwrap();
         loop {
-            match dec.step(v).unwrap() {
+            match dec.step(v, if skip_nonref { i64::MAX } else { i64::MIN }).unwrap() {
                 crate::video::Step::Picture(pic) => {
                     let luma = pic.y[pic.stride_y * (pic.height / 2) + pic.width / 2];
                     out.push((v.track.pts_ms(pic.ts as usize), luma));
@@ -333,7 +374,8 @@ fn decode_all(p: &Path, start: usize) -> (crate::demux::Movie, Vec<(i64, u8)>) {
 
 /// Many x264 configurations seen in the wild (B-pyramids, open GOP, slices, CAVLC, VFR, edit
 /// lists, intra refresh...). Every frame must decode, with content matching its timestamp, both
-/// from the start and when starting at a later keyframe (seeking).
+/// from the start and when starting at a later keyframe (seeking), and also when non-reference
+/// frames are skipped (what the player does for late frames and while seeking).
 #[test]
 fn encoder_variants() {
     if !have_ffmpeg() {
@@ -362,16 +404,22 @@ fn encoder_variants() {
         let info = probe(&p).unwrap_or_else(|e| panic!("{name}: {e}"));
         poster(&p, 32).unwrap_or_else(|e| panic!("{name}: {e}"));
 
-        let check = |start: usize| {
-            let (movie, out) = decode_all(&p, start);
+        let check = |start: usize, skip_nonref: bool| {
+            let (movie, out) = decode_all(&p, start, skip_nonref);
             let t = &movie.video.track;
             let from = t.pts_ms(start);
-            // Every sample presented at or after the start keyframe must come out, once.
-            let mut want: Vec<i64> = (0..t.samples.len()).map(|i| t.pts_ms(i)).filter(|&x| x >= from).collect();
+            let mut reader = crate::demux::SampleReader::open(&p).unwrap();
+            let mut keep = |i: usize| {
+                let s = &t.samples[i];
+                !skip_nonref || s.sync || !crate::h264::is_nonref(reader.read(s).unwrap(), movie.video.nal_len)
+            };
+            // Every (kept) sample presented at or after the start keyframe must come out, once.
+            let mut want: Vec<i64> =
+                (0..t.samples.len()).filter(|&i| keep(i)).map(|i| t.pts_ms(i)).filter(|&x| x >= from).collect();
             want.sort();
             let mut got: Vec<(i64, u8)> = out.iter().copied().filter(|x| x.0 >= from).collect();
             got.sort();
-            assert_eq!(got.iter().map(|x| x.0).collect::<Vec<_>>(), want, "{name} from sample {start}");
+            assert_eq!(got.iter().map(|x| x.0).collect::<Vec<_>>(), want, "{name} from {start} skip {skip_nonref}");
             let offset = if name.contains("offset") { 400 } else { 0 };
             assert_eq!(t.pts_ms((0..t.samples.len()).min_by_key(|&i| t.pts(i)).unwrap()), offset, "{name}");
             for &(pts, luma) in &got {
@@ -380,15 +428,17 @@ fn encoder_variants() {
             }
             // Output order should be presentation order (the player tolerates small deviations).
             let backwards = out.windows(2).filter(|w| w[1].0 < w[0].0).count();
-            assert_eq!(backwards, 0, "{name}: {backwards} out-of-order outputs");
+            assert_eq!(backwards, 0, "{name}: {backwards} out-of-order outputs (skip {skip_nonref})");
             out.len()
         };
-        let n = check(0);
+        let n = check(0, false);
+        let kept = check(0, true);
         let movie = crate::demux::open(&p).unwrap();
         let last_key = movie.video.track.samples.iter().rposition(|s| s.sync).unwrap();
         if last_key > 0 {
-            check(last_key);
+            check(last_key, false);
+            check(last_key, true);
         }
-        eprintln!("{name}: {info:?}, {n} frames, last keyframe at sample {last_key}");
+        eprintln!("{name}: {info:?}, {n} frames ({kept} reference), last keyframe at sample {last_key}");
     }
 }

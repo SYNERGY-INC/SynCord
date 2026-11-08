@@ -69,6 +69,8 @@ pub(crate) struct VideoTrack {
     /// SPS and PPS NAL units from `avcC`.
     pub param_sets: Vec<Vec<u8>>,
     pub sps: SpsInfo,
+    /// Clockwise rotation to apply for display (0, 90, 180 or 270), from the `tkhd` matrix.
+    pub rotation: u16,
 }
 
 impl VideoTrack {
@@ -624,7 +626,29 @@ fn parse_video(trak: &[u8], mdia: &[u8], movie_ts: u32, file_len: u64) -> Result
         None => return Err(bad()),
     };
     sps.check_supported()?;
-    Ok(VideoTrack { track, nal_len, param_sets, sps })
+    let rotation = child(trak, b"tkhd").map_or(0, tkhd_rotation);
+    Ok(VideoTrack { track, nal_len, param_sets, sps, rotation })
+}
+
+/// Clockwise display rotation from the `tkhd` transformation matrix, snapped to a multiple of 90
+/// degrees (phones record portrait video as landscape plus a 90 degree rotation). Mirroring and
+/// other transforms are ignored.
+fn tkhd_rotation(tkhd: &[u8]) -> u16 {
+    let off = match tkhd.first() {
+        Some(1) => 52,
+        Some(0) => 40,
+        _ => return 0,
+    };
+    let Some(m) = tkhd.get(off..off + 8) else { return 0 };
+    let a = i32::from_be_bytes(m[0..4].try_into().unwrap()) as i64;
+    let b = i32::from_be_bytes(m[4..8].try_into().unwrap()) as i64;
+    if b.abs() > a.abs() {
+        if b > 0 { 90 } else { 270 }
+    } else if a < 0 {
+        180
+    } else {
+        0
+    }
 }
 
 fn parse_audio(trak: &[u8], mdia: &[u8], movie_ts: u32, file_len: u64) -> Result<AudioTrack, String> {

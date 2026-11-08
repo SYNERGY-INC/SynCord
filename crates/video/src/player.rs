@@ -24,6 +24,12 @@ const VIDEO_QUEUE: usize = 3;
 const AUDIO_BUFFER_MS: usize = 250;
 /// How far the clock may run past the last audio stamp before waiting for audio.
 const AUDIO_CLOCK_CAP: Duration = Duration::from_millis(250);
+/// No audio delivered for this long while playing (stuck device, decoder not keeping up): the
+/// clock continues on the wall clock until audio resumes.
+const AUDIO_STALL: Duration = Duration::from_millis(1000);
+/// While decoding can't keep up, late frames are normally dropped; but once the shown frame is
+/// this stale, a late frame is shown anyway (a low frame rate instead of a frozen picture).
+const MAX_STALE_MS: f64 = 250.0;
 /// Poll interval of the worker threads while idle.
 const TICK: Duration = Duration::from_millis(20);
 
@@ -100,9 +106,19 @@ impl State {
     /// Advances the reported position and detects the end of playback.
     fn tick(&mut self, now: Instant, duration: u64) -> f64 {
         let p = self.pos(now, duration);
+        if self.playing
+            && self.audio.active
+            && self.audio.driving
+            && now.saturating_duration_since(self.at) > AUDIO_STALL
+        {
+            self.audio.driving = false;
+            self.set_clock(p, now);
+        }
         self.last_pos = p;
         if self.playing && p >= duration as f64 {
-            let audio_finished = !self.audio.active || (self.audio.done && self.audio.ring.is_empty());
+            // While playing, `driving == false` means the wall clock has taken over from audio.
+            let audio_finished =
+                !self.audio.active || !self.audio.driving || (self.audio.done && self.audio.ring.is_empty());
             let frames_shown = self.queue.back().is_none_or(|f| f.pts_ms as f64 <= p);
             if self.video_eof && frames_shown && audio_finished {
                 self.ended = true;
@@ -138,6 +154,9 @@ enum AudioOut {
     /// A fake real-time sink (tests on machines without a sound card).
     #[cfg_attr(not(test), allow(dead_code))]
     Null,
+    /// A fake device that opens but never asks for samples (tests the stall fallback).
+    #[cfg_attr(not(test), allow(dead_code))]
+    Stuck,
 }
 
 /// A video player. Starts paused at 0 with the first frame decoded.
@@ -197,13 +216,14 @@ impl Player {
             volume: AtomicU32::new(1.0f32.to_bits()),
             level: AtomicU32::new(0),
         });
-        let mut threads = Vec::new();
         let path: PathBuf = path.to_path_buf();
         let frame_size = convert::scaled_size(info.width, info.height, max_side);
+        // Built before spawning so that if a spawn fails, dropping it stops the started threads.
+        let mut player = Player { shared: shared.clone(), info, frame_size, threads: Vec::new() };
         {
             let (sh, m, p) = (shared.clone(), movie.clone(), path.clone());
             let (w, h) = frame_size;
-            threads.push(
+            player.threads.push(
                 std::thread::Builder::new()
                     .name("video-decode".into())
                     .spawn(move || video_thread(&sh, &m, &p, w, h))
@@ -211,15 +231,15 @@ impl Player {
             );
         }
         if movie.audio.is_some() {
-            let (sh, m) = (shared.clone(), movie.clone());
-            threads.push(
+            let (sh, m) = (shared, movie.clone());
+            player.threads.push(
                 std::thread::Builder::new()
                     .name("audio-decode".into())
                     .spawn(move || audio_thread(&sh, &m, &path, out))
                     .map_err(|e| format!("can't start audio thread: {e}"))?,
             );
         }
-        Ok(Player { shared, info, frame_size, threads })
+        Ok(player)
     }
 
     /// Size, duration and whether the file has (decodable) audio.
@@ -389,6 +409,8 @@ fn video_thread(sh: &Shared, movie: &Movie, path: &Path, out_w: u32, out_h: u32)
     let last_pts = (0..track.samples.len()).map(|i| track.pts_ms(i)).max().unwrap_or(0);
     let mut my_epoch = u64::MAX;
     let mut skip_until = 0i64;
+    // Presentation time of the last frame queued in this epoch.
+    let mut last_queued = i64::MIN;
     let mut spare: Vec<u8> = Vec::new();
     loop {
         let mut st = sh.lock();
@@ -414,6 +436,7 @@ fn video_thread(sh: &Shared, movie: &Movie, path: &Path, out_w: u32, out_h: u32)
         if st.epoch != my_epoch {
             my_epoch = st.epoch;
             skip_until = (st.seek_ms as i64).min(last_pts);
+            last_queued = i64::MIN;
             drop(st);
             if dec.restart_at(v.keyframe_before(skip_until)).is_err() {
                 sh.lock().video_eof = true;
@@ -430,7 +453,9 @@ fn video_thread(sh: &Shared, movie: &Movie, path: &Path, out_w: u32, out_h: u32)
         }
         drop(st);
 
-        let step = dec.step(v);
+        // Frames that will be thrown away: before the seek target, or already late.
+        let late = if playing && have_frame { pos as i64 } else { i64::MIN };
+        let step = dec.step(v, skip_until.max(late));
         let mut finished = false;
         match step {
             Ok(Step::Picture(p)) => {
@@ -440,10 +465,11 @@ fn video_thread(sh: &Shared, movie: &Movie, path: &Path, out_w: u32, out_h: u32)
                 if end <= skip_until {
                     continue; // before the seek target (or pre-roll)
                 }
-                if playing && have_frame && (end as f64) < pos {
+                if playing && have_frame && (end as f64) < pos && pos - (last_queued as f64) < MAX_STALE_MS {
                     continue; // already late: don't spend time converting it
                 }
-                convert::to_rgba(&p, out_w, out_h, v.sps.matrix, v.sps.full_range, &mut spare);
+                last_queued = pts;
+                convert::to_rgba(&p, out_w, out_h, v.rotation, v.sps.matrix, v.sps.full_range, &mut spare);
                 let rgba = std::mem::take(&mut spare);
                 let mut st = sh.lock();
                 if st.epoch == my_epoch {
@@ -488,6 +514,7 @@ fn audio_thread(sh: &Arc<Shared>, movie: &Movie, path: &Path, out: AudioOut) {
     let opened = match out {
         AudioOut::Device => open_device(sh),
         AudioOut::Null => Ok(open_null(sh)),
+        AudioOut::Stuck => Ok((Output::Null(None), 48000, 2)),
     };
     let (output, rate, channels) = match opened {
         Ok(o) => o,
