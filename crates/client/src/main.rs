@@ -4,11 +4,13 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod icons;
 mod net;
 mod settings;
 mod style;
 mod theme;
 mod view;
+mod voice;
 
 use app::App;
 

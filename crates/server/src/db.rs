@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use syncord_proto::{Channel, ChannelId, HISTORY_PAGE, Message, MessageId, Profile, User, UserId};
+use syncord_proto::{Channel, ChannelId, ChannelKind, HISTORY_PAGE, Message, MessageId, Profile, User, UserId};
 
 #[derive(Clone)]
 pub struct Db {
@@ -68,6 +68,7 @@ impl Db {
     pub fn open(path: &Path) -> DbResult<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         let db = Self { conn: Arc::new(Mutex::new(conn)) };
         db.seed()?;
         Ok(db)
@@ -77,6 +78,7 @@ impl Db {
     pub fn open_in_memory() -> DbResult<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         let db = Self { conn: Arc::new(Mutex::new(conn)) };
         db.seed()?;
         Ok(db)
@@ -86,10 +88,8 @@ impl Db {
         let conn = self.lock();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM channels", [], |r| r.get(0))?;
         if count == 0 {
-            conn.execute(
-                "INSERT INTO channels (name, topic, position, created_at) VALUES ('general', 'Say hi!', 0, ?1)",
-                params![now_ms()],
-            )?;
+            create_channel(&conn, "general", "Say hi!", ChannelKind::Text)?;
+            create_channel(&conn, "General", "", ChannelKind::Voice)?;
         }
         Ok(())
     }
@@ -109,6 +109,26 @@ impl Db {
         let db = self.clone();
         tokio::task::spawn_blocking(move || f(&db.lock())).await.expect("database task panicked")
     }
+}
+
+/// Bring databases created by older versions up to date.
+fn migrate(conn: &Connection) -> DbResult<()> {
+    let has_kind = conn.prepare("SELECT kind FROM channels LIMIT 0").is_ok();
+    if !has_kind {
+        conn.execute_batch("ALTER TABLE channels ADD COLUMN kind INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
+
+fn kind_to_i64(kind: ChannelKind) -> i64 {
+    match kind {
+        ChannelKind::Text => 0,
+        ChannelKind::Voice => 1,
+    }
+}
+
+fn kind_from_i64(v: i64) -> ChannelKind {
+    if v == 1 { ChannelKind::Voice } else { ChannelKind::Text }
 }
 
 // ---- Queries (synchronous, called inside `Db::call`) ----
@@ -184,29 +204,36 @@ pub fn delete_session(conn: &Connection, token: &str) -> DbResult<()> {
 }
 
 fn row_to_channel(r: &rusqlite::Row<'_>) -> rusqlite::Result<Channel> {
-    Ok(Channel { id: r.get(0)?, name: r.get(1)?, topic: r.get(2)?, position: r.get(3)? })
+    Ok(Channel {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        topic: r.get(2)?,
+        position: r.get(3)?,
+        kind: kind_from_i64(r.get(4)?),
+    })
 }
 
 pub fn all_channels(conn: &Connection) -> DbResult<Vec<Channel>> {
-    let mut stmt = conn.prepare_cached("SELECT id, name, topic, position FROM channels ORDER BY position, id")?;
+    let mut stmt = conn.prepare_cached("SELECT id, name, topic, position, kind FROM channels ORDER BY position, id")?;
     stmt.query_map([], row_to_channel)?.collect()
 }
 
-pub fn channel_exists(conn: &Connection, id: ChannelId) -> DbResult<bool> {
-    conn.query_row("SELECT 1 FROM channels WHERE id = ?1", params![id], |_| Ok(())).optional().map(|r| r.is_some())
+/// The channel's kind, or `None` if it doesn't exist.
+pub fn channel_kind(conn: &Connection, id: ChannelId) -> DbResult<Option<ChannelKind>> {
+    conn.query_row("SELECT kind FROM channels WHERE id = ?1", params![id], |r| r.get(0).map(kind_from_i64)).optional()
 }
 
-pub fn create_channel(conn: &Connection, name: &str, topic: &str) -> DbResult<Channel> {
+pub fn create_channel(conn: &Connection, name: &str, topic: &str, kind: ChannelKind) -> DbResult<Channel> {
     let position: i64 = conn.query_row("SELECT COALESCE(MAX(position), -1) + 1 FROM channels", [], |r| r.get(0))?;
     conn.execute(
-        "INSERT INTO channels (name, topic, position, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![name, topic, position, now_ms()],
+        "INSERT INTO channels (name, topic, position, kind, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![name, topic, position, kind_to_i64(kind), now_ms()],
     )?;
-    Ok(Channel { id: conn.last_insert_rowid(), name: name.to_owned(), topic: topic.to_owned(), position })
+    Ok(Channel { id: conn.last_insert_rowid(), name: name.to_owned(), topic: topic.to_owned(), position, kind })
 }
 
-pub fn channel_count(conn: &Connection) -> DbResult<i64> {
-    conn.query_row("SELECT COUNT(*) FROM channels", [], |r| r.get(0))
+pub fn text_channel_count(conn: &Connection) -> DbResult<i64> {
+    conn.query_row("SELECT COUNT(*) FROM channels WHERE kind = 0", [], |r| r.get(0))
 }
 
 pub fn delete_channel(conn: &Connection, id: ChannelId) -> DbResult<bool> {
@@ -282,7 +309,7 @@ mod tests {
         let ids = db
             .call(|c| {
                 let u = create_user(c, "alice", "x", true)?;
-                let ch = all_channels(c)?[0].id;
+                let ch = all_channels(c)?.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
                 let mut ids = vec![];
                 for i in 0..(HISTORY_PAGE + 5) {
                     ids.push(insert_message(c, ch, u.id, &format!("m{i}"))?.id);
@@ -299,6 +326,22 @@ mod tests {
         let older = db.call(move |c| history(c, ch, Some(first))).await.unwrap();
         assert_eq!(older.len(), 5);
         assert_eq!(older[0].content, "m0");
+    }
+
+    #[test]
+    fn migrates_old_channels_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE channels (id INTEGER PRIMARY KEY, name TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '',
+             position INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+             INSERT INTO channels (name, created_at) VALUES ('old', 0);",
+        )
+        .unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent
+        let chans = all_channels(&conn).unwrap();
+        assert_eq!(chans[0].kind, ChannelKind::Text);
     }
 
     #[tokio::test]

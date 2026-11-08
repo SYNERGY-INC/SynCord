@@ -7,13 +7,26 @@ use syncord_proto::{ClientMsg, ServerMsg};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
+use crate::voice::VoiceSink;
+
+#[derive(Debug)]
+enum Outgoing {
+    Json(ClientMsg),
+    Binary(Vec<u8>),
+}
+
 /// Handle used to send requests to the server. Dropping every clone closes the connection.
 #[derive(Debug, Clone)]
-pub struct Connection(mpsc::UnboundedSender<ClientMsg>);
+pub struct Connection(mpsc::UnboundedSender<Outgoing>);
 
 impl Connection {
     pub fn send(&self, msg: ClientMsg) {
-        let _ = self.0.send(msg);
+        let _ = self.0.send(Outgoing::Json(msg));
+    }
+
+    /// Send a voice packet over the WebSocket (used when UDP can't get through).
+    pub fn send_binary(&self, packet: Vec<u8>) {
+        let _ = self.0.send(Outgoing::Binary(packet));
     }
 }
 
@@ -51,7 +64,20 @@ pub fn server_url(input: &str) -> String {
     format!("{scheme}://{host}{path}")
 }
 
-pub fn connect(url: String) -> impl Stream<Item = Event> {
+/// The host name or IP address in a WebSocket URL from [`server_url`].
+pub fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split('/').next()?;
+    let host = if let Some(stripped) = authority.strip_prefix('[') {
+        stripped.split(']').next()?
+    } else {
+        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
+    };
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// Connect, and deliver voice packets that arrive over the WebSocket to `voice`.
+pub fn connect(url: String, voice: VoiceSink) -> impl Stream<Item = Event> {
     iced::stream::channel(64, async move |mut output: futures::channel::mpsc::Sender<Event>| {
         let ws = match tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(&url)).await {
             Ok(Ok((ws, _))) => ws,
@@ -76,8 +102,11 @@ pub fn connect(url: String) -> impl Stream<Item = Event> {
             tokio::select! {
                 outgoing = rx.recv() => match outgoing {
                     Some(msg) => {
-                        let json = serde_json::to_string(&msg).expect("serialize");
-                        if let Err(e) = sink.send(WsMessage::Text(json.into())).await {
+                        let frame = match msg {
+                            Outgoing::Json(m) => WsMessage::Text(serde_json::to_string(&m).expect("serialize").into()),
+                            Outgoing::Binary(b) => WsMessage::Binary(b.into()),
+                        };
+                        if let Err(e) = sink.send(frame).await {
                             break format!("Connection lost: {e}");
                         }
                     }
@@ -96,6 +125,12 @@ pub fn connect(url: String) -> impl Stream<Item = Event> {
                         }
                         Err(e) => eprintln!("ignoring unknown server message: {e}"),
                     },
+                    Some(Ok(WsMessage::Binary(data))) => {
+                        // Straight to the audio mixer: voice never goes through the UI thread.
+                        if let Some(mixer) = voice.lock().unwrap().as_ref() {
+                            mixer.push_packet(&data);
+                        }
+                    }
                     Some(Ok(WsMessage::Close(_))) | None => break "The server closed the connection".to_string(),
                     Some(Ok(_)) => {}
                     Some(Err(e)) => break format!("Connection lost: {e}"),
@@ -124,5 +159,13 @@ mod tests {
         assert_eq!(server_url("wss://chat.example.com"), "wss://chat.example.com/ws");
         assert_eq!(server_url("ws://h:1/custom"), "ws://h:1/custom");
         assert_eq!(server_url("[::1]:7878"), "ws://[::1]:7878/ws");
+    }
+
+    #[test]
+    fn hosts() {
+        use super::host_of;
+        assert_eq!(host_of("ws://192.168.1.20:7878/ws").as_deref(), Some("192.168.1.20"));
+        assert_eq!(host_of("wss://chat.example.com/ws").as_deref(), Some("chat.example.com"));
+        assert_eq!(host_of("ws://[::1]:7878/ws").as_deref(), Some("::1"));
     }
 }

@@ -4,7 +4,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use syncord_server::{AppState, Config, db, router};
+use syncord_server::{AppState, Config, db, router, start_udp};
 use tracing::{info, warn};
 
 const CONFIG_FILE: &str = "syncord-server.toml";
@@ -68,7 +68,11 @@ async fn main() {
         }
     };
 
-    info!("SynCord server \"{}\" listening on {addr}", state.config.community_name);
+    info!("SynCord server \"{}\" listening on {addr} (TCP)", state.config.community_name);
+    match start_udp(&state, addr).await {
+        Ok(port) => info!("voice audio on UDP port {port}"),
+        Err(e) => warn!("could not open UDP port for voice ({e}); voice will go over TCP instead"),
+    }
     if state.config.invite_code.is_empty() {
         warn!("invite_code is empty: anyone who can reach this server can register");
     } else {

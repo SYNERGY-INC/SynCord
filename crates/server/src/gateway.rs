@@ -2,16 +2,23 @@
 //! requests and forwards broadcast events.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use rand::Rng;
-use syncord_proto::{ClientMsg, HISTORY_PAGE, MAX_MESSAGE_LEN, Ready, ServerMsg, User, UserId, normalize_channel_name};
+use syncord_proto::voice::token_to_hex;
+use syncord_proto::{
+    ChannelKind, ClientMsg, HISTORY_PAGE, MAX_MESSAGE_LEN, Ready, ServerMsg, User, UserId, clean_voice_channel_name,
+    normalize_channel_name,
+};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::AppState;
@@ -25,7 +32,11 @@ const RATE_WINDOW: Duration = Duration::from_secs(10);
 
 pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
     ws.max_message_size(64 * 1024).on_upgrade(move |socket| async move {
-        Connection { state, socket, user: None, token: None, rate: RateLimit::new() }.run().await
+        let conn_id = state.next_conn_id.fetch_add(1, Ordering::Relaxed);
+        let (voice_tx, voice_rx) = mpsc::channel(64);
+        Connection { state, socket, user: None, token: None, rate: RateLimit::new(), conn_id, voice_tx }
+            .run(voice_rx)
+            .await
     })
 }
 
@@ -74,6 +85,9 @@ struct Connection {
     user: Option<UserId>,
     token: Option<String>,
     rate: RateLimit,
+    conn_id: u64,
+    /// Voice packets the relay wants delivered over this WebSocket.
+    voice_tx: mpsc::Sender<Bytes>,
 }
 
 /// What the main loop should do after handling a frame.
@@ -83,7 +97,7 @@ enum Flow {
 }
 
 impl Connection {
-    async fn run(mut self) {
+    async fn run(mut self, mut voice_rx: mpsc::Receiver<Bytes>) {
         let mut events = self.state.events.subscribe();
 
         loop {
@@ -97,6 +111,13 @@ impl Connection {
                     };
                     let text = match frame {
                         WsMessage::Text(t) => t,
+                        WsMessage::Binary(data) => {
+                            // Voice over WebSocket (when UDP can't get through).
+                            if self.user.is_some() {
+                                self.state.voice.handle_packet(&data, None);
+                            }
+                            continue;
+                        }
                         WsMessage::Close(_) => break,
                         _ => continue,
                     };
@@ -124,10 +145,16 @@ impl Connection {
                         Err(RecvError::Closed) => break,
                     }
                 }
+                Some(packet) = voice_rx.recv() => {
+                    if self.socket.send(WsMessage::Binary(packet)).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
 
         if let Some(id) = self.user {
+            self.leave_voice(id);
             self.set_offline(id);
         }
     }
@@ -196,7 +223,7 @@ impl Connection {
                     }
                     let msg = db
                         .call(move |c| {
-                            if !db::channel_exists(c, channel_id)? {
+                            if db::channel_kind(c, channel_id)? != Some(ChannelKind::Text) {
                                 return Ok(None);
                             }
                             db::insert_message(c, channel_id, me, &content).map(Some)
@@ -264,8 +291,11 @@ impl Connection {
                         self.broadcast(&ServerMsg::UserUpdated(user));
                     }
                 }
-                ClientMsg::CreateChannel { name, topic } => {
-                    let name = normalize_channel_name(&name);
+                ClientMsg::CreateChannel { name, topic, kind } => {
+                    let name = match kind {
+                        ChannelKind::Text => normalize_channel_name(&name),
+                        ChannelKind::Voice => clean_voice_channel_name(&name),
+                    };
                     let topic: String = topic.trim().chars().take(120).collect();
                     if name.is_empty() {
                         return Ok(self.error("Channel names need at least one letter or number").await);
@@ -275,7 +305,7 @@ impl Connection {
                             if !db::get_user(c, me)?.is_some_and(|u| u.is_owner) {
                                 return Ok(None);
                             }
-                            db::create_channel(c, &name, &topic).map(Some)
+                            db::create_channel(c, &name, &topic, kind).map(Some)
                         })
                         .await?;
                     match channel {
@@ -289,15 +319,43 @@ impl Connection {
                             if !db::get_user(c, me)?.is_some_and(|u| u.is_owner) {
                                 return Ok(Err("Only the server owner can delete channels"));
                             }
-                            if db::channel_count(c)? <= 1 {
-                                return Ok(Err("You can't delete the last channel"));
+                            let kind = db::channel_kind(c, channel_id)?;
+                            if kind == Some(ChannelKind::Text) && db::text_channel_count(c)? <= 1 {
+                                return Ok(Err("You can't delete the last text channel"));
                             }
                             Ok(if db::delete_channel(c, channel_id)? { Ok(()) } else { Err("No such channel") })
                         })
                         .await?;
                     match outcome {
-                        Ok(()) => self.broadcast(&ServerMsg::ChannelDeleted { channel_id }),
+                        Ok(()) => {
+                            for user_id in self.state.voice.clear_channel(channel_id) {
+                                self.broadcast(&ServerMsg::VoiceStateUpdate { user_id, state: None });
+                            }
+                            self.broadcast(&ServerMsg::ChannelDeleted { channel_id });
+                        }
                         Err(e) => return Ok(self.error(e).await),
+                    }
+                }
+                ClientMsg::JoinVoice { channel_id } => {
+                    if db.call(move |c| db::channel_kind(c, channel_id)).await? != Some(ChannelKind::Voice) {
+                        return Ok(self.error("That isn't a voice channel").await);
+                    }
+                    let joined =
+                        self.state.voice.join(me, channel_id, self.conn_id, self.voice_tx.clone(), false, false);
+                    let udp_port = self.state.udp_port.load(Ordering::Relaxed);
+                    self.send(&ServerMsg::VoiceReady {
+                        channel_id,
+                        ssrc: joined.state.ssrc,
+                        token: token_to_hex(&joined.token),
+                        udp_port,
+                    })
+                    .await;
+                    self.broadcast(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(joined.state) });
+                }
+                ClientMsg::LeaveVoice => self.leave_voice(me),
+                ClientMsg::SetVoiceState { muted, deafened } => {
+                    if let Some(state) = self.state.voice.set_state(me, self.conn_id, muted, deafened) {
+                        self.broadcast(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(state) });
                     }
                 }
             }
@@ -435,8 +493,15 @@ impl Connection {
             users,
             online,
             channels,
+            voice: self.state.voice.states(),
         };
         if self.send(&ServerMsg::Ready(ready)).await { Flow::Continue } else { Flow::Close }
+    }
+
+    fn leave_voice(&self, id: UserId) {
+        if self.state.voice.leave(id, self.conn_id) {
+            self.broadcast(&ServerMsg::VoiceStateUpdate { user_id: id, state: None });
+        }
     }
 
     fn set_offline(&self, id: UserId) {

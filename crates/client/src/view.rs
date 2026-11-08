@@ -3,13 +3,14 @@
 
 use chrono::{Local, TimeZone};
 use iced::widget::{
-    Id, button, center, column, container, mouse_area, opaque, row, scrollable, slider, space, stack, text, text_input,
-    toggler,
+    Id, button, center, column, container, mouse_area, opaque, pick_list, row, scrollable, slider, space, stack, text,
+    text_input, toggler,
 };
 use iced::{Alignment, Border, Color, Element, Length, Padding};
-use syncord_proto::{AvatarRing, Channel, Message as ChatMessage, User};
+use syncord_proto::{AvatarRing, Channel, ChannelKind, Message as ChatMessage, User, VoiceState};
 
-use crate::app::{App, COMPOSER_ID, DraftField, MESSAGES_ID, Message, Overlay, Session, SettingsTab};
+use crate::app::{App, COMPOSER_ID, DEFAULT_DEVICE, DraftField, MESSAGES_ID, Message, Overlay, Session, SettingsTab};
+use crate::icons;
 use crate::style::{self, BOLD, SEMIBOLD, avatar, avatar_with_status, bg, card, divider, label};
 use crate::theme::{AppTheme, contrast_text, rgb, themes_dir, with_alpha};
 
@@ -30,17 +31,10 @@ impl App {
             Some(overlay) => {
                 let content = match overlay {
                     Overlay::Profile(id) => match session.users.get(id) {
-                        Some(u) => style::profile_card(
-                            &self.theme,
-                            &u.username,
-                            &u.profile,
-                            u.is_owner,
-                            session.online.contains(id),
-                            self.fs(),
-                        ),
+                        Some(u) => self.profile_popup(session, u),
                         None => return base,
                     },
-                    Overlay::NewChannel { name, topic } => self.new_channel_dialog(name, topic),
+                    Overlay::NewChannel { name, topic, kind } => self.new_channel_dialog(name, topic, *kind),
                     Overlay::ConfirmDelete(id) => self.confirm_delete_dialog(session, *id),
                 };
                 let backdrop = mouse_area(
@@ -177,6 +171,21 @@ impl App {
         .into()
     }
 
+    fn category<'a>(&'a self, s: &'a Session, title: &'static str, kind: ChannelKind) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let mut category = row![label(t, title, fs), space::horizontal()].align_y(Alignment::Center);
+        if s.is_owner() {
+            category = category.push(
+                button(text("+").size(fs * 1.2))
+                    .padding([0, 6])
+                    .on_press(Message::OpenNewChannel(kind))
+                    .style(style::link_button(t.muted.0, t.header.0)),
+            );
+        }
+        container(category).padding(Padding { left: 8.0, top: 16.0, right: 4.0, bottom: 4.0 }).into()
+    }
+
     fn channel_sidebar<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
@@ -187,19 +196,8 @@ impl App {
             .width(Length::Fill)
             .align_y(Alignment::Center);
 
-        let mut category = row![label(t, "Text channels", fs), space::horizontal()].align_y(Alignment::Center);
-        if s.is_owner() {
-            category = category.push(
-                button(text("+").size(fs * 1.2))
-                    .padding([0, 6])
-                    .on_press(Message::OpenNewChannel)
-                    .style(style::link_button(t.muted.0, t.header.0)),
-            );
-        }
-
-        let mut list =
-            column![container(category).padding(Padding { left: 8.0, top: 16.0, right: 4.0, bottom: 4.0 })].spacing(2);
-        for ch in &s.channels {
+        let mut list = column![self.category(s, "Text channels", ChannelKind::Text)].spacing(2);
+        for ch in s.channels.iter().filter(|c| c.kind == ChannelKind::Text) {
             let selected = s.current == Some(ch.id);
             let unread = s.unread.contains(&ch.id);
             let name_color = if unread && !selected { Some(t.header.0) } else { None };
@@ -220,10 +218,36 @@ impl App {
             );
         }
 
+        list = list.push(self.category(s, "Voice channels", ChannelKind::Voice));
+        for ch in s.channels.iter().filter(|c| c.kind == ChannelKind::Voice) {
+            let connected = self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id);
+            let line = row![icons::icon(&icons::SPEAKER, fs * 1.2, t.muted.0), text(ch.name.clone()).size(fs)]
+                .spacing(6)
+                .align_y(Alignment::Center);
+            let mut entry = button(line).width(Length::Fill).padding([6, 8]).style(style::row_button(t, connected));
+            if !connected {
+                entry = entry.on_press(Message::JoinVoice(ch.id));
+            }
+            list = list.push(entry);
+
+            // Who's in this channel.
+            let mut members: Vec<(&User, &VoiceState)> = s
+                .voice
+                .values()
+                .filter(|v| v.channel_id == ch.id)
+                .filter_map(|v| Some((s.users.get(&v.user_id)?, v)))
+                .collect();
+            members.sort_by_key(|(u, _)| u.name().to_lowercase());
+            for (u, v) in members {
+                list = list.push(self.voice_member(u, v));
+            }
+        }
+
         container(column![
             header,
             divider(style::darken(t.sidebar.0, 0.25)),
             scrollable(container(list).padding([0, 8])).height(Length::Fill).style(style::scroll(t)),
+            self.voice_panel(s),
             self.user_panel(s),
         ])
         .width(240)
@@ -232,29 +256,115 @@ impl App {
         .into()
     }
 
+    /// One person listed under a voice channel, with a ring while they talk.
+    fn voice_member<'a>(&'a self, u: &'a User, v: &VoiceState) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let speaking = self.speaking.contains(&u.id);
+        let ring = if speaking { t.online.0 } else { Color::TRANSPARENT };
+        let pic = container(avatar(u.name(), &u.profile, 22.0)).padding(2).style(move |_| container::Style {
+            border: Border { radius: 14.0.into(), width: 2.0, color: ring },
+            ..Default::default()
+        });
+        let mut line = row![pic, text(truncate(u.name(), 16)).size(fs * 0.9).width(Length::Fill)]
+            .spacing(8)
+            .align_y(Alignment::Center);
+        if v.muted && !v.deafened {
+            line = line.push(icons::icon(&icons::MIC_OFF, fs, t.danger.0));
+        }
+        if v.deafened {
+            line = line.push(icons::icon(&icons::HEADPHONES_OFF, fs, t.danger.0));
+        }
+        button(line)
+            .width(Length::Fill)
+            .padding(Padding { left: 28.0, right: 8.0, top: 2.0, bottom: 2.0 })
+            .on_press(Message::ShowProfile(u.id))
+            .style(style::row_button(t, false))
+            .into()
+    }
+
+    /// "Voice Connected" box above the user panel while in a call.
+    fn voice_panel<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let (channel_id, connected) = match (&self.voice, self.voice_joining) {
+            (Some(v), _) => (v.channel_id, true),
+            (None, Some(id)) => (id, false),
+            (None, None) => return space().into(),
+        };
+        let channel = s.channels.iter().find(|c| c.id == channel_id).map(|c| c.name.as_str()).unwrap_or("?");
+        let (title, color) = if connected { ("Voice Connected", t.online.0) } else { ("Connecting...", rgb(0xF0B232)) };
+        let route = if !connected {
+            String::new()
+        } else if self.voice_status.udp {
+            format!("{channel} · direct (UDP)")
+        } else {
+            format!("{channel} · relayed (TCP)")
+        };
+
+        let mut info = column![
+            row![icons::icon(&icons::SIGNAL, fs, color), text(title).size(fs * 0.9).font(BOLD).color(color)]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            text(if route.is_empty() { channel.to_string() } else { route }).size(fs * 0.75).color(t.muted.0),
+        ]
+        .spacing(2)
+        .width(Length::Fill);
+        if let Some(problem) = &self.voice_status.problem {
+            info = info.push(text(problem.clone()).size(fs * 0.7).color(rgb(0xF0B232)));
+        }
+
+        let content = row![
+            info,
+            button(icons::icon(&icons::HANG_UP, fs * 1.3, t.header.0))
+                .padding(6)
+                .on_press(Message::LeaveVoice)
+                .style(style::icon_button(t)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        container(column![
+            divider(style::darken(t.user_panel.0, 0.2)),
+            container(content).padding([8, 10]).width(Length::Fill)
+        ])
+        .width(Length::Fill)
+        .style(bg(t.user_panel.0))
+        .into()
+    }
+
     fn user_panel<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let Some(me) = s.me() else { return space().into() };
         let status = if !self.reconnecting {
-            if me.profile.status_text.is_empty() { "Online".to_string() } else { truncate(&me.profile.status_text, 18) }
+            if me.profile.status_text.is_empty() { "Online".to_string() } else { truncate(&me.profile.status_text, 12) }
         } else {
             "Reconnecting...".to_string()
         };
+
+        let toggle = |handle: &'static std::sync::LazyLock<iced::widget::svg::Handle>, on: bool, msg: Message| {
+            let color = if on { t.danger.0 } else { t.muted.0 };
+            button(icons::icon(handle, fs * 1.25, color)).padding(5).on_press(msg).style(style::icon_button(t))
+        };
+        let mic = if self.muted || self.deafened { &icons::MIC_OFF } else { &icons::MIC_ON };
+        let ears = if self.deafened { &icons::HEADPHONES_OFF } else { &icons::HEADPHONES_ON };
+
         let content = row![
             avatar_with_status(t, me.name(), &me.profile, 32.0, !self.reconnecting, t.user_panel.0),
             column![
-                text(truncate(me.name(), 16)).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
+                text(truncate(me.name(), 11)).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
                 text(status).size(fs * 0.75).color(t.muted.0),
             ]
             .spacing(1)
             .width(Length::Fill),
-            button(text("Settings").size(fs * 0.8))
-                .padding([4, 8])
+            toggle(mic, self.muted || self.deafened, Message::ToggleMute),
+            toggle(ears, self.deafened, Message::ToggleDeafen),
+            button(icons::icon(&icons::GEAR, fs * 1.25, t.muted.0))
+                .padding(5)
                 .on_press(Message::OpenSettings)
                 .style(style::icon_button(t)),
         ]
-        .spacing(8)
+        .spacing(2)
         .align_y(Alignment::Center);
         container(content).padding([10, 8]).width(Length::Fill).style(bg(t.user_panel.0)).into()
     }
@@ -598,12 +708,74 @@ impl App {
 
     // ------------------------------------------------------------------ dialogs
 
-    fn new_channel_dialog<'a>(&'a self, name: &'a str, topic: &'a str) -> Element<'a, Message> {
+    /// Profile card, plus a volume slider for people you can hear in voice.
+    fn profile_popup<'a>(&'a self, s: &'a Session, u: &'a User) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let preview = syncord_proto::normalize_channel_name(name);
+        let profile = style::profile_card(t, &u.username, &u.profile, u.is_owner, s.online.contains(&u.id), fs);
+        let in_my_call =
+            self.voice.as_ref().is_some_and(|v| s.voice.get(&u.id).is_some_and(|st| st.channel_id == v.channel_id));
+        if u.id == s.me || !in_my_call {
+            return profile;
+        }
+        let volume = self.settings.user_volume(u.id);
+        let id = u.id;
+        let control = container(
+            column![
+                label(t, "User volume", fs),
+                row![
+                    slider(0.0..=2.0, volume, move |v| Message::UserVolume(id, v)).step(0.05_f32),
+                    text(format!("{:.0}%", volume * 100.0)).size(fs * 0.85).color(t.text.0).width(44),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(8),
+        )
+        .padding([12, 16])
+        .width(320)
+        .style(card(t.floating.0, t.radius * 1.5));
+        column![profile, control].spacing(8).into()
+    }
+
+    fn new_channel_dialog<'a>(&'a self, name: &'a str, topic: &'a str, kind: ChannelKind) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let preview = match kind {
+            ChannelKind::Text => syncord_proto::normalize_channel_name(name),
+            ChannelKind::Voice => syncord_proto::clean_voice_channel_name(name),
+        };
+        let kind_button = |label_text: &'static str, k: ChannelKind| {
+            let selected = k == kind;
+            button(text(label_text).size(fs * 0.9))
+                .padding([8, 14])
+                .on_press(Message::NewChannelKind(k))
+                .style(style::solid_button(if selected { t.accent.0 } else { t.floating.0 }, t.radius * 0.6))
+        };
+        let hint = match (kind, preview.is_empty()) {
+            (_, true) => String::new(),
+            (ChannelKind::Text, false) => format!("Will appear as #{preview}"),
+            (ChannelKind::Voice, false) => format!("Will appear as {preview}"),
+        };
+        let topic_field: Element<'a, Message> = if kind == ChannelKind::Text {
+            column![
+                label(t, "Topic (optional)", fs),
+                text_input("What's this channel about?", topic)
+                    .on_input(Message::NewChannelTopic)
+                    .on_submit(Message::CreateChannel)
+                    .padding(10)
+                    .size(fs)
+                    .style(style::input(t, t.rail.0))
+            ]
+            .spacing(10)
+            .into()
+        } else {
+            space().into()
+        };
         let body = column![
             text("Create channel").size(fs * 1.3).font(BOLD).color(t.header.0),
+            label(t, "Channel type", fs),
+            row![kind_button("# Text", ChannelKind::Text), kind_button("Voice", ChannelKind::Voice)].spacing(8),
             label(t, "Channel name", fs),
             text_input("new-channel", name)
                 .id(Id::new("new-channel"))
@@ -612,16 +784,8 @@ impl App {
                 .padding(10)
                 .size(fs)
                 .style(style::input(t, t.rail.0)),
-            text(if preview.is_empty() { String::new() } else { format!("Will appear as #{preview}") })
-                .size(fs * 0.8)
-                .color(t.muted.0),
-            label(t, "Topic (optional)", fs),
-            text_input("What's this channel about?", topic)
-                .on_input(Message::NewChannelTopic)
-                .on_submit(Message::CreateChannel)
-                .padding(10)
-                .size(fs)
-                .style(style::input(t, t.rail.0)),
+            text(hint).size(fs * 0.8).color(t.muted.0),
+            topic_field,
             row![
                 space::horizontal(),
                 button(text("Cancel").size(fs))
@@ -685,6 +849,7 @@ impl App {
             space().height(12),
             label(t, "App settings", fs),
             nav_item("Appearance", SettingsTab::Appearance),
+            nav_item("Voice & Audio", SettingsTab::Voice),
             space().height(12),
             divider(t.hover.0),
             button(text("Log Out").size(fs))
@@ -699,6 +864,7 @@ impl App {
         let content = match tab {
             SettingsTab::Profile => self.profile_settings(s),
             SettingsTab::Appearance => self.appearance_settings(),
+            SettingsTab::Voice => self.voice_settings(),
         };
 
         let close = column![
@@ -839,6 +1005,94 @@ impl App {
         ]
         .spacing(16)
         .into()
+    }
+
+    fn voice_settings(&self) -> Element<'_, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let st = &self.settings;
+
+        let device_picker = |options: &[String], current: &Option<String>, on: fn(String) -> Message| {
+            let mut all = vec![DEFAULT_DEVICE.to_string()];
+            all.extend(options.iter().cloned());
+            let selected = current.clone().unwrap_or_else(|| DEFAULT_DEVICE.to_string());
+            pick_list(all, Some(selected), on).text_size(fs * 0.9).padding(10).width(Length::Fill)
+        };
+        let percent_slider = |value: f32, on: fn(f32) -> Message| {
+            row![
+                slider(0.0..=2.0, value, on).step(0.05_f32),
+                text(format!("{:.0}%", value * 100.0)).size(fs * 0.85).color(t.text.0).width(48),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+        };
+
+        let live = self.voice.is_some() || self.mic_test.is_some();
+        let meter = level_meter(t, self.voice_status.input_level_db, st.input_sensitivity, live);
+
+        let test_label = if self.mic_test.is_some() { "Stop Testing" } else { "Let's Check" };
+        let mut test_row = row![
+            button(text(test_label).size(fs))
+                .padding([8, 16])
+                .on_press_maybe(self.voice.is_none().then_some(Message::ToggleMicTest))
+                .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center);
+        let hint = if self.voice.is_some() {
+            "You're in a call, so the meter below is live."
+        } else if self.mic_test.is_some() {
+            "Say something: you should hear yourself back."
+        } else {
+            "Having mic trouble? Start a test and say something silly. We'll play your voice back to you."
+        };
+        test_row = test_row.push(text(hint).size(fs * 0.85).color(t.muted.0).width(Length::Fill));
+
+        let mut col = column![
+            text("Voice & Audio").size(fs * 1.4).font(BOLD).color(t.header.0),
+            row![
+                column![label(t, "Input device", fs), device_picker(&self.input_devices, &st.input_device, Message::InputDevice)]
+                    .spacing(8)
+                    .width(Length::Fill),
+                column![label(t, "Output device", fs), device_picker(&self.output_devices, &st.output_device, Message::OutputDevice)]
+                    .spacing(8)
+                    .width(Length::Fill),
+            ]
+            .spacing(20),
+            row![
+                column![label(t, "Input volume", fs), percent_slider(st.input_gain, Message::InputGain)]
+                    .spacing(8)
+                    .width(Length::Fill),
+                column![label(t, "Output volume", fs), percent_slider(st.output_volume, Message::OutputVolume)]
+                    .spacing(8)
+                    .width(Length::Fill),
+            ]
+            .spacing(20),
+            label(t, "Mic test", fs),
+            test_row,
+            divider(t.hover.0),
+            label(t, "Input sensitivity", fs),
+            text("Your mic only sends sound louder than the marker. Drag it so the bar turns green when you talk but not when you're quiet.")
+                .size(fs * 0.85)
+                .color(t.muted.0),
+            meter,
+            slider(-80.0..=-10.0, st.input_sensitivity, Message::Sensitivity).step(1.0_f32).width(360),
+            text(format!("Threshold: {:.0} dB", st.input_sensitivity)).size(fs * 0.8).color(t.muted.0),
+            divider(t.hover.0),
+            label(t, "Voice processing", fs),
+            toggler(st.noise_suppression)
+                .label("Noise suppression (removes fans, keyboards and background hum)")
+                .on_toggle(Message::ToggleNoiseSuppression)
+                .text_size(fs),
+            text("Tip: use headphones so others don't hear themselves echo through your mic.")
+                .size(fs * 0.8)
+                .color(t.muted.0),
+        ]
+        .spacing(14);
+        if let Some(notice) = &self.notice {
+            col = col.push(text(notice.clone()).size(fs * 0.85).color(t.danger.0));
+        }
+        col.into()
     }
 
     fn appearance_settings(&self) -> Element<'_, Message> {
@@ -989,4 +1243,38 @@ fn long_time(ms: i64) -> String {
     } else {
         d.format("%m/%d/%Y %-I:%M %p").to_string()
     }
+}
+
+/// Horizontal bar showing the mic level, with a marker at the sensitivity threshold.
+fn level_meter<'a>(t: &AppTheme, level_db: f32, threshold_db: f32, live: bool) -> Element<'a, Message> {
+    const WIDTH: f32 = 360.0;
+    const MIN_DB: f32 = -80.0;
+    const MAX_DB: f32 = -10.0;
+    let frac = |db: f32| ((db - MIN_DB) / (MAX_DB - MIN_DB)).clamp(0.0, 1.0);
+    let level = if live { frac(level_db) } else { 0.0 };
+    let fill_color = if live && level_db >= threshold_db { t.online.0 } else { rgb(0xF0B232) };
+    let track = t.rail.0;
+    let header = t.header.0;
+
+    let fill = container(space()).width(WIDTH * level).height(10).style(move |_| container::Style {
+        background: Some(fill_color.into()),
+        border: Border { radius: 5.0.into(), ..Default::default() },
+        ..Default::default()
+    });
+    let marker = container(space().width(3).height(18)).style(move |_| container::Style {
+        background: Some(header.into()),
+        border: Border { radius: 1.5.into(), ..Default::default() },
+        ..Default::default()
+    });
+    let bar = container(fill).width(WIDTH).height(10).style(move |_| container::Style {
+        background: Some(track.into()),
+        border: Border { radius: 5.0.into(), ..Default::default() },
+        ..Default::default()
+    });
+    stack![
+        container(bar).height(18).align_y(Alignment::Center),
+        container(marker).padding(Padding { left: (WIDTH * frac(threshold_db) - 1.5).max(0.0), ..Padding::ZERO }),
+    ]
+    .width(WIDTH)
+    .into()
 }

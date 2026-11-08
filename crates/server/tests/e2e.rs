@@ -4,20 +4,27 @@
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use syncord_proto::{ClientMsg, Profile, ServerMsg};
-use syncord_server::{AppState, Config, db::Db, router};
+use syncord_proto::voice::{Packet, token_from_hex};
+use syncord_proto::{ChannelKind, ClientMsg, Profile, ServerMsg};
+use syncord_server::{AppState, Config, db::Db, router, start_udp};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message as Ws};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 async fn start_server() -> String {
+    start_server_with_udp().await.0
+}
+
+/// Returns the WebSocket URL and the UDP voice port.
+async fn start_server_with_udp() -> (String, u16) {
     let config = Config { invite_code: "letmein".into(), community_name: "Test Crew".into(), ..Config::default() };
     let state = AppState::new(config, Db::open_in_memory().unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let udp_port = start_udp(&state, "127.0.0.1:0".parse().unwrap()).await.unwrap();
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
-    format!("ws://{addr}/ws")
+    (format!("ws://{addr}/ws"), udp_port)
 }
 
 async fn send(ws: &mut Socket, msg: ClientMsg) {
@@ -65,7 +72,8 @@ async fn full_flow() {
     let ServerMsg::Ready(ready) = reply else { panic!("expected Ready, got {reply:?}") };
     assert_eq!(ready.community_name, "Test Crew");
     let alice_id = ready.me;
-    let general = ready.channels[0].id;
+    let general = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+    assert!(ready.channels.iter().any(|c| c.kind == ChannelKind::Voice), "fresh servers get a voice channel");
     assert!(ready.users.iter().any(|u| u.id == alice_id && u.is_owner));
     let alice_token = ready.token.clone();
 
@@ -99,9 +107,17 @@ async fn full_flow() {
     assert!(m.edited_at.is_some());
 
     // Only the owner can create channels.
-    send(&mut bob, ClientMsg::CreateChannel { name: "bob's room".into(), topic: String::new() }).await;
+    send(
+        &mut bob,
+        ClientMsg::CreateChannel { name: "bob's room".into(), topic: String::new(), kind: ChannelKind::Text },
+    )
+    .await;
     expect(&mut bob, |m| matches!(m, ServerMsg::Error { .. })).await;
-    send(&mut alice, ClientMsg::CreateChannel { name: "Gaming Night".into(), topic: "gg".into() }).await;
+    send(
+        &mut alice,
+        ClientMsg::CreateChannel { name: "Gaming Night".into(), topic: "gg".into(), kind: ChannelKind::Text },
+    )
+    .await;
     let created = expect(&mut bob, |m| matches!(m, ServerMsg::ChannelCreated(_))).await;
     let ServerMsg::ChannelCreated(ch) = created else { unreachable!() };
     assert_eq!(ch.name, "gaming-night");
@@ -143,4 +159,91 @@ async fn full_flow() {
     // Requests before logging in are refused.
     send(&mut after, ClientMsg::SendMessage { channel_id: general, content: "sneaky".into() }).await;
     expect(&mut after, |m| matches!(m, ServerMsg::AuthFailed { .. })).await;
+}
+
+async fn next_binary(ws: &mut Socket) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ws::Binary(b) = ws.next().await.expect("socket closed").unwrap() {
+                return b.to_vec();
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for voice packet")
+}
+
+#[tokio::test]
+async fn voice_relay_udp_and_websocket() {
+    let (url, udp_port) = start_server_with_udp().await;
+    let (mut alice, ready) = register(&url, "alice", "letmein").await;
+    let ServerMsg::Ready(ready) = ready else { panic!() };
+    let voice = ready.channels.iter().find(|c| c.kind == ChannelKind::Voice).unwrap().id;
+    let text = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+    let alice_id = ready.me;
+    let (mut bob, _) = register(&url, "bob", "letmein").await;
+
+    // Text messages can't go to a voice channel, and you can't "join" a text channel.
+    send(&mut alice, ClientMsg::SendMessage { channel_id: voice, content: "hi".into() }).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
+    send(&mut alice, ClientMsg::JoinVoice { channel_id: text }).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
+
+    // Both join.
+    send(&mut alice, ClientMsg::JoinVoice { channel_id: voice }).await;
+    let ServerMsg::VoiceReady { token: alice_token, udp_port: port, ssrc: alice_ssrc, .. } =
+        expect(&mut alice, |m| matches!(m, ServerMsg::VoiceReady { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(port, udp_port);
+    let alice_token = token_from_hex(&alice_token).unwrap();
+    expect(&mut bob, |m| matches!(m, ServerMsg::VoiceStateUpdate { user_id, state: Some(_) } if *user_id == alice_id))
+        .await;
+
+    send(&mut bob, ClientMsg::JoinVoice { channel_id: voice }).await;
+    let ServerMsg::VoiceReady { token: bob_token, ssrc: bob_ssrc, .. } =
+        expect(&mut bob, |m| matches!(m, ServerMsg::VoiceReady { .. })).await
+    else {
+        unreachable!()
+    };
+    let bob_token = token_from_hex(&bob_token).unwrap();
+
+    // Bob opens a UDP path; Alice stays WebSocket-only.
+    let udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    udp.connect(("127.0.0.1", udp_port)).await.unwrap();
+    udp.send(&Packet::Hello { token: bob_token }.encode()).await.unwrap();
+    let mut buf = [0u8; 1500];
+    let n = tokio::time::timeout(Duration::from_secs(5), udp.recv(&mut buf)).await.unwrap().unwrap();
+    assert_eq!(Packet::parse(&buf[..n]), Some(Packet::Ack));
+
+    // Alice talks over the WebSocket -> Bob hears it over UDP.
+    let up = Packet::AudioUp { token: alice_token, seq: 7, opus: b"alice-audio" }.encode();
+    alice.send(Ws::Binary(up.into())).await.unwrap();
+    let n = tokio::time::timeout(Duration::from_secs(5), udp.recv(&mut buf)).await.unwrap().unwrap();
+    assert_eq!(Packet::parse(&buf[..n]), Some(Packet::AudioDown { ssrc: alice_ssrc, seq: 7, opus: b"alice-audio" }));
+
+    // Bob talks over UDP -> Alice hears it over her WebSocket.
+    udp.send(&Packet::AudioUp { token: bob_token, seq: 1, opus: b"bob-audio" }.encode()).await.unwrap();
+    let got = next_binary(&mut alice).await;
+    assert_eq!(Packet::parse(&got), Some(Packet::AudioDown { ssrc: bob_ssrc, seq: 1, opus: b"bob-audio" }));
+
+    // Bob mutes: his audio is no longer relayed, and everyone sees the state.
+    send(&mut bob, ClientMsg::SetVoiceState { muted: true, deafened: false }).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::VoiceStateUpdate { state: Some(s), .. } if s.muted)).await;
+    udp.send(&Packet::AudioUp { token: bob_token, seq: 2, opus: b"secret" }.encode()).await.unwrap();
+    send(&mut alice, ClientMsg::Ping).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::Pong)).await;
+    let leaked = tokio::time::timeout(Duration::from_millis(300), next_binary(&mut alice)).await;
+    assert!(leaked.is_err(), "muted audio must not be relayed");
+
+    // Bob disconnecting removes him from voice.
+    drop(bob);
+    expect(&mut alice, |m| matches!(m, ServerMsg::VoiceStateUpdate { state: None, .. })).await;
+
+    // Late joiners see who's already in voice.
+    let (_carol, ready) = register(&url, "carol", "letmein").await;
+    let ServerMsg::Ready(ready) = ready else { panic!() };
+    assert_eq!(ready.voice.len(), 1);
+    assert_eq!(ready.voice[0].user_id, alice_id);
 }

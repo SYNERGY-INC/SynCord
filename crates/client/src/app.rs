@@ -13,6 +13,9 @@ use syncord_proto::{
 use crate::net::{self, Connection};
 use crate::settings::Settings;
 use crate::theme::{self, AppTheme, Hex, to_u32};
+use crate::voice::{self, Link, VoiceEngine};
+use syncord_proto::voice::{Token, token_from_hex};
+use syncord_proto::{ChannelKind, VoiceState};
 
 pub const MESSAGES_ID: &str = "messages";
 pub const COMPOSER_ID: &str = "composer";
@@ -50,9 +53,10 @@ pub enum Message {
 
     // Overlays
     ShowProfile(UserId),
-    OpenNewChannel,
+    OpenNewChannel(ChannelKind),
     NewChannelName(String),
     NewChannelTopic(String),
+    NewChannelKind(ChannelKind),
     CreateChannel,
     AskDeleteChannel(ChannelId),
     ConfirmDeleteChannel(ChannelId),
@@ -71,6 +75,21 @@ pub enum Message {
     ToggleCompact(bool),
     ToggleLowMemory(bool),
     Logout,
+
+    // Voice
+    JoinVoice(ChannelId),
+    LeaveVoice,
+    ToggleMute,
+    ToggleDeafen,
+    VoiceTick,
+    InputDevice(String),
+    OutputDevice(String),
+    InputGain(f32),
+    OutputVolume(f32),
+    Sensitivity(f32),
+    ToggleNoiseSuppression(bool),
+    ToggleMicTest,
+    UserVolume(UserId, f32),
 
     Tick,
     Escape,
@@ -92,12 +111,13 @@ pub enum DraftField {
 pub enum SettingsTab {
     Profile,
     Appearance,
+    Voice,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Overlay {
     Profile(UserId),
-    NewChannel { name: String, topic: String },
+    NewChannel { name: String, topic: String, kind: ChannelKind },
     ConfirmDelete(ChannelId),
 }
 
@@ -130,6 +150,8 @@ pub struct Session {
     pub chans: HashMap<ChannelId, ChannelState>,
     pub unread: HashSet<ChannelId>,
     pub typing: HashMap<ChannelId, HashMap<UserId, Instant>>,
+    /// Everyone currently in a voice channel.
+    pub voice: HashMap<UserId, VoiceState>,
 }
 
 impl Session {
@@ -139,6 +161,10 @@ impl Session {
 
     pub fn current_channel(&self) -> Option<&Channel> {
         self.current.and_then(|id| self.channels.iter().find(|c| c.id == id))
+    }
+
+    pub fn first_text_channel(&self) -> Option<ChannelId> {
+        self.channels.iter().find(|c| c.kind == ChannelKind::Text).map(|c| c.id)
     }
 
     pub fn is_owner(&self) -> bool {
@@ -190,6 +216,18 @@ impl ProfileDraft {
     }
 }
 
+/// Label for "use the system's default device" in the device pickers.
+pub const DEFAULT_DEVICE: &str = "Default";
+
+/// The voice channel we're connected to.
+pub struct ActiveVoice {
+    pub channel_id: ChannelId,
+    pub ssrc: u32,
+    token: Token,
+    udp_port: u16,
+    pub engine: VoiceEngine,
+}
+
 pub struct App {
     pub settings: Settings,
     pub themes: Vec<AppTheme>,
@@ -198,6 +236,7 @@ pub struct App {
 
     generation: u64,
     conn: Option<Connection>,
+    voice_sink: crate::voice::VoiceSink,
     pending_auth: Option<ClientMsg>,
     reconnect_attempts: u32,
     pub reconnecting: bool,
@@ -213,6 +252,18 @@ pub struct App {
     pub settings_tab: Option<SettingsTab>,
     pub draft: ProfileDraft,
     pub notice: Option<String>,
+
+    pub voice: Option<ActiveVoice>,
+    pub voice_joining: Option<ChannelId>,
+    /// Voice channel to rejoin after a reconnect.
+    rejoin_voice: Option<ChannelId>,
+    pub muted: bool,
+    pub deafened: bool,
+    pub voice_status: voice::Status,
+    pub speaking: HashSet<UserId>,
+    pub mic_test: Option<VoiceEngine>,
+    pub input_devices: Vec<String>,
+    pub output_devices: Vec<String>,
 }
 
 impl App {
@@ -233,6 +284,7 @@ impl App {
             theme,
             generation: 0,
             conn: None,
+            voice_sink: Default::default(),
             pending_auth: None,
             reconnect_attempts: 0,
             reconnecting: false,
@@ -245,6 +297,16 @@ impl App {
             settings_tab: None,
             draft: ProfileDraft::default(),
             notice: None,
+            voice: None,
+            voice_joining: None,
+            rejoin_voice: None,
+            muted: false,
+            deafened: false,
+            voice_status: voice::Status::default(),
+            speaking: HashSet::new(),
+            mic_test: None,
+            input_devices: Vec::new(),
+            output_devices: Vec::new(),
         };
 
         // Log straight back in if we have a saved session.
@@ -282,12 +344,16 @@ impl App {
             }
             _ => None,
         });
+        let mut subs = vec![keys];
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
         if someone_typing {
-            Subscription::batch([keys, iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)])
-        } else {
-            keys
+            subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
         }
+        if self.voice.is_some() || self.mic_test.is_some() {
+            // Refresh speaking indicators and the mic meter.
+            subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::VoiceTick));
+        }
+        Subscription::batch(subs)
     }
 
     fn connect(&mut self, auth: ClientMsg) -> Task<Message> {
@@ -296,7 +362,7 @@ impl App {
         self.pending_auth = Some(auth);
         let generation = self.generation;
         let url = net::server_url(&self.settings.server);
-        Task::run(net::connect(url), move |event| Message::Net(generation, event))
+        Task::run(net::connect(url, self.voice_sink.clone()), move |event| Message::Net(generation, event))
     }
 
     fn send(&self, msg: ClientMsg) {
@@ -436,8 +502,8 @@ impl App {
             Message::DismissNotice => self.notice = None,
 
             Message::ShowProfile(id) => self.overlay = Some(Overlay::Profile(id)),
-            Message::OpenNewChannel => {
-                self.overlay = Some(Overlay::NewChannel { name: String::new(), topic: String::new() });
+            Message::OpenNewChannel(kind) => {
+                self.overlay = Some(Overlay::NewChannel { name: String::new(), topic: String::new(), kind });
                 return operation::focus(Id::new("new-channel"));
             }
             Message::NewChannelName(s) => {
@@ -450,9 +516,14 @@ impl App {
                     *topic = s;
                 }
             }
+            Message::NewChannelKind(k) => {
+                if let Some(Overlay::NewChannel { kind, .. }) = &mut self.overlay {
+                    *kind = k;
+                }
+            }
             Message::CreateChannel => {
-                if let Some(Overlay::NewChannel { name, topic }) = self.overlay.take() {
-                    self.send(ClientMsg::CreateChannel { name, topic });
+                if let Some(Overlay::NewChannel { name, topic, kind }) = self.overlay.take() {
+                    self.send(ClientMsg::CreateChannel { name, topic, kind });
                 }
             }
             Message::AskDeleteChannel(id) => self.overlay = Some(Overlay::ConfirmDelete(id)),
@@ -469,8 +540,19 @@ impl App {
                 self.settings_tab = Some(SettingsTab::Profile);
                 self.overlay = None;
             }
-            Message::CloseSettings => self.settings_tab = None,
-            Message::SettingsTab(tab) => self.settings_tab = Some(tab),
+            Message::CloseSettings => {
+                self.settings_tab = None;
+                self.mic_test = None;
+            }
+            Message::SettingsTab(tab) => {
+                if tab == SettingsTab::Voice {
+                    self.input_devices = voice::devices::input_names();
+                    self.output_devices = voice::devices::output_names();
+                } else {
+                    self.mic_test = None;
+                }
+                self.settings_tab = Some(tab);
+            }
             Message::Draft(field) => {
                 let d = &mut self.draft;
                 match field {
@@ -528,6 +610,103 @@ impl App {
                 self.end_session(None);
             }
 
+            Message::JoinVoice(id) => {
+                if self.voice.as_ref().is_some_and(|v| v.channel_id == id) || self.voice_joining == Some(id) {
+                    return Task::none();
+                }
+                self.mic_test = None;
+                self.stop_voice();
+                self.voice_joining = Some(id);
+                self.send(ClientMsg::JoinVoice { channel_id: id });
+            }
+            Message::LeaveVoice => {
+                self.send(ClientMsg::LeaveVoice);
+                self.voice_joining = None;
+                self.rejoin_voice = None;
+                self.stop_voice();
+            }
+            Message::ToggleMute => {
+                if self.deafened {
+                    // Unmuting while deafened turns both off, like other voice apps.
+                    self.deafened = false;
+                    self.muted = false;
+                } else {
+                    self.muted = !self.muted;
+                }
+                self.apply_mute_state();
+            }
+            Message::ToggleDeafen => {
+                self.deafened = !self.deafened;
+                self.apply_mute_state();
+            }
+            Message::VoiceTick => {
+                let status = match (&self.voice, &self.mic_test) {
+                    (Some(v), _) => v.engine.status(),
+                    (None, Some(t)) => t.status(),
+                    (None, None) => return Task::none(),
+                };
+                let mut speaking = HashSet::new();
+                if let (Some(v), Some(s)) = (&self.voice, &self.session) {
+                    for st in s.voice.values() {
+                        if st.channel_id == v.channel_id && status.speaking.contains(&st.ssrc) {
+                            speaking.insert(st.user_id);
+                        }
+                    }
+                    if status.transmitting {
+                        speaking.insert(s.me);
+                    }
+                }
+                self.speaking = speaking;
+                self.voice_status = status;
+            }
+            Message::InputDevice(name) => {
+                self.settings.input_device = (name != DEFAULT_DEVICE).then_some(name);
+                self.settings.save();
+                self.restart_audio();
+            }
+            Message::OutputDevice(name) => {
+                self.settings.output_device = (name != DEFAULT_DEVICE).then_some(name);
+                self.settings.save();
+                self.restart_audio();
+            }
+            Message::InputGain(v) => {
+                self.settings.input_gain = v;
+                self.save_and_apply_voice_config();
+            }
+            Message::OutputVolume(v) => {
+                self.settings.output_volume = v;
+                self.save_and_apply_voice_config();
+            }
+            Message::Sensitivity(v) => {
+                self.settings.input_sensitivity = v;
+                self.save_and_apply_voice_config();
+            }
+            Message::ToggleNoiseSuppression(v) => {
+                self.settings.noise_suppression = v;
+                self.save_and_apply_voice_config();
+            }
+            Message::ToggleMicTest => {
+                if self.mic_test.take().is_none() && self.voice.is_none() {
+                    match VoiceEngine::start(self.settings.voice_config(), Link::Loopback, false, false) {
+                        Ok(engine) => {
+                            self.notice = engine.status().problem;
+                            self.mic_test = Some(engine);
+                        }
+                        Err(e) => self.notice = Some(format!("Mic test failed: {e}")),
+                    }
+                }
+                if self.mic_test.is_none() {
+                    self.voice_status = voice::Status::default();
+                }
+            }
+            Message::UserVolume(user, volume) => {
+                self.settings.user_volumes.insert(user.to_string(), volume);
+                self.settings.save();
+                if let (Some(v), Some(st)) = (&self.voice, self.session.as_ref().and_then(|s| s.voice.get(&user))) {
+                    v.engine.set_speaker_volume(st.ssrc, volume);
+                }
+            }
+
             Message::Tick => {
                 if let Some(s) = &mut self.session {
                     for users in s.typing.values_mut() {
@@ -548,8 +727,133 @@ impl App {
         Task::none()
     }
 
+    fn stop_voice(&mut self) {
+        self.voice = None;
+        *self.voice_sink.lock().unwrap() = None;
+        self.speaking.clear();
+        self.voice_status = voice::Status::default();
+    }
+
+    fn start_engine(&self, token: Token, udp_port: u16) -> Result<VoiceEngine, String> {
+        let conn = self.conn.clone().ok_or("Not connected")?;
+        let host = net::host_of(&net::server_url(&self.settings.server)).unwrap_or_default();
+        let link = Link::Server { host, udp_port, token, conn };
+        VoiceEngine::start(self.settings.voice_config(), link, self.muted, self.deafened)
+    }
+
+    /// Hook a freshly started engine up to the network and per-person volumes.
+    fn install_engine(&mut self, channel_id: ChannelId, ssrc: u32, token: Token, udp_port: u16, engine: VoiceEngine) {
+        *self.voice_sink.lock().unwrap() = Some(engine.mixer());
+        if let Some(s) = &self.session {
+            for st in s.voice.values() {
+                engine.set_speaker_volume(st.ssrc, self.settings.user_volume(st.user_id));
+            }
+        }
+        if let Some(problem) = engine.status().problem {
+            self.notice = Some(problem);
+        }
+        self.voice = Some(ActiveVoice { channel_id, ssrc, token, udp_port, engine });
+    }
+
+    fn apply_mute_state(&self) {
+        if let Some(v) = &self.voice {
+            v.engine.set_muted(self.muted);
+            v.engine.set_deafened(self.deafened);
+            self.send(ClientMsg::SetVoiceState { muted: self.muted, deafened: self.deafened });
+        }
+    }
+
+    fn save_and_apply_voice_config(&mut self) {
+        self.settings.save();
+        let config = self.settings.voice_config();
+        if let Some(v) = &self.voice {
+            v.engine.set_config(&config);
+        }
+        if let Some(t) = &self.mic_test {
+            t.set_config(&config);
+        }
+    }
+
+    /// Reopen audio devices after the user picks a different microphone or speaker.
+    fn restart_audio(&mut self) {
+        if self.mic_test.take().is_some() {
+            return self.restart_mic_test();
+        }
+        if let Some(v) = self.voice.take() {
+            let (channel_id, ssrc, token, udp_port) = (v.channel_id, v.ssrc, v.token, v.udp_port);
+            drop(v); // release the old devices first
+            match self.start_engine(token, udp_port) {
+                Ok(engine) => self.install_engine(channel_id, ssrc, token, udp_port, engine),
+                Err(e) => {
+                    self.notice = Some(format!("Couldn't switch audio device: {e}"));
+                    self.send(ClientMsg::LeaveVoice);
+                    self.stop_voice();
+                }
+            }
+        }
+    }
+
+    fn restart_mic_test(&mut self) {
+        match VoiceEngine::start(self.settings.voice_config(), Link::Loopback, false, false) {
+            Ok(engine) => self.mic_test = Some(engine),
+            Err(e) => self.notice = Some(format!("Mic test failed: {e}")),
+        }
+    }
+
+    fn on_voice(&mut self, msg: ServerMsg) {
+        match msg {
+            ServerMsg::VoiceReady { channel_id, ssrc, token, udp_port } => {
+                // Ignore answers to joins we've since cancelled or replaced.
+                if self.voice_joining != Some(channel_id) {
+                    return;
+                }
+                self.voice_joining = None;
+                let Some(token) = token_from_hex(&token) else { return };
+                match self.start_engine(token, udp_port) {
+                    Ok(engine) => {
+                        self.install_engine(channel_id, ssrc, token, udp_port, engine);
+                        if self.muted || self.deafened {
+                            self.apply_mute_state();
+                        }
+                    }
+                    Err(e) => {
+                        self.notice = Some(format!("Couldn't start voice: {e}"));
+                        self.send(ClientMsg::LeaveVoice);
+                    }
+                }
+            }
+            ServerMsg::VoiceStateUpdate { user_id, state } => {
+                let Some(s) = &mut self.session else { return };
+                let me = s.me;
+                match &state {
+                    Some(st) => s.voice.insert(user_id, st.clone()),
+                    None => s.voice.remove(&user_id),
+                };
+                if user_id == me {
+                    let my_ssrc = self.voice.as_ref().map(|v| v.ssrc);
+                    match (state, my_ssrc) {
+                        // Removed by the server (e.g. the channel was deleted).
+                        (None, Some(_)) => self.stop_voice(),
+                        (Some(st), Some(ssrc)) if st.ssrc != ssrc && self.voice_joining.is_none() => {
+                            self.stop_voice();
+                            self.notice = Some("You joined voice from another device.".into());
+                        }
+                        _ => {}
+                    }
+                } else if let (Some(st), Some(v)) = (&state, &self.voice) {
+                    v.engine.set_speaker_volume(st.ssrc, self.settings.user_volume(user_id));
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Drop back to the login screen.
     fn end_session(&mut self, error: Option<String>) {
+        self.stop_voice();
+        self.mic_test = None;
+        self.voice_joining = None;
+        self.rejoin_voice = None;
         self.generation += 1;
         self.conn = None;
         self.session = None;
@@ -593,6 +897,10 @@ impl App {
             }
             net::Event::Disconnected(reason) => {
                 self.conn = None;
+                if let Some(channel) = self.voice.as_ref().map(|v| v.channel_id).or(self.voice_joining.take()) {
+                    self.rejoin_voice = Some(channel);
+                }
+                self.stop_voice();
                 if self.session.is_some() {
                     // Keep the UI and retry with growing delays (1s, 2s, 4s ... max 30s).
                     self.reconnecting = true;
@@ -623,7 +931,7 @@ impl App {
         let previous = self.session.as_ref().and_then(|s| s.current);
         let current = previous
             .filter(|id| ready.channels.iter().any(|c| c.id == *id))
-            .or_else(|| ready.channels.first().map(|c| c.id));
+            .or_else(|| ready.channels.iter().find(|c| c.kind == ChannelKind::Text).map(|c| c.id));
 
         self.session = Some(Session {
             me: ready.me,
@@ -636,7 +944,14 @@ impl App {
             chans: HashMap::new(),
             unread: HashSet::new(),
             typing: HashMap::new(),
+            voice: ready.voice.into_iter().map(|v| (v.user_id, v)).collect(),
         });
+        if let Some(channel_id) = self.rejoin_voice.take()
+            && self.session.as_ref().is_some_and(|s| s.channels.iter().any(|c| c.id == channel_id))
+        {
+            self.voice_joining = Some(channel_id);
+            self.send(ClientMsg::JoinVoice { channel_id });
+        }
         match current {
             Some(id) => self.select_channel(id),
             None => Task::none(),
@@ -651,11 +966,16 @@ impl App {
             self.end_session(Some(reason));
             return Task::none();
         }
+        if matches!(msg, ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. }) {
+            self.on_voice(msg);
+            return Task::none();
+        }
         let me = self.session.as_ref().map(|s| s.me);
         let Some(s) = &mut self.session else { return Task::none() };
 
         match msg {
             ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. } | ServerMsg::Pong => {}
+            ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. } => {} // handled in on_voice
             ServerMsg::MessageCreated(m) => {
                 if let Some(t) = s.typing.get_mut(&m.channel_id) {
                     t.remove(&m.author_id);
@@ -730,7 +1050,7 @@ impl App {
                 s.unread.remove(&channel_id);
                 if s.current == Some(channel_id) {
                     s.current = None;
-                    if let Some(first) = s.channels.first().map(|c| c.id) {
+                    if let Some(first) = s.first_text_channel() {
                         return self.select_channel(first);
                     }
                 }

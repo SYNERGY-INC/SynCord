@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod voice;
+
 pub type UserId = i64;
 pub type ChannelId = i64;
 pub type MessageId = i64;
@@ -105,12 +107,32 @@ impl std::fmt::Display for AvatarRing {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ChannelKind {
+    #[default]
+    Text,
+    Voice,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
     pub id: ChannelId,
     pub name: String,
     pub topic: String,
     pub position: i64,
+    #[serde(default)]
+    pub kind: ChannelKind,
+}
+
+/// Who is in which voice channel, and whether they're muted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VoiceState {
+    pub user_id: UserId,
+    pub channel_id: ChannelId,
+    pub muted: bool,
+    pub deafened: bool,
+    /// Identifies this person's audio packets (see [`voice`]).
+    pub ssrc: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,23 +156,64 @@ pub struct Ready {
     pub users: Vec<User>,
     pub online: Vec<UserId>,
     pub channels: Vec<Channel>,
+    #[serde(default)]
+    pub voice: Vec<VoiceState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "d")]
 pub enum ClientMsg {
-    Register { username: String, password: String, invite: String },
-    Login { username: String, password: String },
-    Resume { token: String },
+    Register {
+        username: String,
+        password: String,
+        invite: String,
+    },
+    Login {
+        username: String,
+        password: String,
+    },
+    Resume {
+        token: String,
+    },
     Logout,
-    SendMessage { channel_id: ChannelId, content: String },
-    EditMessage { message_id: MessageId, content: String },
-    DeleteMessage { message_id: MessageId },
-    FetchHistory { channel_id: ChannelId, before: Option<MessageId> },
-    Typing { channel_id: ChannelId },
-    UpdateProfile { profile: Profile },
-    CreateChannel { name: String, topic: String },
-    DeleteChannel { channel_id: ChannelId },
+    SendMessage {
+        channel_id: ChannelId,
+        content: String,
+    },
+    EditMessage {
+        message_id: MessageId,
+        content: String,
+    },
+    DeleteMessage {
+        message_id: MessageId,
+    },
+    FetchHistory {
+        channel_id: ChannelId,
+        before: Option<MessageId>,
+    },
+    Typing {
+        channel_id: ChannelId,
+    },
+    UpdateProfile {
+        profile: Profile,
+    },
+    CreateChannel {
+        name: String,
+        topic: String,
+        #[serde(default)]
+        kind: ChannelKind,
+    },
+    DeleteChannel {
+        channel_id: ChannelId,
+    },
+    JoinVoice {
+        channel_id: ChannelId,
+    },
+    LeaveVoice,
+    SetVoiceState {
+        muted: bool,
+        deafened: bool,
+    },
     Ping,
 }
 
@@ -158,18 +221,51 @@ pub enum ClientMsg {
 #[serde(tag = "op", content = "d")]
 pub enum ServerMsg {
     Ready(Ready),
-    AuthFailed { reason: String },
+    AuthFailed {
+        reason: String,
+    },
     MessageCreated(Message),
     MessageUpdated(Message),
-    MessageDeleted { channel_id: ChannelId, message_id: MessageId },
-    History { channel_id: ChannelId, messages: Vec<Message>, reached_start: bool },
-    Typing { channel_id: ChannelId, user_id: UserId },
+    MessageDeleted {
+        channel_id: ChannelId,
+        message_id: MessageId,
+    },
+    History {
+        channel_id: ChannelId,
+        messages: Vec<Message>,
+        reached_start: bool,
+    },
+    Typing {
+        channel_id: ChannelId,
+        user_id: UserId,
+    },
     UserJoined(User),
     UserUpdated(User),
-    Presence { user_id: UserId, online: bool },
+    Presence {
+        user_id: UserId,
+        online: bool,
+    },
     ChannelCreated(Channel),
-    ChannelDeleted { channel_id: ChannelId },
-    Error { message: String },
+    ChannelDeleted {
+        channel_id: ChannelId,
+    },
+    /// Sent only to the joining connection: how to start sending audio.
+    VoiceReady {
+        channel_id: ChannelId,
+        ssrc: u32,
+        /// Hex-encoded secret that must prefix every audio packet this client sends.
+        token: String,
+        /// UDP port for audio. If UDP can't get through, audio also works over this WebSocket.
+        udp_port: u16,
+    },
+    /// Someone joined, left (`state: None`) or changed mute/deafen.
+    VoiceStateUpdate {
+        user_id: UserId,
+        state: Option<VoiceState>,
+    },
+    Error {
+        message: String,
+    },
     Pong,
 }
 
@@ -184,6 +280,11 @@ pub fn normalize_channel_name(name: &str) -> String {
         }
     }
     out.trim_matches('-').chars().take(32).collect()
+}
+
+/// Tidy a voice channel name: voice channels keep their capitals and spaces.
+pub fn clean_voice_channel_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c| !c.is_control()).take(32).collect()
 }
 
 #[cfg(test)]

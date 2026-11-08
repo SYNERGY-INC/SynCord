@@ -1,5 +1,6 @@
 //! Client preferences saved between launches.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,18 @@ pub struct Settings {
     /// Draw the UI on the CPU instead of the GPU. Uses far less memory
     /// (no graphics driver overhead) and is plenty fast for a chat app.
     pub low_memory: bool,
+
+    // Voice
+    /// Microphone name; `None` uses the system default.
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
+    pub input_gain: f32,
+    pub output_volume: f32,
+    /// Sounds quieter than this (dBFS) aren't sent.
+    pub input_sensitivity: f32,
+    pub noise_suppression: bool,
+    /// Volume for each person, keyed by user id.
+    pub user_volumes: HashMap<String, f32>,
 }
 
 impl Default for Settings {
@@ -32,6 +45,13 @@ impl Default for Settings {
             show_members: true,
             compact: false,
             low_memory: true,
+            input_device: None,
+            output_device: None,
+            input_gain: 1.0,
+            output_volume: 1.0,
+            input_sensitivity: -50.0,
+            noise_suppression: true,
+            user_volumes: HashMap::new(),
         }
     }
 }
@@ -41,6 +61,21 @@ fn path() -> Option<PathBuf> {
 }
 
 impl Settings {
+    pub fn voice_config(&self) -> crate::voice::VoiceConfig {
+        crate::voice::VoiceConfig {
+            input_device: self.input_device.clone(),
+            output_device: self.output_device.clone(),
+            input_gain: self.input_gain,
+            output_volume: self.output_volume,
+            sensitivity_db: self.input_sensitivity,
+            noise_suppression: self.noise_suppression,
+        }
+    }
+
+    pub fn user_volume(&self, user: syncord_proto::UserId) -> f32 {
+        self.user_volumes.get(&user.to_string()).copied().unwrap_or(1.0)
+    }
+
     pub fn load() -> Self {
         path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| toml::from_str(&t).ok()).unwrap_or_default()
     }

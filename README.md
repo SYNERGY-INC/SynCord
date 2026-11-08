@@ -1,8 +1,9 @@
 # SynCord
 
 A lightweight, self-hosted chat app for you and your friends, written entirely in Rust.
-It looks and feels like the chat apps you're used to, but it's a native program instead of a
-web browser in disguise, so it's tiny, and every customization feature is free.
+It has text and voice channels and looks and feels like the chat apps you're used to, but it's a
+native program instead of a web browser in disguise, so it's tiny, and every customization
+feature is free.
 
 ![SynCord main window](docs/screenshot.png)
 
@@ -11,6 +12,7 @@ web browser in disguise, so it's tiny, and every customization feature is free.
 | | SynCord | Typical Electron chat app |
 |---|---|---|
 | Client memory (idle, one server) | **~22 MB** (low memory mode) | 300 MB to 1 GB+ |
+| Client memory (in a voice call) | **~27 MB** | higher still |
 | Client download | ~16 MB, single file | 100 MB+ installer |
 | Server memory | under 50 MB | n/a (someone else's cloud) |
 | Themes, profile colours, avatar rings | free | paid |
@@ -32,13 +34,25 @@ off in **Settings → Appearance** for GPU rendering.
 - Text size slider and compact mode
 - Invite-code sign-up so strangers can't join; the first account becomes the server owner
 - Owner can create and delete channels and remove any message
-- Auto-reconnect if the connection drops; stays logged in between launches
+- Auto-reconnect if the connection drops (and rejoins your voice call); stays logged in between launches
 
-**Coming next:** voice channels (see [Roadmap](#roadmap)).
+### Voice chat
 
-| Profile settings | Themes |
-|---|---|
-| ![Profile settings](docs/profile-settings.png) | ![Themes](docs/themes.png) |
+- **Voice channels** with everyone in them listed underneath, and a green ring around whoever is talking
+- **Opus** audio at 64 kbps (the codec the big apps use), with error correction for lost packets
+- **Noise suppression** (an RNNoise port) that removes fans, keyboard clatter and hum
+- **Voice activity detection** with an adjustable sensitivity and a live level meter, so you
+  only send audio while you're talking
+- **Mute and deafen** buttons, shown to everyone in the channel
+- **Per-person volume**: click someone in your call to turn them up or down
+- Pick your microphone and speakers, input and output volume, and a **mic test** that plays you back
+- Uses **UDP** for the lowest delay and switches automatically to the normal connection if UDP is
+  blocked, so voice still works through strict networks and HTTPS proxies
+- A jitter buffer smooths out network hiccups
+
+| Profile settings | Themes | Voice settings |
+|---|---|---|
+| ![Profile settings](docs/profile-settings.png) | ![Themes](docs/themes.png) | ![Voice settings](docs/voice-settings.png) |
 
 ---
 
@@ -53,7 +67,9 @@ There are two programs:
 **Build** run, and download `syncord-windows`, `syncord-macos` or `syncord-linux` from the
 **Artifacts** section. Each zip contains both programs.
 
-**From source:** install Rust from <https://rustup.rs>, then:
+**From source:** install Rust from <https://rustup.rs> and [CMake](https://cmake.org) (used to
+build the Opus audio codec). On Linux, also install the ALSA headers (`libasound2-dev` on
+Debian/Ubuntu, `alsa-lib-devel` on Fedora). Then:
 
 ```bash
 cargo build --release
@@ -103,18 +119,25 @@ private, encrypted network, so there's no router setup and nothing exposed to th
 
 #### Option B: Port forwarding
 
-1. In the router's settings, forward **TCP port 7878** to the server PC's local IP address.
-2. Allow the port through the firewall. On Windows, run this in an admin PowerShell:
+1. In the router's settings, forward port **7878** for both **TCP** (chat) and **UDP** (voice)
+   to the server PC's local IP address. If you can only forward TCP, voice still works over
+   TCP, just with slightly more delay.
+2. Allow the port through the firewall. On Windows, run these in an admin PowerShell:
 
    ```powershell
    New-NetFirewallRule -DisplayName "SynCord" -Direction Inbound -Protocol TCP -LocalPort 7878 -Action Allow
+   ```
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "SynCord voice" -Direction Inbound -Protocol UDP -LocalPort 7878 -Action Allow
    ```
 3. Friends use your home's public IP address (search "what is my IP" on the server PC).
 
 > **Heads up:** with plain port forwarding, traffic (including passwords) is not encrypted.
 > Tailscale avoids this. If you'd rather use port forwarding, put a reverse proxy such as
 > [Caddy](https://caddyserver.com) in front of SynCord with a domain name. Caddy gets an HTTPS
-> certificate automatically, and friends then connect with `wss://your.domain`.
+> certificate automatically, and friends then connect with `wss://your.domain`. Voice then
+> travels through the same encrypted connection.
 
 On the same Wi-Fi as the server you can always use its local IP (e.g. `192.168.1.20`).
 
@@ -154,6 +177,17 @@ sudo systemctl enable --now syncord
 Open `syncord`, click **Register**, enter the server address, a username, a password and the
 invite code. **The first account created becomes the server owner**, so the host should
 register first. Only the owner can create and delete channels.
+
+### Voice tips
+
+- **Use headphones.** There's no echo cancellation yet, so speakers can feed your friends' voices
+  back into your mic.
+- Open **Settings → Voice & Audio** and press **Let's Check** to hear yourself and set the
+  sensitivity: the bar should turn green when you talk and stay yellow when you're quiet.
+- The **Voice Connected** box shows **direct (UDP)** or **relayed (TCP)**. Relayed works fine; if
+  you'd like the lower delay, open UDP port 7878 as described above.
+- **macOS** asks for microphone permission the first time you join a call. If you start SynCord
+  from Terminal, the permission is granted to Terminal.
 
 ### Backups
 
@@ -206,9 +240,8 @@ Themes are plain files, so you can send them to friends.
 
 ## Roadmap
 
-1. **Voice channels**: Opus audio (the same codec the big apps use), noise suppression
-   with `nnnoiseless`, push-to-talk or voice activation. The server relays audio between the
-   people in a channel.
+1. Echo cancellation and push-to-talk (needs a global hotkey that works while the app is in
+   the background)
 2. Image and file uploads, link previews
 3. Markdown formatting, emoji picker, replies, @mentions and desktop notifications
 4. Custom server emoji, animated avatars, uploadable avatar and banner images
@@ -219,8 +252,10 @@ Themes are plain files, so you can send them to friends.
 ```
 crates/
   proto/   shared message types (the "language" client and server speak)
-  server/  axum + tokio WebSocket server, SQLite storage
+  server/  axum + tokio WebSocket server, SQLite storage, voice relay (UDP + WebSocket)
   client/  iced desktop app
+    src/voice/  audio engine: cpal devices, noise suppression, voice gate,
+                Opus, jitter buffer, mixer
 ```
 
 Run the tests with:
@@ -229,4 +264,6 @@ Run the tests with:
 cargo test --workspace
 ```
 
-They include an end-to-end test that starts a real server and drives it with two clients.
+They include end-to-end tests that start a real server and drive it with two clients, including
+one that sends real Opus audio both ways (over UDP in one direction and the WebSocket fallback
+in the other) and checks it comes out the other end.
