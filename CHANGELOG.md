@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1
+
+- Clearer messages when your server is older than the app: instead of a technical error, SynCord
+  explains that the server needs updating (for direct messages, reactions and file uploads).
+
 ## v0.3.0
 
 **New: automatic updates.**
