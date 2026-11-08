@@ -72,6 +72,7 @@ impl App {
                     Overlay::Crop => self.crop_dialog(),
                     Overlay::Switcher { query, index } => self.switcher_dialog(session, query, *index),
                     Overlay::Shortcuts => self.shortcuts_dialog(),
+                    Overlay::StatusPicker => self.status_picker(session),
                 };
                 let dim = if matches!(overlay, Overlay::Image(_)) { 0.88 } else { 0.6 };
                 // The backdrop fades in while the dialog pops up.
@@ -489,10 +490,16 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let Some(me) = s.me() else { return space().into() };
-        let status = if !self.reconnecting {
-            if me.profile.status_text.is_empty() { "Online".to_string() } else { truncate(&me.profile.status_text, 12) }
-        } else {
+        let status = if self.reconnecting {
             "Reconnecting...".to_string()
+        } else if let Some(a) =
+            self.effective_activity().filter(|_| self.effective_status() != syncord_proto::Status::Invisible)
+        {
+            truncate(&format!("{} {}", a.kind.verb(), a.name), 14)
+        } else if !me.profile.status_text.is_empty() {
+            truncate(&me.profile.status_text, 12)
+        } else {
+            self.effective_status().label().to_string()
         };
 
         let toggle = |handle: &'static std::sync::LazyLock<iced::widget::svg::Handle>, on: bool, msg: Message| {
@@ -502,14 +509,25 @@ impl App {
         let mic = if self.muted || self.deafened { &icons::MIC_OFF } else { &icons::MIC_ON };
         let ears = if self.deafened { &icons::HEADPHONES_OFF } else { &icons::HEADPHONES_ON };
 
-        let content = row![
-            self.avatar_status(me, 32.0, !self.reconnecting, t.user_panel.0),
-            column![
-                text(truncate(me.name(), 11)).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
-                text(status).size(fs * 0.75).color(t.muted.0),
+        // Click your name or avatar to set your status, like Discord.
+        let who = button(
+            row![
+                self.avatar_status(me, 32.0, !self.reconnecting, t.user_panel.0),
+                column![
+                    text(truncate(me.name(), 11)).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
+                    text(status).size(fs * 0.75).color(t.muted.0),
+                ]
+                .spacing(1),
             ]
-            .spacing(1)
-            .width(Length::Fill),
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([2, 4])
+        .on_press(Message::OpenStatusPicker)
+        .style(style::row_button(t, false));
+        let content = row![
+            who,
             toggle(mic, self.muted || self.deafened, Message::ToggleMute),
             toggle(ears, self.deafened, Message::ToggleDeafen),
             button(icons::icon(&icons::GEAR, fs * 1.25, t.muted.0))
@@ -1030,7 +1048,12 @@ impl App {
                 let color = s.role_color(u.id).unwrap_or(u.profile.accent_color);
                 let name_color = if is_online { rgb(color) } else { t.muted.0 };
                 let mut info = column![text(u.name().to_owned()).size(fs * 0.95).font(SEMIBOLD).color(name_color)];
-                if !u.profile.status_text.is_empty() {
+                // Like Discord: what they're doing wins over their status text.
+                if let Some(a) = self.activity_of(s, u.id).filter(|_| is_online) {
+                    info = info.push(
+                        text(truncate(&format!("{} {}", a.kind.verb(), a.name), 26)).size(fs * 0.75).color(t.muted.0),
+                    );
+                } else if !u.profile.status_text.is_empty() {
                     info = info.push(text(truncate(&u.profile.status_text, 24)).size(fs * 0.75).color(t.muted.0));
                 }
                 let row_content = row![self.avatar_status(u, 32.0, is_online, t.sidebar.0), info]

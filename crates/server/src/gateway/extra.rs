@@ -165,6 +165,15 @@ impl Connection {
                     self.broadcast(&ServerMsg::UserUpdated(user));
                 }
             }
+            ClientMsg::SetPresence { status, activity } => {
+                let activity = activity.and_then(syncord_proto::Activity::sanitized);
+                let info = syncord_proto::PresenceInfo { user_id: me, status, activity };
+                let changed = self.state.presence.lock().unwrap().insert(me, info.clone()) != Some(info);
+                if changed {
+                    // Going invisible looks like going offline; coming back looks like coming online.
+                    self.broadcast(&self.state.presence_msg(me));
+                }
+            }
             _ => unreachable!("handle_extra only gets 0.5 requests"),
         }
         Ok(Flow::Continue)

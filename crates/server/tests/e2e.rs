@@ -90,7 +90,7 @@ async fn full_flow() {
     let bob_id = ready.me;
     assert!(ready.online.contains(&alice_id));
     assert!(!ready.users.iter().find(|u| u.id == bob_id).unwrap().is_owner);
-    expect(&mut alice, |m| matches!(m, ServerMsg::Presence { user_id, online: true } if *user_id == bob_id)).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::Presence { user_id, online: true, .. } if *user_id == bob_id)).await;
 
     // Duplicate usernames (any case) are rejected.
     let (_, reply) = register(&url, "ALICE", "letmein").await;
@@ -154,7 +154,7 @@ async fn full_flow() {
 
     // Bob disconnects -> alice sees him go offline.
     drop(bob);
-    expect(&mut alice, |m| matches!(m, ServerMsg::Presence { user_id, online: false } if *user_id == bob_id)).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::Presence { user_id, online: false, .. } if *user_id == bob_id)).await;
 
     // A saved token logs back in; after logout it no longer works.
     let (mut again, _) = connect_async(&url).await.unwrap();
@@ -873,4 +873,42 @@ async fn dm_calls_leave_a_note() {
             && matches!(&u.kind, MessageKind::Call { ended_at: Some(_), .. }))
     })
     .await;
+}
+
+/// Statuses and activities reach others; invisible looks offline.
+#[tokio::test]
+async fn statuses_and_activities() {
+    use syncord_proto::{Activity, ActivityKind, Status};
+    let url = start_server().await;
+    let (mut alice, r) = register(&url, "alice", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let alice_id = ready.me;
+    let (mut bob, r) = register(&url, "bob", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let bob_token = ready.token.clone();
+
+    let playing = Activity { kind: ActivityKind::Playing, name: "  Minecraft  ".into() };
+    send(&mut alice, ClientMsg::SetPresence { status: Status::DoNotDisturb, activity: Some(playing) }).await;
+    expect(&mut bob, |m| {
+        matches!(m, ServerMsg::Presence { user_id, online: true, status: Status::DoNotDisturb, activity: Some(a) }
+            if *user_id == alice_id && a.name == "Minecraft")
+    })
+    .await;
+
+    // Coming back later: the status is there in the login reply.
+    drop(bob);
+    let (_bob, r) = login(&url, &bob_token).await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let p = ready.presences.iter().find(|p| p.user_id == alice_id).expect("alice's presence");
+    assert_eq!(p.status, Status::DoNotDisturb);
+
+    // Invisible: others see alice go offline, and she isn't listed as online.
+    send(&mut alice, ClientMsg::SetPresence { status: Status::Invisible, activity: None }).await;
+    let (mut carol, r) = register(&url, "carol", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    assert!(!ready.online.contains(&alice_id), "invisible people look offline");
+    assert!(ready.presences.iter().all(|p| p.user_id != alice_id));
+    send(&mut alice, ClientMsg::SetPresence { status: Status::Online, activity: None }).await;
+    expect(&mut carol, |m| matches!(m, ServerMsg::Presence { user_id, online: true, .. } if *user_id == alice_id))
+        .await;
 }

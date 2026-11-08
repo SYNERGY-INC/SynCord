@@ -11,7 +11,110 @@ use crate::theme::{contrast_text, rgb};
 const BANNER_HEIGHT: f32 = 128.0;
 const AVATAR: f32 = 84.0;
 
+/// Dot colours: green, yellow, red; grey for offline and invisible.
+pub fn status_color(t: &crate::theme::AppTheme, status: Option<syncord_proto::Status>) -> iced::Color {
+    use syncord_proto::Status::*;
+    match status {
+        Some(Online) => t.online.0,
+        Some(Idle) => iced::Color::from_rgb8(0xF0, 0xB2, 0x32),
+        Some(DoNotDisturb) => t.danger.0,
+        Some(Invisible) | None => t.muted.0,
+    }
+}
+
 impl App {
+    /// Someone's status as shown on their dot (None: offline).
+    pub(crate) fn status_of(&self, s: &Session, user: syncord_proto::UserId) -> Option<syncord_proto::Status> {
+        if user == s.me {
+            return Some(self.effective_status());
+        }
+        s.online.contains(&user).then(|| s.presences.get(&user).map(|p| p.0).unwrap_or_default())
+    }
+
+    /// "Playing Minecraft", if they're doing something.
+    pub(crate) fn activity_of(&self, s: &Session, user: syncord_proto::UserId) -> Option<syncord_proto::Activity> {
+        if user == s.me {
+            return self.effective_activity().filter(|_| self.effective_status() != syncord_proto::Status::Invisible);
+        }
+        s.presences.get(&user).and_then(|p| p.1.clone())
+    }
+
+    /// Pick your status and what you're doing.
+    pub(crate) fn status_picker<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
+        use syncord_proto::{ActivityKind, Status};
+        let t = &self.theme;
+        let fs = self.fs();
+        let about = |st: Status| match st {
+            Status::Online => "",
+            Status::Idle => "Shown automatically after 10 minutes away",
+            Status::DoNotDisturb => "No sounds or pop-ups for messages and calls",
+            Status::Invisible => "You'll look offline, but can use SynCord as usual",
+        };
+        let mut list = column![text("Set your status").size(fs * 1.25).font(BOLD).color(t.header.0)].spacing(4);
+        for st in Status::ALL {
+            let dot = status_color(t, Some(st));
+            let line = row![
+                container(space()).width(12).height(12).style(move |_| container::Style {
+                    background: Some(dot.into()),
+                    border: Border { radius: 6.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+                column![
+                    text(st.label()).size(fs * 0.95).color(t.header.0),
+                    text(about(st)).size(fs * 0.75).color(t.muted.0)
+                ]
+                .spacing(1),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center);
+            list = list.push(
+                iced::widget::button(line)
+                    .width(Length::Fill)
+                    .padding([7, 10])
+                    .on_press(Message::SetStatus(st))
+                    .style(style::row_button(t, self.settings.status == st)),
+            );
+        }
+        let (kind, name) = &self.activity_draft;
+        let activity = column![
+            label(t, "What are you doing?", fs),
+            row![
+                iced::widget::pick_list(ActivityKind::ALL, Some(*kind), Message::ActivityKindPicked)
+                    .text_size(fs * 0.9),
+                iced::widget::text_input("e.g. Minecraft", name)
+                    .on_input(Message::ActivityText)
+                    .on_submit(Message::SaveActivity)
+                    .padding(8)
+                    .size(fs * 0.95)
+                    .style(style::input(t, t.rail.0)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            row![
+                iced::widget::button(text("Save").size(fs * 0.9))
+                    .padding([6, 14])
+                    .on_press(Message::SaveActivity)
+                    .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+                iced::widget::button(text("Clear").size(fs * 0.9))
+                    .padding([6, 10])
+                    .on_press(Message::ClearActivity)
+                    .style(style::link_button(t.text.0, t.header.0)),
+            ]
+            .spacing(8),
+            iced::widget::toggler(self.settings.detect_games)
+                .label("Show the game I'm playing (Steam, Epic, GOG, Riot, Xbox)")
+                .on_toggle(Message::ToggleDetectGames)
+                .text_size(fs * 0.85),
+        ]
+        .spacing(10);
+        let mut body = column![list, divider(t.hover.0), activity].spacing(14);
+        if let Some(game) = &self.detected_game {
+            body = body.push(text(format!("Playing {game} right now")).size(fs * 0.8).color(t.muted.0));
+        }
+        let _ = s;
+        container(body).width(420).padding(20).style(card(t.chat.0, t.radius * 1.5)).into()
+    }
+
     /// The bar under a direct message's header while a call is going on in it.
     pub(crate) fn call_bar<'a>(
         &'a self,
@@ -113,7 +216,7 @@ impl App {
                 border: Border { radius: ((AVATAR + 10.0) / 2.0).into(), ..Default::default() },
                 ..Default::default()
             });
-        let dot_color = if online { t.online.0 } else { t.muted.0 };
+        let dot_color = if online { status_color(t, self.status_of(s, u.id)) } else { t.muted.0 };
         let dot = container(space()).width(22).height(22).style(move |_| container::Style {
             background: Some(dot_color.into()),
             border: Border { radius: 11.0.into(), width: 4.0, color: floating },
@@ -145,6 +248,15 @@ impl App {
                 container(text("Server Owner").size(fs * 0.75).font(BOLD).color(contrast_text(t.accent.0)))
                     .padding([2, 8])
                     .style(card(t.accent.0, 10.0)),
+            );
+        }
+        if let Some(a) = self.activity_of(s, u.id) {
+            body = body.push(
+                column![
+                    label(t, a.kind.verb(), fs),
+                    text(a.name).size(fs * 0.95).font(style::SEMIBOLD).color(t.header.0)
+                ]
+                .spacing(4),
             );
         }
         if !u.profile.status_text.trim().is_empty() {

@@ -440,6 +440,82 @@ pub struct Ready {
     /// Unread mentions of you, per channel.
     #[serde(default)]
     pub mentions: Vec<MentionCount>,
+    /// Statuses and activities of the people online (apps older than 0.6 only see `online`).
+    #[serde(default)]
+    pub presences: Vec<PresenceInfo>,
+}
+
+/// Like Discord's: online, idle (away), do not disturb, or invisible (shown as offline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Status {
+    #[default]
+    Online,
+    Idle,
+    DoNotDisturb,
+    Invisible,
+}
+
+impl Status {
+    pub const ALL: [Status; 4] = [Status::Online, Status::Idle, Status::DoNotDisturb, Status::Invisible];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::Online => "Online",
+            Status::Idle => "Idle",
+            Status::DoNotDisturb => "Do Not Disturb",
+            Status::Invisible => "Invisible",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ActivityKind {
+    #[default]
+    Playing,
+    Watching,
+    Listening,
+}
+
+impl ActivityKind {
+    pub const ALL: [ActivityKind; 3] = [ActivityKind::Playing, ActivityKind::Watching, ActivityKind::Listening];
+
+    /// "Playing", "Watching", "Listening to".
+    pub fn verb(self) -> &'static str {
+        match self {
+            ActivityKind::Playing => "Playing",
+            ActivityKind::Watching => "Watching",
+            ActivityKind::Listening => "Listening to",
+        }
+    }
+}
+
+impl std::fmt::Display for ActivityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.verb())
+    }
+}
+
+/// What someone is doing: "Playing Minecraft".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activity {
+    #[serde(default)]
+    pub kind: ActivityKind,
+    pub name: String,
+}
+
+impl Activity {
+    pub fn sanitized(mut self) -> Option<Self> {
+        self.name = self.name.trim().chars().filter(|c| !c.is_control()).take(64).collect();
+        (!self.name.is_empty()).then_some(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenceInfo {
+    pub user_id: UserId,
+    pub status: Status,
+    #[serde(default)]
+    pub activity: Option<Activity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,6 +626,12 @@ pub enum ClientMsg {
     ClearProfileImage {
         banner: bool,
     },
+    /// Your status and what you're doing (shown to everyone, unless invisible).
+    SetPresence {
+        status: Status,
+        #[serde(default)]
+        activity: Option<Activity>,
+    },
     Ping,
 }
 
@@ -580,6 +662,11 @@ pub enum ServerMsg {
     Presence {
         user_id: UserId,
         online: bool,
+        /// Online, idle or do-not-disturb (invisible people are just offline to others).
+        #[serde(default)]
+        status: Status,
+        #[serde(default)]
+        activity: Option<Activity>,
     },
     ChannelCreated(Channel),
     ChannelDeleted {

@@ -15,7 +15,7 @@ use rand::Rng;
 use syncord_proto::voice::token_to_hex;
 use syncord_proto::{
     Channel, ChannelId, ChannelKind, ClientMsg, DirectChannel, EVERYONE_ROLE, HISTORY_PAGE, MAX_ATTACHMENTS,
-    MAX_MESSAGE_LEN, MAX_REACTIONS, MAX_ROLES, Message, Ready, Role, RoleId, ServerMsg, User, UserId,
+    MAX_MESSAGE_LEN, MAX_REACTIONS, MAX_ROLES, Message, Ready, Role, RoleId, ServerMsg, Status, User, UserId,
     clean_voice_channel_name, normalize_channel_name, perms, valid_reaction,
 };
 
@@ -244,7 +244,8 @@ impl Connection {
                 | ClientMsg::DeleteRole { .. }
                 | ClientMsg::SetUserRoles { .. }
                 | ClientMsg::SetBlocked { .. }
-                | ClientMsg::ClearProfileImage { .. }) => return self.handle_extra(me, msg).await,
+                | ClientMsg::ClearProfileImage { .. }
+                | ClientMsg::SetPresence { .. }) => return self.handle_extra(me, msg).await,
                 ClientMsg::Ping => {
                     self.send(&ServerMsg::Pong).await;
                 }
@@ -807,10 +808,14 @@ impl Connection {
             *n += 1;
             *n == 1
         };
-        if first_connection {
-            self.broadcast(&ServerMsg::Presence { user_id: id, online: true });
+        if first_connection && self.state.presence_of(id).status != Status::Invisible {
+            self.broadcast(&self.state.presence_msg(id));
         }
-        let online = self.state.online.lock().unwrap().keys().copied().collect();
+        // Invisible people look offline (except to themselves).
+        let connected: Vec<UserId> = self.state.online.lock().unwrap().keys().copied().collect();
+        let visible = |u: &UserId| *u == id || self.state.presence_of(*u).status != Status::Invisible;
+        let online: Vec<UserId> = connected.iter().copied().filter(visible).collect();
+        let presences = online.iter().map(|u| self.state.presence_of(*u)).collect();
 
         // Calls in other people's direct messages are private.
         let voice = self
@@ -836,6 +841,7 @@ impl Connection {
             roles,
             blocked,
             mentions,
+            presences,
         };
         if self.send(&ServerMsg::Ready(ready)).await { Flow::Continue } else { Flow::Close }
     }
@@ -881,7 +887,7 @@ impl Connection {
             }
         };
         if last_connection {
-            self.broadcast(&ServerMsg::Presence { user_id: id, online: false });
+            self.broadcast(&ServerMsg::Presence { user_id: id, online: false, status: Status::Online, activity: None });
         }
     }
 }

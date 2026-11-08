@@ -198,6 +198,9 @@ impl App {
             return iced::Task::none();
         }
         *s.mention_counts.entry(m.channel_id).or_default() += 1;
+        if self.settings.status == syncord_proto::Status::DoNotDisturb {
+            return iced::Task::none(); // counted, but quietly
+        }
         if self.settings.ping_sound && !self.deafened {
             crate::sound::ping(self.settings.output_device.clone(), self.settings.sound_volume);
         }

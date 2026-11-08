@@ -230,6 +230,18 @@ pub enum Message {
     Shortcut(crate::shortcuts::Shortcut),
     /// The window's X button.
     CloseRequested(iced::window::Id),
+
+    // Status and activity
+    PresenceTick,
+    BackFromIdle,
+    GameDetected(Option<String>),
+    SetStatus(syncord_proto::Status),
+    OpenStatusPicker,
+    ActivityKindPicked(syncord_proto::ActivityKind),
+    ActivityText(String),
+    SaveActivity,
+    ClearActivity,
+    ToggleDetectGames(bool),
     /// The tray icon, or SynCord being started again.
     Wake(crate::tray::Wake),
     ToggleCloseToTray(bool),
@@ -361,6 +373,8 @@ pub enum Overlay {
     },
     /// Ctrl+/.
     Shortcuts,
+    /// Choosing your status and activity.
+    StatusPicker,
 }
 
 #[derive(Default)]
@@ -408,6 +422,8 @@ pub struct Session {
     pub blocked: HashSet<UserId>,
     /// Unread pings per channel.
     pub mention_counts: HashMap<ChannelId, u32>,
+    /// Statuses and activities of people online.
+    pub presences: HashMap<UserId, (syncord_proto::Status, Option<syncord_proto::Activity>)>,
     /// GIF search service the server offers, if any.
     pub gif_provider: Option<String>,
     /// Largest upload the server accepts, in MB (0 if it doesn't say).
@@ -625,6 +641,13 @@ pub struct App {
     pub ringing: Option<ChannelId>,
     /// The tray icon, while SynCord closes to the tray.
     pub(crate) tray: Option<crate::tray::Tray>,
+    /// Away from the computer for a while (shown as idle).
+    pub away: bool,
+    pub detected_game: Option<String>,
+    /// What the server was last told.
+    pub(crate) sent_presence: Option<(syncord_proto::Status, Option<syncord_proto::Activity>)>,
+    /// The activity being typed in the status picker.
+    pub activity_draft: (syncord_proto::ActivityKind, String),
     /// When the current dialog, picker and call card opened (for their pop-in).
     pub(crate) popped: Instant,
     pub(crate) picker_popped: Instant,
@@ -709,6 +732,10 @@ impl App {
             video_errors: HashMap::new(),
             ringing: None,
             tray: None,
+            away: false,
+            detected_game: None,
+            sent_presence: None,
+            activity_draft: (syncord_proto::ActivityKind::Playing, String::new()),
             popped: Instant::now(),
             picker_popped: Instant::now(),
             call_popped: Instant::now(),
@@ -772,7 +799,7 @@ impl App {
             // Remembered for placing the message menu; not a message, so moving the mouse costs nothing.
             iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                 crate::app_messages::remember_cursor(position);
-                None
+                crate::presence::input().then_some(Message::BackFromIdle)
             }
             // Ctrl+K and friends (plain arrow keys only matter while the quick switcher is open).
             iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. })
@@ -796,9 +823,16 @@ impl App {
                     None
                 }
             }
+            // Any other key or click counts as being here (for idle).
+            iced::Event::Keyboard(_) | iced::Event::Mouse(_) => {
+                crate::presence::input().then_some(Message::BackFromIdle)
+            }
             _ => None,
         })];
         subs.push(iced::window::close_requests().map(Message::CloseRequested));
+        if self.session.is_some() {
+            subs.push(iced::time::every(crate::presence::CHECK_EVERY).map(|_| Message::PresenceTick));
+        }
         subs.push(Subscription::run(crate::tray::events).map(Message::Wake));
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
         if someone_typing {
@@ -1389,6 +1423,22 @@ impl App {
                 self.revealed.insert(id);
             }
             Message::DismissCall => self.ringing = None,
+            Message::PresenceTick
+            | Message::BackFromIdle
+            | Message::GameDetected(_)
+            | Message::SetStatus(_)
+            | Message::ActivityKindPicked(_)
+            | Message::ActivityText(_)
+            | Message::SaveActivity
+            | Message::ClearActivity
+            | Message::ToggleDetectGames(_) => return self.update_presence(message),
+            Message::OpenStatusPicker => {
+                self.close_overlay();
+                if let Some(a) = &self.settings.custom_activity {
+                    self.activity_draft = (a.kind, a.name.clone());
+                }
+                self.overlay = Some(Overlay::StatusPicker);
+            }
             Message::CloseRequested(id) => {
                 if self.settings.close_to_tray && self.tray.is_some() {
                     // Keep running (calls and messages still work); the tray brings it back.
@@ -1714,7 +1764,7 @@ impl App {
                     match in_dm_call {
                         Some(c) if mine != Some(c) && self.ringing != Some(c) => {
                             self.ringing = Some(c);
-                            if self.settings.ping_sound && !self.deafened {
+                            if self.settings.ping_sound && !self.deafened && !self.dnd() {
                                 crate::sound::ping(self.settings.output_device.clone(), self.settings.sound_volume);
                             }
                         }
@@ -1894,7 +1944,11 @@ impl App {
             roles: ready.roles,
             blocked: ready.blocked.into_iter().collect(),
             mention_counts: ready.mentions.into_iter().map(|m| (m.channel_id, m.count)).collect(),
+            presences: ready.presences.into_iter().map(|p| (p.user_id, (p.status, p.activity))).collect(),
         });
+        // Tell the (maybe restarted) server our status again.
+        self.sent_presence = None;
+        self.send_presence();
         if let Some(s) = &mut self.session {
             s.sort_roles();
         }
@@ -1959,7 +2013,8 @@ impl App {
                 let quiet = s.mentions_me(&m)
                     || s.blocked.contains(&m.author_id)
                     || self.settings.ignored_here(&self.settings.server).contains(&m.author_id);
-                if Some(m.author_id) != me && !self.deafened && !quiet {
+                let dnd = self.settings.status == syncord_proto::Status::DoNotDisturb;
+                if Some(m.author_id) != me && !self.deafened && !quiet && !dnd {
                     let in_server = s.channels.iter().any(|c| c.id == channel);
                     if (in_server && self.settings.server_sound) || (!in_server && self.settings.dm_sound) {
                         self.settings.play(crate::sounds::Sound::Message);
@@ -2030,10 +2085,12 @@ impl App {
                 let avatars = self.request_avatars();
                 return if showing { Task::batch([avatars, self.request_profile_extras(&u)]) } else { avatars };
             }
-            ServerMsg::Presence { user_id, online } => {
+            ServerMsg::Presence { user_id, online, status, activity } => {
                 if online {
                     s.online.insert(user_id);
+                    s.presences.insert(user_id, (status, activity));
                 } else {
+                    s.presences.remove(&user_id);
                     s.online.remove(&user_id);
                     for t in s.typing.values_mut() {
                         t.remove(&user_id);

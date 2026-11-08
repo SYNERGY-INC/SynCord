@@ -28,6 +28,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 tokio-util = { version = "0.7", features = ["io"] }
 bytes = "1"
 webpki-roots = "1"
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 sha2 = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
@@ -39,6 +40,10 @@ syncord-video = { workspace = true, features = ["playback"] }
 # The tray icon (Linux would need GTK libraries for it, so there closing just quits).
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tray-icon = "0.26"
+
+# Time since the last key press or mouse move anywhere on the computer (for going idle).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 syncord-server = { path = "../server" }

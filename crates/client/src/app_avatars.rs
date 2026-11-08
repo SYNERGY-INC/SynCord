@@ -110,7 +110,12 @@ impl App {
     pub(crate) fn avatar_status<'a>(&self, u: &User, size: f32, online: bool, cutout: Color) -> Element<'a, Message> {
         let t = &self.theme;
         let dot_size = (size * 0.38).round();
-        let color = if online { t.online.0 } else { t.muted.0 };
+        let status = self.session.as_ref().and_then(|s| self.status_of(s, u.id));
+        let color = if online {
+            crate::view_people::status_color(t, status.or(Some(syncord_proto::Status::Online)))
+        } else {
+            t.muted.0
+        };
         let dot = container(space()).width(dot_size).height(dot_size).style(move |_| container::Style {
             background: Some(color.into()),
             border: Border { radius: (dot_size / 2.0).into(), width: dot_size * 0.22, color: cutout },

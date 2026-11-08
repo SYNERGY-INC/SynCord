@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 pub enum Wake {
     /// Show the window (tray click, "Open SynCord", or SynCord started again).
     Show,
+    /// "Quit SynCord" in the tray menu (there's no tray on Linux).
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     Quit,
 }
 

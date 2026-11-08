@@ -36,11 +36,11 @@ pub async fn joined(state: &Arc<AppState>, channel: ChannelId, user: UserId) {
             .db
             .call(move |c| {
                 let Some(m) = db::get_message(c, id)? else { return Ok(None) };
-                if let MessageKind::Call { mut participants, ended_at } = m.kind {
-                    if !participants.contains(&user) {
-                        participants.push(user);
-                        db::set_kind(c, id, &MessageKind::Call { participants, ended_at })?;
-                    }
+                if let MessageKind::Call { mut participants, ended_at } = m.kind
+                    && !participants.contains(&user)
+                {
+                    participants.push(user);
+                    db::set_kind(c, id, &MessageKind::Call { participants, ended_at })?;
                 }
                 db::get_message(c, id)
             })

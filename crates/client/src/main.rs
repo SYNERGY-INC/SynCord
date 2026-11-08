@@ -15,6 +15,7 @@ mod emoji;
 mod icons;
 mod media;
 mod net;
+mod presence;
 mod settings;
 mod shortcuts;
 mod sound;

@@ -60,6 +60,13 @@ pub struct Settings {
     pub video_volume: f32,
     /// The X button hides SynCord to the tray (Windows and macOS) instead of quitting.
     pub close_to_tray: bool,
+
+    // Status
+    pub status: syncord_proto::Status,
+    /// "Playing ..." typed by you (wins over a detected game).
+    pub custom_activity: Option<syncord_proto::Activity>,
+    /// Show the game you're playing (found from where it's installed).
+    pub detect_games: bool,
     pub video_muted: bool,
 }
 
@@ -100,6 +107,9 @@ impl Default for Settings {
             ping_sound: true,
             video_volume: 0.8,
             close_to_tray: true,
+            status: syncord_proto::Status::Online,
+            custom_activity: None,
+            detect_games: true,
             video_muted: false,
         }
     }

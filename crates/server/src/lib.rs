@@ -105,6 +105,8 @@ pub struct AppState {
     pub previews: embeds::Fetcher,
     /// Calls going on in direct messages.
     pub calls: calls::Calls,
+    /// Everyone's chosen status and activity (kept while the server runs).
+    pub presence: Mutex<HashMap<UserId, syncord_proto::PresenceInfo>>,
     /// UDP port voice is served on (0 until [`start_udp`] runs).
     pub udp_port: AtomicU16,
     pub next_conn_id: AtomicU64,
@@ -119,6 +121,7 @@ impl AppState {
         Arc::new(Self {
             gifs,
             calls: calls::Calls::default(),
+            presence: Mutex::new(HashMap::new()),
             previews: if config.unsafe_allow_private_link_previews {
                 embeds::Fetcher::new_for_tests()
             } else {
@@ -136,6 +139,27 @@ impl AppState {
 }
 
 impl AppState {
+    /// Someone's status and activity (online with nothing going on, unless they said otherwise).
+    pub fn presence_of(&self, user: UserId) -> syncord_proto::PresenceInfo {
+        self.presence.lock().unwrap().get(&user).cloned().unwrap_or(syncord_proto::PresenceInfo {
+            user_id: user,
+            status: syncord_proto::Status::Online,
+            activity: None,
+        })
+    }
+
+    /// What everyone else is told about someone who's connected.
+    pub fn presence_msg(&self, user: UserId) -> syncord_proto::ServerMsg {
+        let p = self.presence_of(user);
+        let invisible = p.status == syncord_proto::Status::Invisible;
+        syncord_proto::ServerMsg::Presence {
+            user_id: user,
+            online: !invisible,
+            status: if invisible { syncord_proto::Status::Online } else { p.status },
+            activity: if invisible { None } else { p.activity },
+        }
+    }
+
     /// Send an event to everyone (`None`) or only to the listed people.
     pub fn broadcast(&self, msg: &syncord_proto::ServerMsg, to: Option<Arc<[UserId]>>) {
         let json: Arc<str> = serde_json::to_string(msg).expect("serialize").into();
