@@ -87,6 +87,11 @@ pub enum Message {
     ResetProfile,
     PickTheme(String),
     ReloadThemes,
+    OpenThemeEditor,
+    ThemeEditorAction(iced::widget::text_editor::Action),
+    ThemeEditorFormat(crate::theme_editor::ThemeFormat),
+    SaveThemeEditor,
+    CloseThemeEditor,
     TextScale(f32),
     ToggleCompact(bool),
     ToggleLowMemory(bool),
@@ -425,6 +430,7 @@ pub struct App {
     pub themes: Vec<AppTheme>,
     pub theme_errors: Vec<String>,
     pub theme: AppTheme,
+    pub theme_editor: Option<crate::theme_editor::ThemeEditor>,
 
     generation: u64,
     pub(crate) conn: Option<Connection>,
@@ -497,6 +503,7 @@ impl App {
             themes,
             theme_errors,
             theme,
+            theme_editor: None,
             generation: 0,
             conn: None,
             voice_sink: Default::default(),
@@ -845,6 +852,10 @@ impl App {
                 self.overlay = None;
             }
             Message::CloseSettings => {
+                // Leaving settings abandons unsaved theme edits.
+                if let Some(ed) = self.theme_editor.take() {
+                    self.theme = ed.original;
+                }
                 self.settings_tab = None;
                 self.mic_test = None;
             }
@@ -883,6 +894,8 @@ impl App {
                 }
             }
             Message::PickTheme(name) => {
+                // Picking a theme abandons unsaved edits.
+                self.theme_editor = None;
                 if let Some(t) = self.themes.iter().find(|t| t.name == name) {
                     self.theme = t.clone();
                     self.settings.theme = name;
@@ -890,6 +903,7 @@ impl App {
                 }
             }
             Message::ReloadThemes => {
+                self.theme_editor = None;
                 let (themes, errors) = theme::load_all();
                 self.themes = themes;
                 self.theme_errors = errors;
@@ -1067,6 +1081,11 @@ impl App {
             | Message::MenuReact(_)
             | Message::MenuEdit(_)
             | Message::MenuDelete(_) => return self.update_messages(message),
+            Message::OpenThemeEditor
+            | Message::ThemeEditorAction(_)
+            | Message::ThemeEditorFormat(_)
+            | Message::SaveThemeEditor
+            | Message::CloseThemeEditor => return self.update_theme_editor(message),
 
             Message::CheckForUpdates
             | Message::UpdateFound(_)
@@ -1094,6 +1113,8 @@ impl App {
                     self.close_overlay();
                 } else if self.editing.is_some() {
                     self.editing = None;
+                } else if self.theme_editor.is_some() {
+                    return self.update_theme_editor(Message::CloseThemeEditor);
                 } else if self.settings_tab.is_some() {
                     self.settings_tab = None;
                 }

@@ -1463,7 +1463,7 @@ impl App {
             label(t, "Custom themes", fs),
             text(match themes_dir() {
                 Some(dir) => format!(
-                    "Drop .toml theme files into {}. An example.toml is there to copy. Then press Reload.",
+                    "Drop .toml or .css theme files into {}. An example.toml is there to copy. Then press Reload.",
                     dir.display()
                 ),
                 None => "Custom themes aren't supported on this system.".into(),
@@ -1480,6 +1480,7 @@ impl App {
         for err in &self.theme_errors {
             col = col.push(text(format!("Couldn't load {err}")).size(fs * 0.85).color(t.danger.0));
         }
+        col = col.push(label(t, "Theme editor", fs)).push(self.theme_editor_view());
 
         col = col
             .push(label(t, "Text size", fs))

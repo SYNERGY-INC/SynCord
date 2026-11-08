@@ -15,6 +15,7 @@ mod settings;
 mod sounds;
 mod style;
 mod theme;
+mod theme_editor;
 mod updater;
 mod view;
 mod view_extras;

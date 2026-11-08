@@ -197,10 +197,16 @@ pub fn load_all() -> (Vec<AppTheme>, Vec<String>) {
     let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     for path in paths {
-        if path.extension().is_some_and(|e| e == "toml") {
+        let format = match path.extension().and_then(|e| e.to_str()) {
+            Some("toml") => crate::theme_editor::ThemeFormat::Toml,
+            Some("css") => crate::theme_editor::ThemeFormat::Css,
+            _ => continue,
+        };
+        {
+            // CSS themes can leave properties out; those come from the default theme.
             let parsed = std::fs::read_to_string(&path)
                 .map_err(|e| e.to_string())
-                .and_then(|t| toml::from_str::<AppTheme>(&t).map_err(|e| e.to_string()));
+                .and_then(|t| crate::theme_editor::parse(format, &t, &builtin()[0]));
             match parsed {
                 Ok(t) => {
                     themes.retain(|existing| existing.name != t.name);
