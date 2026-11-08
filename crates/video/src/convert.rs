@@ -139,7 +139,7 @@ pub(crate) fn to_rgba(
         let pixels = ya.iter().zip(&ua).zip(&va).map(|((&y, &u), &v)| c.rgb(y, u, v));
         if rotation == 0 {
             let row = &mut out[oy * ow * 4..(oy + 1) * ow * 4];
-            for (px, rgb) in row.chunks_exact_mut(4).zip(pixels) {
+            for (px, rgb) in row.as_chunks_mut::<4>().0.iter_mut().zip(pixels) {
                 px[..3].copy_from_slice(&rgb);
             }
         } else {
