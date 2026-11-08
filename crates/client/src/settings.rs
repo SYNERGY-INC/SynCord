@@ -33,6 +33,14 @@ pub struct Settings {
     /// Volume for each person, keyed by user id.
     pub user_volumes: HashMap<String, f32>,
 
+    // Sounds
+    /// Play a sound for new direct messages from others.
+    pub dm_sound: bool,
+    /// Play a sound for new messages from others in server channels.
+    pub server_sound: bool,
+    /// Volume of notification sounds (0.0 to 1.0).
+    pub sound_volume: f32,
+
     // Pictures and emoji
     /// Play GIFs all the time (otherwise only while the mouse is over them).
     pub autoplay_gifs: bool,
@@ -66,6 +74,9 @@ impl Default for Settings {
             input_sensitivity: -50.0,
             noise_suppression: true,
             user_volumes: HashMap::new(),
+            dm_sound: true,
+            server_sound: true,
+            sound_volume: 0.6,
             autoplay_gifs: true,
             recent_emoji: Vec::new(),
             favorite_gifs: Vec::new(),
@@ -87,6 +98,11 @@ impl Settings {
             sensitivity_db: self.input_sensitivity,
             noise_suppression: self.noise_suppression,
         }
+    }
+
+    /// Play a notification sound on the chosen speakers, at the chosen volume.
+    pub fn play(&self, sound: crate::sounds::Sound) {
+        crate::sounds::play(sound, self.output_device.clone(), self.sound_volume);
     }
 
     pub fn remember_emoji(&mut self, emoji: &str) {

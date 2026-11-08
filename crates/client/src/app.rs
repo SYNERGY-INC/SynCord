@@ -106,6 +106,10 @@ pub enum Message {
     ToggleNoiseSuppression(bool),
     ToggleMicTest,
     UserVolume(UserId, f32),
+    ToggleDmSound(bool),
+    ToggleServerSound(bool),
+    SoundVolume(f32),
+    TestSound,
 
     // Pictures and files
     AttachFiles,
@@ -985,6 +989,19 @@ impl App {
                 self.settings.noise_suppression = v;
                 self.save_and_apply_voice_config();
             }
+            Message::ToggleDmSound(v) => {
+                self.settings.dm_sound = v;
+                self.settings.save();
+            }
+            Message::ToggleServerSound(v) => {
+                self.settings.server_sound = v;
+                self.settings.save();
+            }
+            Message::SoundVolume(v) => {
+                self.settings.sound_volume = v;
+                self.settings.save();
+            }
+            Message::TestSound => self.settings.play(crate::sounds::Sound::Message),
             Message::ToggleMicTest => {
                 if self.mic_test.take().is_none() && self.voice.is_none() {
                     match VoiceEngine::start(self.settings.voice_config(), Link::Loopback, false, false) {
@@ -1451,6 +1468,13 @@ impl App {
                     t.remove(&m.author_id);
                 }
                 let channel = m.channel_id;
+                // Chime for messages from others (not while deafened).
+                if Some(m.author_id) != me && !self.deafened {
+                    let in_server = s.channels.iter().any(|c| c.id == channel);
+                    if (in_server && self.settings.server_sound) || (!in_server && self.settings.dm_sound) {
+                        self.settings.play(crate::sounds::Sound::Message);
+                    }
+                }
                 let latest = s.latest.entry(channel).or_insert(m.id);
                 *latest = (*latest).max(m.id);
                 if Some(m.author_id) == me {

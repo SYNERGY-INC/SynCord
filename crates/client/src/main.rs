@@ -12,6 +12,7 @@ mod icons;
 mod media;
 mod net;
 mod settings;
+mod sounds;
 mod style;
 mod theme;
 mod updater;

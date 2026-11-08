@@ -1279,6 +1279,27 @@ impl App {
             text("Tip: use headphones so others don't hear themselves echo through your mic.")
                 .size(fs * 0.8)
                 .color(t.muted.0),
+            divider(t.hover.0),
+            label(t, "Sounds", fs),
+            toggler(st.dm_sound).label("Play a sound for new direct messages").on_toggle(Message::ToggleDmSound).text_size(fs),
+            toggler(st.server_sound)
+                .label("Play a sound for new messages in server channels")
+                .on_toggle(Message::ToggleServerSound)
+                .text_size(fs),
+            row![
+                text("Sound volume").size(fs * 0.9).color(t.text.0),
+                slider(0.0..=1.0, st.sound_volume, Message::SoundVolume).step(0.05_f32).width(240),
+                text(format!("{:.0}%", st.sound_volume * 100.0)).size(fs * 0.85).color(t.text.0).width(48),
+                button(text("Test").size(fs * 0.9))
+                    .padding([6, 14])
+                    .on_press(Message::TestSound)
+                    .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+            text("Sounds play on the output device above and are muted while you're deafened.")
+                .size(fs * 0.8)
+                .color(t.muted.0),
         ]
         .spacing(14);
         if let Some(notice) = &self.notice {

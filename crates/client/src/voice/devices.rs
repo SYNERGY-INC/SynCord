@@ -103,9 +103,12 @@ pub fn start_input(name: Option<&str>, tx: SyncSender<Vec<f32>>) -> Result<Strea
     Ok(stream)
 }
 
-/// Pulls 48 kHz audio from the mixer and converts it to the device's rate.
+/// Fills a buffer with 48 kHz mono audio.
+pub type Source = Box<dyn FnMut(&mut [f32]) + Send>;
+
+/// Pulls 48 kHz audio from a source (the call mixer or a sound effect) and converts it to the device's rate.
 struct OutputStage {
-    mixer: Arc<Mixer>,
+    source: Source,
     step: f64,
     t: f64,
     a: f32,
@@ -117,7 +120,7 @@ struct OutputStage {
 impl OutputStage {
     fn next_source(&mut self) -> f32 {
         if self.pos >= self.chunk.len() {
-            self.mixer.fill(&mut self.chunk);
+            (self.source)(&mut self.chunk);
             self.pos = 0;
         }
         self.pos += 1;
@@ -140,6 +143,11 @@ impl OutputStage {
 }
 
 pub fn start_output(name: Option<&str>, mixer: Arc<Mixer>) -> Result<Stream, String> {
+    start_output_source(name, Box::new(move |buf| mixer.fill(buf)))
+}
+
+/// Play audio from `source` on the named output device (or the default one).
+pub fn start_output_source(name: Option<&str>, source: Source) -> Result<Stream, String> {
     let device = find_output(name).ok_or("No speakers or headphones found")?;
     let default = device.default_output_config().map_err(|e| format!("Speakers unavailable: {e}"))?;
     let supported = device.supported_output_configs().map(|c| c.collect()).unwrap_or_default();
@@ -154,7 +162,7 @@ pub fn start_output(name: Option<&str>, mixer: Arc<Mixer>) -> Result<Stream, Str
     );
 
     let stage = OutputStage {
-        mixer,
+        source,
         step: SAMPLE_RATE as f64 / config.sample_rate as f64,
         t: 1.0,
         a: 0.0,
