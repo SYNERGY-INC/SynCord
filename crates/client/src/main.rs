@@ -5,6 +5,7 @@
 
 mod app;
 mod app_media;
+mod app_messages;
 mod app_social;
 mod emoji;
 mod icons;

@@ -114,6 +114,10 @@ icon!(
         r#"<path d="M14 2.5v5h5M8.5 12.5h8M8.5 16h8" stroke="black" stroke-width="1.8" fill="none"/>"#
     )
 );
+icon!(
+    MORE,
+    r#"<circle cx="5" cy="12" r="2.2" fill="black"/><circle cx="12" cy="12" r="2.2" fill="black"/><circle cx="19" cy="12" r="2.2" fill="black"/>"#
+);
 icon!(CLOSE, r#"<path d="M6 6l12 12M18 6L6 18" stroke="black" stroke-width="2.4" stroke-linecap="round"/>"#);
 
 pub fn icon<'a, M: 'a>(handle: &LazyLock<Handle>, size: f32, color: Color) -> Element<'a, M> {

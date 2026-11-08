@@ -54,6 +54,16 @@ pub enum Message {
     SubmitEdit,
     CancelEdit,
     DeleteMessage(MessageId),
+    /// Right-clicked a message (or pressed its "more" button): show its menu at the pointer.
+    OpenMessageMenu(MessageId),
+    CloseMessageMenu,
+    CopyMessageText(MessageId),
+    SelectMessageText(MessageId),
+    SelectAction(iced::widget::text_editor::Action),
+    StopSelecting,
+    MenuReact(MessageId),
+    MenuEdit(MessageId),
+    MenuDelete(MessageId),
     ToggleMembers,
     DismissNotice,
 
@@ -426,6 +436,10 @@ pub struct App {
     last_typing_sent: Option<Instant>,
     pub hovered: Option<MessageId>,
     pub editing: Option<(MessageId, String)>,
+    /// Message whose right-click menu is open, and where (window coordinates).
+    pub message_menu: Option<(MessageId, iced::Point)>,
+    /// Message whose text is being selected.
+    pub selecting: Option<crate::app_messages::Selecting>,
     pub overlay: Option<Overlay>,
     pub settings_tab: Option<SettingsTab>,
     pub draft: ProfileDraft,
@@ -490,6 +504,8 @@ impl App {
             last_typing_sent: None,
             hovered: None,
             editing: None,
+            message_menu: None,
+            selecting: None,
             overlay: None,
             settings_tab: None,
             draft: ProfileDraft::default(),
@@ -566,6 +582,11 @@ impl App {
                 ..
             }) => Some(Message::Escape),
             iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FilesChosen(vec![path])),
+            // Remembered for placing the message menu; not a message, so moving the mouse costs nothing.
+            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                crate::app_messages::remember_cursor(position);
+                None
+            }
             // Match the letter or the key's position, so it works with any keyboard layout.
             iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. })
                 if modifiers.command() && !modifiers.alt() =>
@@ -1020,6 +1041,16 @@ impl App {
             | Message::OpenDirect(_)
             | Message::NewDirect => return self.update_social(message),
 
+            Message::OpenMessageMenu(_)
+            | Message::CloseMessageMenu
+            | Message::CopyMessageText(_)
+            | Message::SelectMessageText(_)
+            | Message::SelectAction(_)
+            | Message::StopSelecting
+            | Message::MenuReact(_)
+            | Message::MenuEdit(_)
+            | Message::MenuDelete(_) => return self.update_messages(message),
+
             Message::CheckForUpdates
             | Message::UpdateFound(_)
             | Message::UpdateTick
@@ -1036,7 +1067,11 @@ impl App {
                 }
             }
             Message::Escape => {
-                if self.emoji_picker.is_some() {
+                if self.message_menu.is_some() {
+                    self.message_menu = None;
+                } else if self.selecting.is_some() {
+                    self.selecting = None;
+                } else if self.emoji_picker.is_some() {
                     self.emoji_picker = None;
                 } else if self.overlay.is_some() {
                     self.close_overlay();
@@ -1274,6 +1309,8 @@ impl App {
         if s.current != Some(id) {
             self.composer.clear();
             self.editing = None;
+            self.message_menu = None;
+            self.selecting = None;
             self.last_typing_sent = None;
             self.emoji_picker = None;
             self.pending.clear();

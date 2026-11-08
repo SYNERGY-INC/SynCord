@@ -43,7 +43,7 @@ impl App {
 
         let base: Element<'_, Message> = match self.settings_tab {
             Some(tab) => self.settings_view(session, tab),
-            None => self.main_view(session),
+            None => self.with_message_menu(self.main_view(session)),
         };
 
         match &self.overlay {
@@ -616,6 +616,7 @@ impl App {
 
         let jumbo = crate::emoji::is_jumbo(&m.content);
         let body_text = style::rich_message(&m.content, if jumbo { fs * 2.6 } else { fs }, t.text.0);
+        let selecting = self.selecting.as_ref().filter(|sel| sel.message_id == m.id);
         let body: Element<'a, Message> = match editing {
             Some((_, value)) => column![
                 text_input("", value)
@@ -638,7 +639,9 @@ impl App {
             .into(),
             None => {
                 let mut col = column![].spacing(6);
-                if !m.content.is_empty() {
+                if let Some(sel) = selecting {
+                    col = col.push(self.selectable_body(sel, fs));
+                } else if !m.content.is_empty() {
                     let mut r = row![body_text].spacing(6).align_y(Alignment::End);
                     if m.edited_at.is_some() {
                         r = r.push(text("(edited)").size(fs * 0.7).color(t.muted.0));
@@ -715,7 +718,7 @@ impl App {
         let mine = Some(m.author_id) == Some(s.me);
         let in_server = s.channels.iter().any(|c| c.id == m.channel_id);
         let mut line = row![container(content).width(Length::Fill)].align_y(Alignment::Start);
-        if hovered && editing.is_none() {
+        if hovered && editing.is_none() && selecting.is_none() {
             let mut tools = row![
                 button(icons::icon(&icons::SMILE, fs * 1.1, t.muted.0))
                     .padding([3, 6])
@@ -741,6 +744,12 @@ impl App {
                         .style(style::link_button(danger, style::darken(danger, 0.2))),
                 );
             }
+            tools = tools.push(
+                button(icons::icon(&icons::MORE, fs * 1.1, t.muted.0))
+                    .padding([3, 6])
+                    .on_press(Message::OpenMessageMenu(m.id))
+                    .style(style::icon_button(t)),
+            );
             line = line.push(container(tools).padding(2).style(card(t.floating.0, t.radius * 0.6)));
         }
 
@@ -753,6 +762,8 @@ impl App {
         )
         .on_enter(Message::HoverMessage(Some(m.id)))
         .on_exit(Message::HoverMessage(None))
+        .on_right_press(Message::OpenMessageMenu(m.id))
+        .on_double_click(Message::SelectMessageText(m.id))
         .into()
     }
 
