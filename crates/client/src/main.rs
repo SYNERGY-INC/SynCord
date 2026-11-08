@@ -14,6 +14,7 @@ mod crop;
 mod emoji;
 mod fonts;
 mod icons;
+mod markdown;
 mod media;
 mod net;
 mod settings;

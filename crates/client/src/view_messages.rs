@@ -22,7 +22,7 @@ pub enum Piece<'a> {
 
 /// Links in text: `http(s)://` up to whitespace, without trailing punctuation
 /// (but keeping balanced brackets, as in Wikipedia links).
-fn link_end(s: &str) -> usize {
+pub fn link_end(s: &str) -> usize {
     let mut end = s.find(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '"').unwrap_or(s.len());
     while let Some(last) = s[..end].chars().last() {
         let trim = match last {
@@ -92,13 +92,28 @@ pub fn pieces<'a>(content: &'a str) -> Vec<Piece<'a>> {
 }
 
 impl App {
-    /// Message text with clickable links and @mentions, and emoji in colour.
+    /// Message text with clickable links and @mentions, and emoji in colour (and Markdown).
     pub(crate) fn message_text<'a>(&'a self, s: &'a Session, content: &'a str, size: f32) -> Element<'a, Message> {
         let t = &self.theme;
+        if crate::markdown::might_have_markdown(content) {
+            return self.markdown_text(s, content, size);
+        }
         let parts = pieces(content);
         if parts.iter().all(|p| matches!(p, Piece::Text(_))) {
             return text(content).size(size).color(t.text.0).into();
         }
+        let spans: Vec<iced::widget::text::Span<'a, Message, Font>> =
+            parts.into_iter().map(|p| self.piece_span(s, p)).collect();
+        rich_text(spans).size(size).color(t.text.0).on_link_click(|m| m).into()
+    }
+
+    /// One piece of message text: plain, emoji, a link or a mention pill.
+    pub(crate) fn piece_span<'a>(
+        &'a self,
+        s: &'a Session,
+        p: Piece<'_>,
+    ) -> iced::widget::text::Span<'a, Message, Font> {
+        let t = &self.theme;
         let link_color = Color::from_rgb8(0x00, 0xA8, 0xFC);
         let pill = |label: String, color: Color| {
             span(label)
@@ -109,24 +124,20 @@ impl App {
                 .padding(Padding { left: 2.0, right: 2.0, ..Padding::ZERO })
         };
         let mention_color = with_alpha(Color::from_rgb8(0xC9, 0xCD, 0xFB), 1.0);
-        let spans: Vec<iced::widget::text::Span<'a, Message, Font>> = parts
-            .into_iter()
-            .map(|p| match p {
-                Piece::Text(s) => span(s),
-                Piece::Emoji(e) => span(e).font(EMOJI_FONT),
-                Piece::Link(url) => span(url).color(link_color).link(Message::OpenLink(url.to_string())),
-                Piece::User(id) => match s.users.get(&id) {
-                    Some(u) => pill(format!("@{}", u.name()), mention_color).link(Message::ShowProfile(id)),
-                    None => pill("@unknown-user".into(), mention_color),
-                },
-                Piece::Role(id) => match s.role(id) {
-                    Some(r) => pill(format!("@{}", r.name), r.color.map(rgb).unwrap_or(mention_color)),
-                    None => pill("@deleted-role".into(), t.muted.0),
-                },
-                Piece::Everyone(e) => pill(e.to_string(), mention_color),
-            })
-            .collect();
-        rich_text(spans).size(size).color(t.text.0).on_link_click(|m| m).into()
+        match p {
+            Piece::Text(s) => span(s.to_string()),
+            Piece::Emoji(e) => span(e.to_string()).font(EMOJI_FONT),
+            Piece::Link(url) => span(url.to_string()).color(link_color).link(Message::OpenLink(url.to_string())),
+            Piece::User(id) => match s.users.get(&id) {
+                Some(u) => pill(format!("@{}", u.name()), mention_color).link(Message::ShowProfile(id)),
+                None => pill("@unknown-user".into(), mention_color),
+            },
+            Piece::Role(id) => match s.role(id) {
+                Some(r) => pill(format!("@{}", r.name), r.color.map(rgb).unwrap_or(mention_color)),
+                None => pill("@deleted-role".into(), t.muted.0),
+            },
+            Piece::Everyone(e) => pill(e.to_string(), mention_color),
+        }
     }
 
     /// Link previews under a message.
