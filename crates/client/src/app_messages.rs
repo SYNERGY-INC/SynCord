@@ -23,7 +23,7 @@ pub fn remember_cursor(p: Point) {
     CURSOR.store((p.x.to_bits() as u64) << 32 | p.y.to_bits() as u64, Ordering::Relaxed);
 }
 
-fn last_cursor() -> Point {
+pub(crate) fn last_cursor() -> Point {
     let v = CURSOR.load(Ordering::Relaxed);
     Point::new(f32::from_bits((v >> 32) as u32), f32::from_bits(v as u32))
 }

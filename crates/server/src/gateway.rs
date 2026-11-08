@@ -655,6 +655,41 @@ impl Connection {
                         self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(state) }, to);
                     }
                 }
+                ClientMsg::MoveVoice { user_id, channel_id } => {
+                    // Only between server voice channels (not into or out of private calls).
+                    let from = self.state.voice.channel_of(user_id);
+                    let refusal = db
+                        .call(move |c| {
+                            let voice =
+                                |ch| Ok::<_, rusqlite::Error>(db::channel_kind(c, ch)? == Some(ChannelKind::Voice));
+                            Ok(if !db::access(c, me)?.can(perms::MOVE_MEMBERS) {
+                                Some("You don't have permission to move people")
+                            } else if !voice(channel_id)? || !from.map(voice).transpose()?.unwrap_or(false) {
+                                Some("People can only be moved between voice channels")
+                            } else {
+                                None
+                            })
+                        })
+                        .await?;
+                    if let Some(why) = refusal {
+                        return Ok(self.error(why).await);
+                    }
+                    if let Some(state) = self.state.voice.move_member(user_id, channel_id) {
+                        info!("user {me} moved user {user_id} to voice channel {channel_id}");
+                        self.broadcast(&ServerMsg::VoiceStateUpdate { user_id, state: Some(state) });
+                    }
+                }
+                ClientMsg::ModerateVoice { user_id, muted, deafened } => {
+                    let allowed = db.call(move |c| Ok(db::access(c, me)?.can(perms::MUTE_MEMBERS))).await?;
+                    if !allowed {
+                        return Ok(self.error("You don't have permission to mute people").await);
+                    }
+                    info!("user {me} set server mute={muted} deafen={deafened} on user {user_id}");
+                    if let Some(state) = self.state.voice.moderate(user_id, muted, deafened) {
+                        let to = voice_audience(&db, state.channel_id).await?;
+                        self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id, state: Some(state) }, to);
+                    }
+                }
             }
             Ok(Flow::Continue)
         }

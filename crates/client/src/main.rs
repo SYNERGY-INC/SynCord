@@ -32,6 +32,7 @@ mod view_messages;
 mod view_people;
 mod view_roles;
 mod voice;
+mod voice_moderation;
 mod widgets;
 
 use app::App;

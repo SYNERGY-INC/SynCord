@@ -122,6 +122,19 @@ pub enum Message {
     ToggleNoiseSuppression(bool),
     ToggleMicTest,
     UserVolume(UserId, f32),
+    /// Left mouse button down on someone in voice (a click opens their profile, a drag moves them).
+    VoicePress(UserId),
+    VoiceDragMove(iced::Point),
+    /// The pointer is over this voice channel (or none) while dragging.
+    VoiceDragOver(Option<ChannelId>),
+    VoiceDragRelease,
+    VoiceHover(Option<UserId>),
+    ModerateVoice {
+        user_id: UserId,
+        muted: bool,
+        deafened: bool,
+    },
+    MoveVoice(UserId, ChannelId),
     ToggleDmSound(bool),
     ToggleServerSound(bool),
     ToggleVoiceSounds(bool),
@@ -571,6 +584,9 @@ pub struct App {
     pub editing: Option<(MessageId, String)>,
     /// Message whose right-click menu is open, and where (window coordinates).
     pub message_menu: Option<(MessageId, iced::Point)>,
+    pub voice_drag: Option<crate::voice_moderation::VoiceDrag>,
+    /// Person in voice under the pointer (for the hover highlight).
+    pub voice_hover: Option<UserId>,
     /// Message the next one you send replies to.
     pub replying: Option<MessageId>,
     /// Message whose text is being selected.
@@ -670,6 +686,8 @@ impl App {
             message_menu: None,
             selecting: None,
             replying: None,
+            voice_drag: None,
+            voice_hover: None,
             overlay: None,
             settings_tab: None,
             draft: ProfileDraft::default(),
@@ -763,7 +781,8 @@ impl App {
             iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FilesChosen(vec![path])),
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(true)),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowFocused(false)),
-            // Remembered for placing the message menu; not a message, so moving the mouse costs nothing.
+            // Remembered for placing menus and dragging people in voice; not a message, so moving
+            // the mouse costs nothing.
             iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                 crate::app_messages::remember_cursor(position);
                 None
@@ -792,6 +811,17 @@ impl App {
             }
             _ => None,
         })];
+        if self.voice_drag.is_some() {
+            subs.push(iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::VoiceDragMove(position))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::VoiceDragRelease)
+                }
+                _ => None,
+            }));
+        }
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
         if someone_typing {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
@@ -1349,6 +1379,13 @@ impl App {
             | Message::OpenDirect(_)
             | Message::NewDirect => return self.update_social(message),
 
+            Message::VoicePress(_)
+            | Message::VoiceDragMove(_)
+            | Message::VoiceDragOver(_)
+            | Message::VoiceDragRelease
+            | Message::VoiceHover(_)
+            | Message::ModerateVoice { .. }
+            | Message::MoveVoice(..) => return self.update_voice_moderation(message),
             Message::OpenMessageMenu(_)
             | Message::CloseMessageMenu
             | Message::CopyMessageText(_)
@@ -1441,7 +1478,9 @@ impl App {
                 }
             }
             Message::Escape => {
-                if self.message_menu.is_some() {
+                if self.voice_drag.is_some() {
+                    self.voice_drag = None;
+                } else if self.message_menu.is_some() {
                     self.message_menu = None;
                 } else if self.selecting.is_some() {
                     self.selecting = None;
@@ -1675,6 +1714,15 @@ impl App {
                         (Some(st), Some(ssrc)) if st.ssrc != ssrc && self.voice_joining.is_none() => {
                             self.stop_voice();
                             self.notice = Some("You joined voice from another device.".into());
+                        }
+                        // Someone moved us: the server already sends our audio to the new channel.
+                        (Some(st), Some(_)) if self.voice.as_ref().is_some_and(|v| v.channel_id != st.channel_id) => {
+                            if let Some(v) = &mut self.voice {
+                                v.channel_id = st.channel_id;
+                            }
+                            if self.settings.voice_sounds && !self.deafened {
+                                self.settings.play(crate::sounds::Sound::Join);
+                            }
                         }
                         _ => {}
                     }

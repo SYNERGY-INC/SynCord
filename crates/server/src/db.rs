@@ -214,6 +214,16 @@ fn migrate(conn: &Connection) -> DbResult<()> {
             conn.execute_batch(ddl)?;
         }
     }
+    // Once: give @everyone the voice moderation permissions added after 0.5.0, as new
+    // servers get them. Admins can take them away afterwards.
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 1 {
+        conn.execute(
+            "UPDATE roles SET permissions = permissions | ?1 WHERE id = ?2",
+            params![(perms::MOVE_MEMBERS | perms::MUTE_MEMBERS) as i64, EVERYONE_ROLE],
+        )?;
+        conn.execute_batch("PRAGMA user_version = 1")?;
+    }
     Ok(())
 }
 
@@ -1034,6 +1044,29 @@ pub fn delete_profile_image(conn: &Connection, id: &str) -> DbResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_moderation_permissions_are_added_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        // A 0.5.0 server: @everyone without the new permissions, schema version 0.
+        let old = perms::SEND_MESSAGES | perms::CONNECT_VOICE;
+        conn.execute(
+            "INSERT INTO roles (id, name, color, permissions, position) VALUES (?1, '@everyone', NULL, ?2, 0)",
+            params![EVERYONE_ROLE, old as i64],
+        )
+        .unwrap();
+        let everyone = |c: &Connection| {
+            c.query_row("SELECT permissions FROM roles WHERE id = 1", [], |r| r.get::<_, i64>(0)).unwrap() as u64
+        };
+        migrate(&conn).unwrap();
+        assert_eq!(everyone(&conn), old | perms::MOVE_MEMBERS | perms::MUTE_MEMBERS);
+        // An admin takes them away again: the next start must not hand them back.
+        conn.execute("UPDATE roles SET permissions = ?1 WHERE id = 1", params![old as i64]).unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(everyone(&conn), old);
+        const { assert!(perms::DEFAULT & perms::MOVE_MEMBERS != 0 && perms::ALL & perms::MUTE_MEMBERS != 0) };
+    }
 
     #[tokio::test]
     async fn replies_show_a_preview_and_survive_deletion() {

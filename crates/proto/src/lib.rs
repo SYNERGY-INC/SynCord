@@ -35,10 +35,15 @@ pub mod perms {
     /// Links in your messages get a preview.
     pub const EMBED_LINKS: u64 = 1 << 8;
     pub const ADD_REACTIONS: u64 = 1 << 9;
+    /// Drag people from one voice channel to another.
+    pub const MOVE_MEMBERS: u64 = 1 << 10;
+    /// Server-mute and server-deafen people in voice.
+    pub const MUTE_MEMBERS: u64 = 1 << 11;
 
-    pub const ALL: u64 = (1 << 10) - 1;
+    pub const ALL: u64 = (1 << 12) - 1;
     /// What the everyone role starts with.
-    pub const DEFAULT: u64 = SEND_MESSAGES | ATTACH_FILES | CONNECT_VOICE | EMBED_LINKS | ADD_REACTIONS;
+    pub const DEFAULT: u64 =
+        SEND_MESSAGES | ATTACH_FILES | CONNECT_VOICE | EMBED_LINKS | ADD_REACTIONS | MOVE_MEMBERS | MUTE_MEMBERS;
 
     /// Every permission with a name and an explanation, in the order the settings show them.
     pub const LIST: &[(u64, &str, &str)] = &[
@@ -52,6 +57,8 @@ pub mod perms {
         (EMBED_LINKS, "Embed links", "Links they post show a preview."),
         (ADD_REACTIONS, "Add reactions", "React to messages with emoji."),
         (CONNECT_VOICE, "Join voice", "Join voice channels."),
+        (MOVE_MEMBERS, "Move members", "Drag people in voice to another voice channel."),
+        (MUTE_MEMBERS, "Mute members", "Server-mute and server-deafen people in voice."),
     ];
 }
 
@@ -356,6 +363,12 @@ pub struct VoiceState {
     pub deafened: bool,
     /// Identifies this person's audio packets (see [`voice`]).
     pub ssrc: u32,
+    /// Muted by someone else: the server drops their audio.
+    #[serde(default)]
+    pub server_muted: bool,
+    /// Deafened by someone else: the server sends them no audio.
+    #[serde(default)]
+    pub server_deafened: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -519,6 +532,17 @@ pub enum ClientMsg {
     },
     LeaveVoice,
     SetVoiceState {
+        muted: bool,
+        deafened: bool,
+    },
+    /// Move someone who's in voice to another voice channel (needs Move members).
+    MoveVoice {
+        user_id: UserId,
+        channel_id: ChannelId,
+    },
+    /// Server-mute or server-deafen someone (needs Mute members; kept if they rejoin).
+    ModerateVoice {
+        user_id: UserId,
         muted: bool,
         deafened: bool,
     },

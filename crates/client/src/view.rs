@@ -54,7 +54,7 @@ impl App {
 
         let base: Element<'_, Message> = match self.settings_tab {
             Some(tab) => self.settings_view(session, tab),
-            None => self.with_message_menu(self.main_view(session)),
+            None => self.with_voice_drag(self.with_message_menu(self.main_view(session))),
         };
 
         match &self.overlay {
@@ -356,11 +356,16 @@ impl App {
             let line = row![icons::icon(&icons::SPEAKER, fs * 1.2, t.muted.0), text(ch.name.clone()).size(fs)]
                 .spacing(6)
                 .align_y(Alignment::Center);
-            let mut entry = button(line).width(Length::Fill).padding([6, 8]).style(style::row_button(t, connected));
+            let drop_here = self.voice_drag.as_ref().is_some_and(|d| d.moved() && d.over == Some(ch.id));
+            let mut entry =
+                button(line).width(Length::Fill).padding([6, 8]).style(style::row_button(t, connected || drop_here));
             if !connected {
                 entry = entry.on_press(Message::JoinVoice(ch.id));
             }
-            list = list.push(entry);
+            // Drop target for dragging people between channels.
+            list = list.push(
+                mouse_area(entry).on_enter(Message::VoiceDragOver(Some(ch.id))).on_exit(Message::VoiceDragOver(None)),
+            );
 
             // Who's in this channel.
             let mut members: Vec<(&User, &VoiceState)> = s
@@ -371,7 +376,11 @@ impl App {
                 .collect();
             members.sort_by_key(|(u, _)| u.name().to_lowercase());
             for (u, v) in members {
-                list = list.push(self.voice_member(u, v));
+                list = list.push(
+                    mouse_area(self.voice_member(u, v))
+                        .on_enter(Message::VoiceDragOver(Some(ch.id)))
+                        .on_exit(Message::VoiceDragOver(None)),
+                );
             }
         }
 
@@ -401,18 +410,46 @@ impl App {
         let mut line = row![pic, text(truncate(u.name(), 16)).size(fs * 0.9).width(Length::Fill)]
             .spacing(8)
             .align_y(Alignment::Center);
-        if v.muted && !v.deafened {
-            line = line.push(icons::icon(&icons::MIC_OFF, fs, t.danger.0));
+        // Server mute/deafen (set by someone else) show in the accent colour, your own in red.
+        let flag = |on: bool, icon, color, tip: &'static str| -> Option<Element<'a, Message>> {
+            on.then(|| {
+                iced::widget::tooltip(
+                    icons::icon(icon, fs, color),
+                    container(text(tip).size(fs * 0.8)).padding([4, 8]).style(card(t.floating.0, 6.0)),
+                    iced::widget::tooltip::Position::Top,
+                )
+                .into()
+            })
+        };
+        let flags = [
+            flag(v.server_muted, &icons::MIC_OFF, t.accent.0, "Server muted"),
+            flag(v.server_deafened, &icons::HEADPHONES_OFF, t.accent.0, "Server deafened"),
+            flag(v.muted && !v.deafened, &icons::MIC_OFF, t.danger.0, "Muted"),
+            flag(v.deafened, &icons::HEADPHONES_OFF, t.danger.0, "Deafened"),
+        ];
+        for f in flags.into_iter().flatten() {
+            line = line.push(f);
         }
-        if v.deafened {
-            line = line.push(icons::icon(&icons::HEADPHONES_OFF, fs, t.danger.0));
-        }
-        button(line)
-            .width(Length::Fill)
-            .padding(Padding { left: 28.0, right: 8.0, top: 2.0, bottom: 2.0 })
-            .on_press(Message::ShowProfile(u.id))
-            .style(style::row_button(t, false))
-            .into()
+        // A click opens the profile, a drag moves them (with permission), right-click for the menu.
+        let dragging = self.voice_drag.as_ref().is_some_and(|d| d.user_id == u.id && d.moved());
+        let highlight = self.voice_hover == Some(u.id) || dragging;
+        let (hover, radius) = (t.hover.0, t.radius * 0.6);
+        let row = mouse_area(
+            container(line)
+                .width(Length::Fill)
+                .padding(Padding { left: 28.0, right: 8.0, top: 2.0, bottom: 2.0 })
+                .style(move |_| container::Style {
+                    background: highlight.then(|| hover.into()),
+                    border: Border { radius: radius.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+        )
+        .on_press(Message::VoicePress(u.id))
+        .on_enter(Message::VoiceHover(Some(u.id)))
+        .on_exit(Message::VoiceHover(None))
+        .interaction(iced::mouse::Interaction::Pointer);
+        let id = u.id;
+        crate::widgets::context_menu(row, move || self.voice_menu(id)).into()
     }
 
     /// "Voice Connected" box above the user panel while in a call.
