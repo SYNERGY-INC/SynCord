@@ -552,3 +552,227 @@ async fn upload_size_limit_and_streamed_download() {
     assert_eq!(r.headers()["content-length"], "900000");
     assert_eq!(r.bytes().await.unwrap().to_vec(), body);
 }
+
+/// A tiny website for link previews: a page with OpenGraph tags and its picture.
+async fn start_fake_site() -> String {
+    use axum::{Router, http::header, routing::get};
+    let png = {
+        let img = image::RgbaImage::from_pixel(64, 40, image::Rgba([200, 30, 30, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let page = format!(
+        r##"<html><head><meta property="og:title" content="Test Page"><meta property="og:site_name" content="Fake Site">
+        <meta property="og:description" content="A page &amp; a picture"><meta property="og:image" content="{base}/pic.png">
+        <meta name="theme-color" content="#ff0000"></head><body>hi</body></html>"##
+    );
+    let app = Router::new()
+        .route("/page", get(move || async move { ([(header::CONTENT_TYPE, "text/html")], page) }))
+        .route("/pic.png", get(move || async move { ([(header::CONTENT_TYPE, "image/png")], png) }));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    base
+}
+
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(w, h, image::Rgba([1, 2, 3, 255]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[tokio::test]
+async fn roles_mentions_blocks_calls_previews_and_profile_pictures() {
+    use syncord_proto::{EVERYONE_ROLE, perms};
+    let site = start_fake_site().await;
+    let uploads = std::env::temp_dir().join(format!("syncord-test-{}", rand_suffix()));
+    let config =
+        Config { invite_code: "x".into(), uploads, unsafe_allow_private_link_previews: true, ..Config::default() };
+    let state = AppState::new(config, Db::open_in_memory().unwrap());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (url, base) = (format!("ws://{addr}/ws"), format!("http://{addr}"));
+    tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+    let http = reqwest::Client::new();
+
+    let (mut alice, r) = register(&url, "alice", "x").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let general = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+    let everyone = ready.roles.iter().find(|r| r.id == EVERYONE_ROLE).expect("everyone role").clone();
+    assert_eq!(everyone.permissions, perms::DEFAULT);
+    let alice_token = ready.token.clone();
+    let (mut bob, r) = register(&url, "bob", "x").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let bob_id = ready.me;
+    let (mut carol, r) = register(&url, "carol", "x").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let (carol_id, carol_token) = (ready.me, ready.token.clone());
+
+    // Bob can't make channels yet.
+    let create =
+        |name: &str| ClientMsg::CreateChannel { name: name.into(), topic: String::new(), kind: ChannelKind::Text };
+    send(&mut bob, create("bobs")).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("Manage channels"))).await;
+
+    // Alice makes a Mods role that can manage channels and roles, and gives it to Bob.
+    send(&mut alice, ClientMsg::CreateRole { name: "Mods".into() }).await;
+    let ServerMsg::RoleUpdated(mut mods) =
+        expect(&mut alice, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.name == "Mods")).await
+    else {
+        unreachable!()
+    };
+    mods.permissions = perms::MANAGE_CHANNELS | perms::MANAGE_ROLES;
+    mods.color = Some(0x00FF00);
+    send(&mut alice, ClientMsg::UpdateRole(mods.clone())).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.id == mods.id && r.color == Some(0x00FF00)))
+        .await;
+    send(&mut alice, ClientMsg::SetUserRoles { user_id: bob_id, roles: vec![mods.id] }).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::UserUpdated(u) if u.id == bob_id && u.roles == vec![mods.id])).await;
+    send(&mut bob, create("bobs")).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::ChannelCreated(c) if c.name == "bobs")).await;
+
+    // Bob can make roles below his own, but not touch Mods or hand out powers he lacks.
+    send(&mut bob, ClientMsg::CreateRole { name: "Helpers".into() }).await;
+    let ServerMsg::RoleUpdated(mut helpers) =
+        expect(&mut bob, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.name == "Helpers")).await
+    else {
+        unreachable!()
+    };
+    send(&mut bob, ClientMsg::UpdateRole(syncord_proto::Role { name: "Bosses".into(), ..mods.clone() })).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("below"))).await;
+    helpers.permissions = perms::ADMINISTRATOR;
+    send(&mut bob, ClientMsg::UpdateRole(helpers.clone())).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("don't have"))).await;
+    // ...and can't promote himself above Mods.
+    helpers.permissions = perms::MANAGE_CHANNELS;
+    helpers.position = 99;
+    send(&mut bob, ClientMsg::UpdateRole(helpers.clone())).await;
+    let ServerMsg::RoleUpdated(h) =
+        expect(&mut bob, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.id == helpers.id)).await
+    else {
+        unreachable!()
+    };
+    assert!(h.position < mods.position.max(2), "stays below Mods: {h:?}");
+
+    // Taking Send messages away from everyone silences Carol.
+    send(&mut alice, ClientMsg::UpdateRole(syncord_proto::Role { permissions: 0, ..everyone.clone() })).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.id == EVERYONE_ROLE && r.permissions == 0)).await;
+    let say = |text: &str| ClientMsg::SendMessage { channel_id: general, content: text.into(), attachments: vec![] };
+    send(&mut carol, say("can I talk?")).await;
+    expect(&mut carol, |m| matches!(m, ServerMsg::Error { message } if message.contains("permission"))).await;
+    send(&mut alice, ClientMsg::UpdateRole(everyone.clone())).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.id == EVERYONE_ROLE && r.permissions != 0)).await;
+
+    // Mentions: Bob may not ping everyone, Alice (owner) may.
+    send(&mut bob, say(&format!("hey <@{carol_id}> and @everyone"))).await;
+    let ServerMsg::MessageCreated(m) = expect(&mut carol, |m| matches!(m, ServerMsg::MessageCreated(_))).await else {
+        unreachable!()
+    };
+    assert_eq!(m.mentions, vec![carol_id]);
+    send(&mut alice, say("@everyone dinner!")).await;
+    let ServerMsg::MessageCreated(m) =
+        expect(&mut carol, |m| matches!(m, ServerMsg::MessageCreated(m) if m.content.contains("dinner"))).await
+    else {
+        unreachable!()
+    };
+    let mut pinged = m.mentions.clone();
+    pinged.sort();
+    assert_eq!(pinged, vec![bob_id, carol_id]);
+    // Carol hasn't read them: two unread mentions when she comes back.
+    drop(carol);
+    let (mut carol, r) = login(&url, &carol_token).await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    assert_eq!(ready.mentions.iter().find(|c| c.channel_id == general).map(|c| c.count), Some(2));
+
+    // Blocking: Carol blocks Bob, who then can't open a DM with her.
+    send(&mut carol, ClientMsg::SetBlocked { user_id: bob_id, blocked: true }).await;
+    expect(&mut carol, |m| matches!(m, ServerMsg::BlockUpdated { blocked: true, .. })).await;
+    send(&mut bob, ClientMsg::OpenDirect { user_id: carol_id }).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("can't message"))).await;
+
+    // A call in a DM: Bob hears about it, Carol (not in the DM) doesn't see it.
+    send(&mut alice, ClientMsg::OpenDirect { user_id: bob_id }).await;
+    let ServerMsg::DirectOpened(dm) = expect(&mut alice, |m| matches!(m, ServerMsg::DirectOpened(_))).await else {
+        unreachable!()
+    };
+    send(&mut alice, ClientMsg::JoinVoice { channel_id: dm.id, encrypted: true }).await;
+    let ServerMsg::VoiceReady { key, .. } = expect(&mut alice, |m| matches!(m, ServerMsg::VoiceReady { .. })).await
+    else {
+        unreachable!()
+    };
+    assert!(key.is_some(), "the call is encrypted");
+    expect(&mut bob, |m| matches!(m, ServerMsg::VoiceStateUpdate { state: Some(s), .. } if s.channel_id == dm.id))
+        .await;
+    drop(carol);
+    let (mut carol, r) = login(&url, &carol_token).await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    assert!(ready.voice.iter().all(|v| v.channel_id != dm.id), "other people's calls are private");
+    assert_eq!(ready.blocked, vec![bob_id]);
+
+    // Link previews: the server fetches the page and its picture.
+    send(&mut alice, say(&format!("look {site}/page"))).await;
+    let ServerMsg::MessageUpdated(m) =
+        expect(&mut carol, |m| matches!(m, ServerMsg::MessageUpdated(m) if !m.embeds.is_empty())).await
+    else {
+        unreachable!()
+    };
+    let e = &m.embeds[0];
+    assert_eq!(e.title.as_deref(), Some("Test Page"));
+    assert_eq!(e.description.as_deref(), Some("A page & a picture"));
+    assert_eq!(e.site_name.as_deref(), Some("Fake Site"));
+    assert_eq!(e.color, Some(0xFF0000));
+    let pic = e.image.as_ref().expect("a picture");
+    assert_eq!((pic.width, pic.height), (Some(64), Some(40)));
+    assert!(m.attachments.is_empty(), "the preview's picture isn't an attachment");
+    let got = http.get(format!("{base}/api/files/{}", pic.id)).bearer_auth(&carol_token).send().await.unwrap();
+    assert!(got.status().is_success());
+
+    // Profile pictures: the right size is stored and everyone hears about it.
+    let wrong = http
+        .post(format!("{base}/api/profile-image?kind=avatar"))
+        .bearer_auth(&alice_token)
+        .body(png(1000, 1000))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 400);
+    let up = http
+        .post(format!("{base}/api/profile-image?kind=avatar"))
+        .bearer_auth(&alice_token)
+        .body(png(256, 256))
+        .send()
+        .await
+        .unwrap();
+    assert!(up.status().is_success());
+    let image: syncord_proto::ProfileImage = up.json().await.unwrap();
+    expect(
+        &mut carol,
+        |m| matches!(m, ServerMsg::UserUpdated(u) if u.profile.avatar.as_ref().is_some_and(|a| a.id == image.id)),
+    )
+    .await;
+    let got =
+        http.get(format!("{base}/api/profile-image/{}", image.id)).bearer_auth(&carol_token).send().await.unwrap();
+    assert_eq!(got.headers()["content-type"], "image/png");
+    // Saving the profile doesn't drop the picture.
+    send(
+        &mut alice,
+        ClientMsg::UpdateProfile { profile: Profile { pronouns: "she/her".into(), ..Profile::default() } },
+    )
+    .await;
+    let ServerMsg::UserUpdated(u) =
+        expect(&mut carol, |m| matches!(m, ServerMsg::UserUpdated(u) if u.profile.pronouns == "she/her")).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(u.profile.avatar.map(|a| a.id), Some(image.id));
+    let _ = (&mut bob, &mut alice);
+}
+
+async fn login(url: &str, token: &str) -> (Socket, ServerMsg) {
+    let (mut ws, _) = connect_async(url).await.unwrap();
+    send(&mut ws, ClientMsg::Resume { token: token.into() }).await;
+    let reply = expect(&mut ws, |m| matches!(m, ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. })).await;
+    (ws, reply)
+}

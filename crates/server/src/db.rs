@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use syncord_proto::{
-    Attachment, Channel, ChannelId, ChannelKind, DirectChannel, HISTORY_PAGE, Message, MessageId, Profile, Reaction,
-    ReadState, User, UserId,
+    Attachment, Channel, ChannelId, ChannelKind, DirectChannel, EVERYONE_ROLE, Embed, HISTORY_PAGE, MentionCount,
+    Message, MessageId, Profile, Reaction, ReadState, Role, RoleId, User, UserId, parse_mentions, perms,
 };
 
 #[derive(Clone)]
@@ -88,6 +88,43 @@ CREATE TABLE IF NOT EXISTS reactions (
     PRIMARY KEY (message_id, user_id, emoji)
 );
 
+CREATE TABLE IF NOT EXISTS roles (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    color       INTEGER,
+    permissions INTEGER NOT NULL,
+    position    INTEGER NOT NULL,
+    hoist       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, role_id)
+);
+
+CREATE TABLE IF NOT EXISTS blocks (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, blocked_id)
+);
+
+CREATE TABLE IF NOT EXISTS mentions (
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel_id INTEGER NOT NULL,
+    PRIMARY KEY (message_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS mentions_by_user ON mentions(user_id, channel_id, message_id);
+
+CREATE TABLE IF NOT EXISTS profile_images (
+    id         TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mime       TEXT NOT NULL,
+    animated   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS read_states (
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
@@ -128,6 +165,10 @@ impl Db {
 
     fn seed(&self) -> DbResult<()> {
         let conn = self.lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO roles (id, name, color, permissions, position) VALUES (?1, '@everyone', NULL, ?2, 0)",
+            params![EVERYONE_ROLE, perms::DEFAULT as i64],
+        )?;
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM channels", [], |r| r.get(0))?;
         if count == 0 {
             create_channel(&conn, "general", "Say hi!", ChannelKind::Text)?;
@@ -159,6 +200,16 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     if !has_kind {
         conn.execute_batch("ALTER TABLE channels ADD COLUMN kind INTEGER NOT NULL DEFAULT 0")?;
     }
+    // 0.5: link previews, videos, and pictures that belong to a link preview.
+    for (table, column, ddl) in [
+        ("messages", "embeds", "ALTER TABLE messages ADD COLUMN embeds TEXT NOT NULL DEFAULT '[]'"),
+        ("attachments", "video", "ALTER TABLE attachments ADD COLUMN video TEXT"),
+        ("attachments", "is_embed", "ALTER TABLE attachments ADD COLUMN is_embed INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 0")).is_err() {
+            conn.execute_batch(ddl)?;
+        }
+    }
     Ok(())
 }
 
@@ -187,6 +238,7 @@ fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         username: row.get(1)?,
         profile: serde_json::from_str(&profile_json).unwrap_or_default(),
         is_owner: row.get(3)?,
+        roles: Vec::new(),
     })
 }
 
@@ -201,7 +253,7 @@ pub fn create_user(conn: &Connection, username: &str, password_hash: &str, is_ow
         "INSERT INTO users (username, password_hash, profile, is_owner, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![username, password_hash, serde_json::to_string(&profile).unwrap(), is_owner, now_ms()],
     )?;
-    Ok(User { id: conn.last_insert_rowid(), username: username.to_owned(), profile, is_owner })
+    Ok(User { id: conn.last_insert_rowid(), username: username.to_owned(), profile, is_owner, roles: Vec::new() })
 }
 
 /// Pick a pleasant default accent colour from the username.
@@ -219,13 +271,31 @@ pub fn credentials(conn: &Connection, username: &str) -> DbResult<Option<Credent
 }
 
 pub fn get_user(conn: &Connection, id: UserId) -> DbResult<Option<User>> {
-    conn.query_row("SELECT id, username, profile, is_owner FROM users WHERE id = ?1", params![id], row_to_user)
-        .optional()
+    let user = conn
+        .query_row("SELECT id, username, profile, is_owner FROM users WHERE id = ?1", params![id], row_to_user)
+        .optional()?;
+    Ok(match user {
+        Some(mut u) => {
+            u.roles = user_roles(conn, u.id)?;
+            Some(u)
+        }
+        None => None,
+    })
 }
 
 pub fn all_users(conn: &Connection) -> DbResult<Vec<User>> {
     let mut stmt = conn.prepare_cached("SELECT id, username, profile, is_owner FROM users ORDER BY id")?;
-    stmt.query_map([], row_to_user)?.collect()
+    let mut users: Vec<User> = stmt.query_map([], row_to_user)?.collect::<DbResult<_>>()?;
+    let mut roles: HashMap<UserId, Vec<RoleId>> = HashMap::new();
+    let mut stmt = conn.prepare_cached("SELECT user_id, role_id FROM user_roles ORDER BY role_id")?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, UserId>(0)?, r.get::<_, RoleId>(1)?)))? {
+        let (u, r) = row?;
+        roles.entry(u).or_default().push(r);
+    }
+    for u in &mut users {
+        u.roles = roles.remove(&u.id).unwrap_or_default();
+    }
+    Ok(users)
 }
 
 pub fn update_profile(conn: &Connection, id: UserId, profile: &Profile) -> DbResult<()> {
@@ -416,8 +486,8 @@ pub fn insert_attachment(
 ) -> DbResult<()> {
     conn.execute(
         "INSERT INTO attachments
-         (id, uploader_id, channel_id, filename, mime, size, width, height, animated, has_thumb, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         (id, uploader_id, channel_id, filename, mime, size, width, height, animated, has_thumb, created_at, video)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             a.id,
             uploader,
@@ -429,14 +499,30 @@ pub fn insert_attachment(
             a.height,
             a.animated,
             has_thumb,
-            now_ms()
+            now_ms(),
+            a.video.map(|v| serde_json::to_string(&v).unwrap())
         ],
     )?;
     Ok(())
 }
 
+/// Store a link preview's picture as a file belonging to the message (so it's
+/// downloadable by the same people and removed with it), but not listed as an attachment.
+pub fn insert_embed_image(
+    conn: &Connection,
+    a: &Attachment,
+    uploader: UserId,
+    channel: ChannelId,
+    message: MessageId,
+    has_thumb: bool,
+) -> DbResult<()> {
+    insert_attachment(conn, a, uploader, channel, has_thumb)?;
+    conn.execute("UPDATE attachments SET message_id = ?1, is_embed = 1 WHERE id = ?2", params![message, a.id])?;
+    Ok(())
+}
+
 const ATTACHMENT_COLUMNS: &str =
-    "id, filename, size, mime, width, height, animated, uploader_id, channel_id, message_id, has_thumb";
+    "id, filename, size, mime, width, height, animated, uploader_id, channel_id, message_id, has_thumb, video";
 
 fn row_to_stored(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAttachment> {
     Ok(StoredAttachment {
@@ -448,6 +534,7 @@ fn row_to_stored(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAttachment> {
             width: r.get(4)?,
             height: r.get(5)?,
             animated: r.get(6)?,
+            video: r.get::<_, Option<String>>(11)?.and_then(|v| serde_json::from_str(&v).ok()),
         },
         uploader: r.get(7)?,
         channel_id: r.get(8)?,
@@ -515,7 +602,7 @@ fn fill_extras(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
     let mut by_message: HashMap<MessageId, Vec<Attachment>> = HashMap::new();
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {ATTACHMENT_COLUMNS} FROM attachments
-         WHERE channel_id = ?1 AND message_id BETWEEN ?2 AND ?3 ORDER BY rowid"
+         WHERE channel_id = ?1 AND message_id BETWEEN ?2 AND ?3 AND is_embed = 0 ORDER BY rowid"
     ))?;
     for row in stmt.query_map(params![channel, lo, hi], row_to_stored)? {
         let stored = row?;
@@ -542,9 +629,19 @@ fn fill_extras(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
         }
     }
 
+    let mut mentions: HashMap<MessageId, Vec<UserId>> = HashMap::new();
+    let mut stmt = conn.prepare_cached(
+        "SELECT message_id, user_id FROM mentions WHERE channel_id = ?1 AND message_id BETWEEN ?2 AND ?3",
+    )?;
+    for row in stmt.query_map(params![channel, lo, hi], |r| Ok((r.get::<_, MessageId>(0)?, r.get::<_, UserId>(1)?)))? {
+        let (mid, user) = row?;
+        mentions.entry(mid).or_default().push(user);
+    }
+
     for m in msgs.iter_mut() {
         m.attachments = by_message.remove(&m.id).unwrap_or_default();
         m.reactions = reactions.remove(&m.id).unwrap_or_default();
+        m.mentions = mentions.remove(&m.id).unwrap_or_default();
     }
     Ok(())
 }
@@ -559,6 +656,8 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         edited_at: r.get(5)?,
         attachments: Vec::new(),
         reactions: Vec::new(),
+        embeds: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
+        mentions: Vec::new(),
     })
 }
 
@@ -607,13 +706,15 @@ pub fn insert_message(
         edited_at: None,
         attachments,
         reactions: Vec::new(),
+        embeds: Vec::new(),
+        mentions: Vec::new(),
     }))
 }
 
 pub fn get_message(conn: &Connection, id: MessageId) -> DbResult<Option<Message>> {
     let msg = conn
         .query_row(
-            "SELECT id, channel_id, author_id, content, created_at, edited_at FROM messages WHERE id = ?1",
+            "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds FROM messages WHERE id = ?1",
             params![id],
             row_to_message,
         )
@@ -642,7 +743,7 @@ pub fn delete_message(conn: &Connection, id: MessageId) -> DbResult<Vec<String>>
 /// Returns up to [`HISTORY_PAGE`] messages older than `before`, oldest first.
 pub fn history(conn: &Connection, channel_id: ChannelId, before: Option<MessageId>) -> DbResult<Vec<Message>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at FROM messages
+        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds FROM messages
          WHERE channel_id = ?1 AND (?2 IS NULL OR id < ?2)
          ORDER BY id DESC LIMIT ?3",
     )?;
@@ -651,6 +752,242 @@ pub fn history(conn: &Connection, channel_id: ChannelId, before: Option<MessageI
     msgs.reverse();
     fill_extras(conn, &mut msgs)?;
     Ok(msgs)
+}
+
+// ---- Roles and permissions
+
+fn row_to_role(r: &rusqlite::Row<'_>) -> rusqlite::Result<Role> {
+    Ok(Role {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        color: r.get::<_, Option<i64>>(2)?.map(|c| c as u32),
+        permissions: r.get::<_, i64>(3)? as u64,
+        position: r.get(4)?,
+        hoist: r.get(5)?,
+    })
+}
+
+const ROLE_COLUMNS: &str = "id, name, color, permissions, position, hoist";
+
+/// All roles, highest first.
+pub fn all_roles(conn: &Connection) -> DbResult<Vec<Role>> {
+    let mut stmt = conn.prepare_cached(&format!("SELECT {ROLE_COLUMNS} FROM roles ORDER BY position DESC, id"))?;
+    stmt.query_map([], row_to_role)?.collect()
+}
+
+pub fn get_role(conn: &Connection, id: RoleId) -> DbResult<Option<Role>> {
+    conn.query_row(&format!("SELECT {ROLE_COLUMNS} FROM roles WHERE id = ?1"), params![id], row_to_role).optional()
+}
+
+pub fn role_count(conn: &Connection) -> DbResult<usize> {
+    conn.query_row("SELECT COUNT(*) FROM roles", [], |r| r.get::<_, i64>(0)).map(|n| n as usize)
+}
+
+/// A new role goes just above @everyone (the lowest place), pushing the others up.
+pub fn create_role(conn: &Connection, name: &str) -> DbResult<Role> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE roles SET position = position + 1 WHERE id != ?1", params![EVERYONE_ROLE])?;
+    tx.execute("INSERT INTO roles (name, color, permissions, position) VALUES (?1, NULL, 0, 1)", params![name])?;
+    let id = tx.last_insert_rowid();
+    tx.commit()?;
+    Ok(get_role(conn, id)?.expect("just inserted"))
+}
+
+pub fn update_role(conn: &Connection, role: &Role) -> DbResult<()> {
+    conn.execute(
+        "UPDATE roles SET name = ?1, color = ?2, permissions = ?3, position = ?4, hoist = ?5 WHERE id = ?6",
+        params![role.name, role.color.map(|c| c as i64), role.permissions as i64, role.position, role.hoist, role.id],
+    )?;
+    Ok(())
+}
+
+/// Give roles positions 1, 2, 3... in their current order (after a move), keeping @everyone at 0.
+pub fn renumber_roles(conn: &Connection) -> DbResult<Vec<Role>> {
+    let mut roles = all_roles(conn)?;
+    roles.retain(|r| r.id != EVERYONE_ROLE);
+    roles.reverse(); // lowest first
+    for (i, r) in roles.iter_mut().enumerate() {
+        r.position = i as i64 + 1;
+        conn.execute("UPDATE roles SET position = ?1 WHERE id = ?2", params![r.position, r.id])?;
+    }
+    all_roles(conn)
+}
+
+pub fn delete_role(conn: &Connection, id: RoleId) -> DbResult<()> {
+    conn.execute("DELETE FROM roles WHERE id = ?1 AND id != ?2", params![id, EVERYONE_ROLE])?;
+    Ok(())
+}
+
+pub fn user_roles(conn: &Connection, user: UserId) -> DbResult<Vec<RoleId>> {
+    let mut stmt = conn.prepare_cached("SELECT role_id FROM user_roles WHERE user_id = ?1 ORDER BY role_id")?;
+    stmt.query_map(params![user], |r| r.get(0))?.collect()
+}
+
+pub fn set_user_roles(conn: &Connection, user: UserId, roles: &[RoleId]) -> DbResult<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM user_roles WHERE user_id = ?1", params![user])?;
+    for r in roles {
+        if *r != EVERYONE_ROLE {
+            tx.execute("INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?1, ?2)", params![user, r])?;
+        }
+    }
+    tx.commit()
+}
+
+/// What someone may do, and the position of their highest role. The owner may do everything.
+pub fn access(conn: &Connection, user: UserId) -> DbResult<Access> {
+    let is_owner: bool = conn
+        .query_row("SELECT is_owner FROM users WHERE id = ?1", params![user], |r| r.get(0))
+        .optional()?
+        .unwrap_or(false);
+    let mut stmt = conn.prepare_cached(
+        "SELECT permissions, position FROM roles
+         WHERE id = ?1 OR id IN (SELECT role_id FROM user_roles WHERE user_id = ?2)",
+    )?;
+    let mut permissions = 0u64;
+    let mut top = 0i64;
+    for row in stmt.query_map(params![EVERYONE_ROLE, user], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+        let (p, pos) = row?;
+        permissions |= p as u64;
+        top = top.max(pos);
+    }
+    if is_owner || permissions & perms::ADMINISTRATOR != 0 {
+        permissions = perms::ALL;
+    }
+    Ok(Access { is_owner, permissions, top })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Access {
+    pub is_owner: bool,
+    pub permissions: u64,
+    /// Position of their highest role: they can only manage roles below it.
+    pub top: i64,
+}
+
+impl Access {
+    pub fn can(&self, permission: u64) -> bool {
+        self.permissions & permission == permission
+    }
+
+    /// Whether they may edit, delete or hand out this role.
+    pub fn can_manage_role(&self, role: &Role) -> bool {
+        role.id != EVERYONE_ROLE && self.can(perms::MANAGE_ROLES) && (self.is_owner || role.position < self.top)
+    }
+}
+
+// ---- Blocking
+
+pub fn set_blocked(conn: &Connection, user: UserId, other: UserId, blocked: bool) -> DbResult<()> {
+    if blocked {
+        conn.execute("INSERT OR IGNORE INTO blocks (user_id, blocked_id) VALUES (?1, ?2)", params![user, other])?;
+    } else {
+        conn.execute("DELETE FROM blocks WHERE user_id = ?1 AND blocked_id = ?2", params![user, other])?;
+    }
+    Ok(())
+}
+
+pub fn blocked_by(conn: &Connection, user: UserId) -> DbResult<Vec<UserId>> {
+    let mut stmt = conn.prepare_cached("SELECT blocked_id FROM blocks WHERE user_id = ?1")?;
+    stmt.query_map(params![user], |r| r.get(0))?.collect()
+}
+
+/// Whether either of the two has blocked the other.
+pub fn blocked_between(conn: &Connection, a: UserId, b: UserId) -> DbResult<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM blocks WHERE (user_id = ?1 AND blocked_id = ?2) OR (user_id = ?2 AND blocked_id = ?1))",
+        params![a, b],
+        |r| r.get(0),
+    )
+}
+
+// ---- Mentions
+
+/// Who a message pings: mentioned people, holders of mentioned roles, and everyone
+/// for @everyone (only if the author may). Never the author, nor people who blocked them.
+pub fn resolve_mentions(conn: &Connection, author: UserId, channel: ChannelId, content: &str) -> DbResult<Vec<UserId>> {
+    let (users, roles, everyone) = parse_mentions(content);
+    let mut out: Vec<UserId> = Vec::new();
+    let members: Option<Vec<UserId>> = match channel_kind(conn, channel)? {
+        Some(ChannelKind::Direct) => Some(direct_members(conn, channel)?),
+        _ => None,
+    };
+    let everyone = everyone && (members.is_some() || access(conn, author)?.can(perms::MENTION_EVERYONE));
+    let all: Vec<UserId> = match &members {
+        Some(m) => m.clone(),
+        None => all_users(conn)?.into_iter().map(|u| u.id).collect(),
+    };
+    for id in all {
+        let roles_of = if roles.is_empty() { Vec::new() } else { user_roles(conn, id)? };
+        if everyone || users.contains(&id) || roles_of.iter().any(|r| roles.contains(r)) {
+            out.push(id);
+        }
+    }
+    let blockers = {
+        let mut stmt = conn.prepare_cached("SELECT user_id FROM blocks WHERE blocked_id = ?1")?;
+        stmt.query_map(params![author], |r| r.get::<_, UserId>(0))?.collect::<DbResult<Vec<_>>>()?
+    };
+    out.retain(|u| *u != author && !blockers.contains(u));
+    Ok(out)
+}
+
+pub fn set_mentions(conn: &Connection, message: MessageId, channel: ChannelId, users: &[UserId]) -> DbResult<()> {
+    conn.execute("DELETE FROM mentions WHERE message_id = ?1", params![message])?;
+    for u in users {
+        conn.execute(
+            "INSERT OR IGNORE INTO mentions (message_id, user_id, channel_id) VALUES (?1, ?2, ?3)",
+            params![message, u, channel],
+        )?;
+    }
+    Ok(())
+}
+
+/// Unread mentions of someone, per channel.
+pub fn mention_counts(conn: &Connection, user: UserId) -> DbResult<Vec<MentionCount>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT m.channel_id, COUNT(*) FROM mentions m
+         LEFT JOIN read_states r ON r.user_id = m.user_id AND r.channel_id = m.channel_id
+         WHERE m.user_id = ?1 AND m.message_id > COALESCE(r.last_read, 0)
+         GROUP BY m.channel_id",
+    )?;
+    stmt.query_map(params![user], |r| Ok(MentionCount { channel_id: r.get(0)?, count: r.get::<_, i64>(1)? as u32 }))?
+        .collect()
+}
+
+// ---- Link previews
+
+pub fn set_embeds(conn: &Connection, message: MessageId, embeds: &[Embed]) -> DbResult<()> {
+    conn.execute(
+        "UPDATE messages SET embeds = ?1 WHERE id = ?2",
+        params![serde_json::to_string(embeds).unwrap(), message],
+    )?;
+    Ok(())
+}
+
+/// Files of a message's link previews (to delete when the previews are replaced).
+pub fn take_embed_images(conn: &Connection, message: MessageId) -> DbResult<Vec<String>> {
+    let ids = string_column(conn, "SELECT id FROM attachments WHERE message_id = ?1 AND is_embed = 1", message)?;
+    conn.execute("DELETE FROM attachments WHERE message_id = ?1 AND is_embed = 1", params![message])?;
+    Ok(ids)
+}
+
+// ---- Profile pictures and banners
+
+pub fn insert_profile_image(conn: &Connection, id: &str, user: UserId, mime: &str, animated: bool) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO profile_images (id, user_id, mime, animated, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, user, mime, animated, now_ms()],
+    )?;
+    Ok(())
+}
+
+pub fn profile_image_mime(conn: &Connection, id: &str) -> DbResult<Option<String>> {
+    conn.query_row("SELECT mime FROM profile_images WHERE id = ?1", params![id], |r| r.get(0)).optional()
+}
+
+pub fn delete_profile_image(conn: &Connection, id: &str) -> DbResult<()> {
+    conn.execute("DELETE FROM profile_images WHERE id = ?1", params![id])?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -707,6 +1044,7 @@ mod tests {
             width: Some(4),
             height: Some(3),
             animated: false,
+            video: None,
         }
     }
 

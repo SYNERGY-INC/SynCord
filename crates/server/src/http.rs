@@ -12,7 +12,9 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rand::Rng;
 use serde::Deserialize;
-use syncord_proto::{Attachment, ChannelId, ChannelKind, UserId, clean_filename};
+use syncord_proto::{
+    AVATAR_SIZE, Attachment, BANNER_SIZE, ChannelId, ChannelKind, ProfileImage, ServerMsg, UserId, clean_filename,
+};
 use tracing::warn;
 
 use crate::{AppState, db, media};
@@ -195,6 +197,7 @@ async fn finish_upload(
         width: processed.width,
         height: processed.height,
         animated: processed.animated,
+        video: None,
     };
     let has_thumb = processed.thumb.is_some();
     let a = attachment.clone();
@@ -263,4 +266,150 @@ pub async fn download(
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
     h.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment"));
     Ok(resp)
+}
+
+// ---- Profile pictures and banners
+
+/// Largest profile picture or banner upload (animated GIFs can be big).
+pub const MAX_PROFILE_IMAGE: u64 = 12 * 1024 * 1024;
+
+#[derive(Deserialize)]
+pub struct ProfileImageQuery {
+    kind: String,
+}
+
+/// The app crops and resizes pictures before sending; check it did, so nobody can
+/// make everyone download a huge file.
+fn check_profile_image(bytes: &[u8], banner: bool) -> Result<(String, bool), &'static str> {
+    let format = image::guess_format(bytes).map_err(|_| "that isn't a picture")?;
+    let mime = match format {
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Gif => "image/gif",
+        image::ImageFormat::WebP => "image/webp",
+        _ => return Err("use a PNG, JPEG, GIF or WebP picture"),
+    };
+    let reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    let (w, h) = reader.into_dimensions().map_err(|_| "that picture is damaged")?;
+    let (max_w, max_h) =
+        if banner { (BANNER_SIZE.0 * 2, BANNER_SIZE.1 * 2) } else { (AVATAR_SIZE * 2, AVATAR_SIZE * 2) };
+    if w == 0 || h == 0 || w > max_w || h > max_h {
+        return Err("that picture is the wrong size");
+    }
+    let animated = format == image::ImageFormat::Gif && media::is_animated_gif(bytes);
+    Ok((mime.to_string(), animated))
+}
+
+pub async fn upload_profile_image(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<ProfileImageQuery>,
+    body: axum::body::Bytes,
+) -> Result<Json<ProfileImage>, (StatusCode, &'static str)> {
+    let me = authenticate(&state, &headers).await?;
+    let banner = match q.kind.as_str() {
+        "avatar" => false,
+        "banner" => true,
+        _ => return Err(bad(StatusCode::BAD_REQUEST, "kind must be avatar or banner")),
+    };
+    let (mime, animated) = check_profile_image(&body, banner).map_err(|m| bad(StatusCode::BAD_REQUEST, m))?;
+    let id = new_id();
+    let dir = &state.config.uploads;
+    let save = async {
+        tokio::fs::create_dir_all(dir).await?;
+        tokio::fs::write(file_path(dir, &id, false), &body).await
+    };
+    save.await.map_err(|_| bad(StatusCode::INTERNAL_SERVER_ERROR, "the server couldn't save the picture"))?;
+
+    let image = ProfileImage { id: id.clone(), animated };
+    let stored = image.clone();
+    let result = state
+        .db
+        .call(move |c| {
+            db::insert_profile_image(c, &stored.id, me, &mime, stored.animated)?;
+            let Some(mut user) = db::get_user(c, me)? else { return Ok(None) };
+            let old = if banner { user.profile.banner.replace(stored) } else { user.profile.avatar.replace(stored) };
+            db::update_profile(c, me, &user.profile)?;
+            if let Some(old) = &old {
+                db::delete_profile_image(c, &old.id)?;
+            }
+            Ok(Some((user, old)))
+        })
+        .await
+        .map_err(|_| bad(StatusCode::INTERNAL_SERVER_ERROR, "database error"))?;
+    let Some((user, old)) = result else { return Err(bad(StatusCode::UNAUTHORIZED, "not logged in")) };
+    if let Some(old) = old {
+        remove_files(dir, &[old.id]).await;
+    }
+    state.broadcast(&ServerMsg::UserUpdated(user), None);
+    Ok(Json(image))
+}
+
+pub async fn download_profile_image(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> HttpResult<Response> {
+    authenticate(&state, &headers).await?;
+    if !valid_id(&id) {
+        return Err(bad(StatusCode::NOT_FOUND, "no such picture"));
+    }
+    let lookup = id.clone();
+    let mime = state
+        .db
+        .call(move |c| db::profile_image_mime(c, &lookup))
+        .await
+        .map_err(|_| bad(StatusCode::INTERNAL_SERVER_ERROR, "database error"))?
+        .ok_or(bad(StatusCode::NOT_FOUND, "no such picture"))?;
+    let bytes = tokio::fs::read(file_path(&state.config.uploads, &id, false))
+        .await
+        .map_err(|_| bad(StatusCode::NOT_FOUND, "picture is missing on the server"))?;
+    let mut resp = Body::from(bytes).into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static("image/png")));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=31536000, immutable"));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    Ok(resp)
+}
+
+/// Save a link preview's picture for a message (see [`crate::previews`]).
+pub async fn store_embed_image(
+    state: &AppState,
+    author: UserId,
+    channel: ChannelId,
+    message: syncord_proto::MessageId,
+    image: &crate::embeds::PreviewImage,
+) -> Option<Attachment> {
+    let id = new_id();
+    let dir = &state.config.uploads;
+    let write = async {
+        tokio::fs::create_dir_all(dir).await?;
+        if let Some(thumb) = &image.thumb {
+            tokio::fs::write(file_path(dir, &id, true), thumb).await?;
+        }
+        tokio::fs::write(file_path(dir, &id, false), &image.bytes).await
+    };
+    if let Err(e) = write.await {
+        warn!("could not save a link preview picture: {e}");
+        return None;
+    }
+    let a = Attachment {
+        id: id.clone(),
+        filename: "preview".into(),
+        size: image.bytes.len() as u64,
+        mime: image.mime.clone(),
+        width: Some(image.width),
+        height: Some(image.height),
+        animated: image.animated,
+        video: None,
+    };
+    let (stored, has_thumb) = (a.clone(), image.thumb.is_some());
+    match state.db.call(move |c| db::insert_embed_image(c, &stored, author, channel, message, has_thumb)).await {
+        Ok(()) => Some(a),
+        Err(e) => {
+            warn!("could not record a link preview picture: {e}");
+            remove_files(dir, &[id]).await;
+            None
+        }
+    }
 }

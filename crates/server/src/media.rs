@@ -90,6 +90,14 @@ fn encode_still_thumb(img: &DynamicImage) -> Option<Vec<u8>> {
     Some(out.into_inner())
 }
 
+/// Whether a GIF has more than one frame (reads only until the second frame).
+pub fn is_animated_gif(bytes: &[u8]) -> bool {
+    match GifDecoder::new(Cursor::new(bytes)) {
+        Ok(decoder) => decoder.into_frames().take(2).filter(|f| f.is_ok()).count() > 1,
+        Err(_) => false,
+    }
+}
+
 fn process_gif(bytes: &[u8]) -> Option<Processed> {
     let decoder = GifDecoder::new(Cursor::new(bytes)).ok()?;
     let mut frames: Vec<Frame> = Vec::new();

@@ -14,9 +14,12 @@ use axum::response::Response;
 use rand::Rng;
 use syncord_proto::voice::token_to_hex;
 use syncord_proto::{
-    ChannelId, ChannelKind, ClientMsg, DirectChannel, HISTORY_PAGE, MAX_ATTACHMENTS, MAX_MESSAGE_LEN, MAX_REACTIONS,
-    Ready, ServerMsg, User, UserId, clean_voice_channel_name, normalize_channel_name, valid_reaction,
+    Channel, ChannelId, ChannelKind, ClientMsg, DirectChannel, EVERYONE_ROLE, HISTORY_PAGE, MAX_ATTACHMENTS,
+    MAX_MESSAGE_LEN, MAX_REACTIONS, MAX_ROLES, Message, Ready, Role, RoleId, ServerMsg, User, UserId,
+    clean_voice_channel_name, normalize_channel_name, perms, valid_reaction,
 };
+
+mod extra;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -111,6 +114,16 @@ async fn audience(
 enum Flow {
     Continue,
     Close,
+}
+
+/// Who hears about a voice channel's comings and goings: the two members of a
+/// direct-message call, or everyone for server voice channels.
+async fn voice_audience(db: &db::Db, channel: ChannelId) -> Result<Option<Arc<[UserId]>>, rusqlite::Error> {
+    db.call(move |c| match db::channel_kind(c, channel)? {
+        Some(ChannelKind::Direct) => Ok(Some(Arc::from(db::direct_members(c, channel)?))),
+        _ => Ok(None),
+    })
+    .await
 }
 
 impl Connection {
@@ -226,6 +239,12 @@ impl Connection {
         let db = self.state.db.clone();
         let result: Result<Flow, rusqlite::Error> = async {
             match msg {
+                msg @ (ClientMsg::CreateRole { .. }
+                | ClientMsg::UpdateRole(_)
+                | ClientMsg::DeleteRole { .. }
+                | ClientMsg::SetUserRoles { .. }
+                | ClientMsg::SetBlocked { .. }
+                | ClientMsg::ClearProfileImage { .. }) => return self.handle_extra(me, msg).await,
                 ClientMsg::Ping => {
                     self.send(&ServerMsg::Pong).await;
                 }
@@ -255,17 +274,55 @@ impl Connection {
                     if !matches!(kind, ChannelKind::Text | ChannelKind::Direct) {
                         return Ok(self.error("You can't send messages there").await);
                     }
+                    let has_files = !attachments.is_empty();
+                    let refusal = db
+                        .call(move |c| {
+                            Ok(match kind {
+                                ChannelKind::Direct => {
+                                    let other = db::direct_members(c, channel_id)?.into_iter().find(|u| *u != me);
+                                    match other {
+                                        Some(o) if db::blocked_between(c, me, o)? => {
+                                            Some("You can't message this person right now.")
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                                _ => {
+                                    let access = db::access(c, me)?;
+                                    if !access.can(perms::SEND_MESSAGES) {
+                                        Some("You don't have permission to send messages here.")
+                                    } else if has_files && !access.can(perms::ATTACH_FILES) {
+                                        Some("You don't have permission to send files here.")
+                                    } else {
+                                        None
+                                    }
+                                }
+                            })
+                        })
+                        .await?;
+                    if let Some(why) = refusal {
+                        return Ok(self.error(why).await);
+                    }
                     let sent = db
                         .call(move |c| {
                             let sent = db::insert_message(c, channel_id, me, &content, &attachments)?;
                             if let Ok(m) = &sent {
                                 db::mark_read(c, me, channel_id, m.id)?;
+                                let pinged = db::resolve_mentions(c, me, channel_id, &m.content)?;
+                                db::set_mentions(c, m.id, channel_id, &pinged)?;
+                                let embeds = kind == ChannelKind::Direct || db::access(c, me)?.can(perms::EMBED_LINKS);
+                                return Ok(Ok((Message { mentions: pinged, ..m.clone() }, embeds)));
                             }
-                            Ok(sent)
+                            Ok(sent.map(|m| (m, false)))
                         })
                         .await?;
                     match sent {
-                        Ok(msg) => self.broadcast_to(&ServerMsg::MessageCreated(msg), to),
+                        Ok((msg, embeds)) => {
+                            if embeds {
+                                crate::previews::update(self.state.clone(), msg.clone(), None);
+                            }
+                            self.broadcast_to(&ServerMsg::MessageCreated(msg), to)
+                        }
                         Err(db::SendError::BadAttachment) => {
                             return Ok(self
                                 .error("One of the files couldn't be attached. Try uploading it again.")
@@ -283,13 +340,16 @@ impl Connection {
                             // A message needs text unless it has files.
                             Some(m) if m.author_id == me && (!content.is_empty() || !m.attachments.is_empty()) => {
                                 db::edit_message(c, message_id, &content)?;
-                                db::get_message(c, message_id)
+                                let pinged = db::resolve_mentions(c, me, m.channel_id, &content)?;
+                                db::set_mentions(c, message_id, m.channel_id, &pinged)?;
+                                Ok(db::get_message(c, message_id)?.map(|new| (new, m.content)))
                             }
                             _ => Ok(None),
                         })
                         .await?;
                     match updated {
-                        Some(m) => {
+                        Some((m, before)) => {
+                            crate::previews::update(self.state.clone(), m.clone(), Some(&before));
                             let to = audience(&db, me, m.channel_id).await?.and_then(|(_, to)| to);
                             self.broadcast_to(&ServerMsg::MessageUpdated(m), to);
                         }
@@ -299,11 +359,11 @@ impl Connection {
                 ClientMsg::DeleteMessage { message_id } => {
                     let deleted = db
                         .call(move |c| {
-                            let is_owner = db::get_user(c, me)?.is_some_and(|u| u.is_owner);
+                            let moderator = db::access(c, me)?.can(perms::MANAGE_MESSAGES);
                             let Some(m) = db::get_message(c, message_id)? else { return Ok(None) };
-                            // The owner can tidy up server channels, but never read or touch DMs.
+                            // Moderators can tidy up server channels, but never read or touch DMs.
                             let kind = db::accessible_kind(c, me, m.channel_id)?;
-                            let allowed = m.author_id == me || (is_owner && kind == Some(ChannelKind::Text));
+                            let allowed = m.author_id == me || (moderator && kind == Some(ChannelKind::Text));
                             if !allowed || kind.is_none() {
                                 return Ok(None);
                             }
@@ -344,8 +404,11 @@ impl Connection {
                     let channel = db
                         .call(move |c| {
                             let Some(m) = db::get_message(c, message_id)? else { return Ok(None) };
-                            if db::accessible_kind(c, me, m.channel_id)?.is_none() {
-                                return Ok(None);
+                            match db::accessible_kind(c, me, m.channel_id)? {
+                                None => return Ok(None),
+                                Some(ChannelKind::Direct) => {}
+                                Some(_) if !db::access(c, me)?.can(perms::ADD_REACTIONS) => return Ok(None),
+                                Some(_) => {}
                             }
                             Ok(db::add_reaction(c, message_id, me, &e, MAX_REACTIONS)?.then_some(m.channel_id))
                         })
@@ -381,12 +444,18 @@ impl Connection {
                             if db::get_user(c, user_id)?.is_none() {
                                 return Ok(None);
                             }
+                            if db::blocked_between(c, me, user_id)? {
+                                return Ok(Some(None));
+                            }
                             let (id, created) = db::open_direct(c, me, user_id)?;
-                            Ok(Some((id, created, db::last_message_id(c, id)?)))
+                            Ok(Some(Some((id, created, db::last_message_id(c, id)?))))
                         })
                         .await?;
-                    let Some((id, created, last_message_id)) = opened else {
+                    let Some(opened) = opened else {
                         return Ok(self.error("That person doesn't exist").await);
+                    };
+                    let Some((id, created, last_message_id)) = opened else {
+                        return Ok(self.error("You can't message this person right now.").await);
                     };
                     self.send(&ServerMsg::DirectOpened(DirectChannel { id, user_id, last_message_id })).await;
                     if created {
@@ -453,9 +522,13 @@ impl Connection {
                     }
                 }
                 ClientMsg::UpdateProfile { profile } => {
-                    let profile = profile.sanitized();
+                    let mut profile = profile.sanitized();
                     let user = db
                         .call(move |c| {
+                            // Pictures are only changed by uploading (or clearing) them.
+                            let current = db::get_user(c, me)?.map(|u| u.profile).unwrap_or_default();
+                            profile.avatar = current.avatar;
+                            profile.banner = current.banner;
                             db::update_profile(c, me, &profile)?;
                             db::get_user(c, me)
                         })
@@ -476,7 +549,7 @@ impl Connection {
                     }
                     let channel = db
                         .call(move |c| {
-                            if !db::get_user(c, me)?.is_some_and(|u| u.is_owner) {
+                            if !db::access(c, me)?.can(perms::MANAGE_CHANNELS) {
                                 return Ok(None);
                             }
                             db::create_channel(c, &name, &topic, kind).map(Some)
@@ -484,14 +557,14 @@ impl Connection {
                         .await?;
                     match channel {
                         Some(ch) => self.broadcast(&ServerMsg::ChannelCreated(ch)),
-                        None => return Ok(self.error("Only the server owner can create channels").await),
+                        None => return Ok(self.error("You need the Manage channels permission").await),
                     }
                 }
                 ClientMsg::DeleteChannel { channel_id } => {
                     let outcome = db
                         .call(move |c| {
-                            if !db::get_user(c, me)?.is_some_and(|u| u.is_owner) {
-                                return Ok(Err("Only the server owner can delete channels"));
+                            if !db::access(c, me)?.can(perms::MANAGE_CHANNELS) {
+                                return Ok(Err("You need the Manage channels permission"));
                             }
                             let kind = db::channel_kind(c, channel_id)?;
                             if kind == Some(ChannelKind::Direct) {
@@ -515,9 +588,31 @@ impl Connection {
                     }
                 }
                 ClientMsg::JoinVoice { channel_id, encrypted } => {
-                    if db.call(move |c| db::channel_kind(c, channel_id)).await? != Some(ChannelKind::Voice) {
-                        return Ok(self.error("That isn't a voice channel").await);
+                    let refusal = db
+                        .call(move |c| {
+                            Ok(match db::accessible_kind(c, me, channel_id)? {
+                                Some(ChannelKind::Voice) if !db::access(c, me)?.can(perms::CONNECT_VOICE) => {
+                                    Some("You don't have permission to join voice channels")
+                                }
+                                Some(ChannelKind::Voice) => None,
+                                // A call in a direct message.
+                                Some(ChannelKind::Direct) => {
+                                    let other = db::direct_members(c, channel_id)?.into_iter().find(|u| *u != me);
+                                    match other {
+                                        Some(o) if db::blocked_between(c, me, o)? => {
+                                            Some("You can't call this person right now")
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                                _ => Some("That isn't a voice channel"),
+                            })
+                        })
+                        .await?;
+                    if let Some(why) = refusal {
+                        return Ok(self.error(why).await);
                     }
+                    let previous = self.state.voice.channel_of(me);
                     let joined = self.state.voice.join(
                         me,
                         channel_id,
@@ -536,12 +631,28 @@ impl Connection {
                         key: joined.key.as_ref().map(syncord_proto::voice::key_to_hex),
                     })
                     .await;
-                    self.broadcast(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(joined.state) });
+                    // Moving out of a private call: its members see you leave.
+                    if let Some(old) = previous.filter(|c| *c != channel_id) {
+                        let to = voice_audience(&db, old).await?;
+                        if to.is_some() {
+                            self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: me, state: None }, to);
+                        }
+                    }
+                    let to = voice_audience(&db, channel_id).await?;
+                    self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(joined.state) }, to);
                 }
-                ClientMsg::LeaveVoice => self.leave_voice(me),
+                ClientMsg::LeaveVoice => {
+                    let channel = self.state.voice.channel_of(me);
+                    let to = match channel {
+                        Some(c) => voice_audience(&db, c).await?,
+                        None => None,
+                    };
+                    self.leave_voice_to(me, to);
+                }
                 ClientMsg::SetVoiceState { muted, deafened } => {
                     if let Some(state) = self.state.voice.set_state(me, self.conn_id, muted, deafened) {
-                        self.broadcast(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(state) });
+                        let to = voice_audience(&db, state.channel_id).await?;
+                        self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: me, state: Some(state) }, to);
                     }
                 }
             }
@@ -655,10 +766,22 @@ impl Connection {
             .state
             .db
             .call(move |c| {
-                Ok((db::all_users(c)?, db::all_channels(c)?, db::directs_for(c, id)?, db::read_states(c, id)?))
+                Ok((
+                    db::all_users(c)?,
+                    db::all_channels(c)?,
+                    db::directs_for(c, id)?,
+                    db::read_states(c, id)?,
+                    (db::all_roles(c)?, db::blocked_by(c, id)?, db::mention_counts(c, id)?),
+                ))
             })
             .await;
-        let (users, channels, directs, read_states): (Vec<User>, _, _, _) = match snapshot {
+        let (users, channels, directs, read_states, (roles, blocked, mentions)): (
+            Vec<User>,
+            Vec<Channel>,
+            Vec<DirectChannel>,
+            _,
+            _,
+        ) = match snapshot {
             Ok(s) => s,
             Err(e) => {
                 warn!("snapshot failed: {e}");
@@ -678,6 +801,14 @@ impl Connection {
         }
         let online = self.state.online.lock().unwrap().keys().copied().collect();
 
+        // Calls in other people's direct messages are private.
+        let voice = self
+            .state
+            .voice
+            .states()
+            .into_iter()
+            .filter(|v| channels.iter().any(|c| c.id == v.channel_id) || directs.iter().any(|d| d.id == v.channel_id))
+            .collect();
         let ready = Ready {
             token: self.token.clone().unwrap_or_default(),
             me: id,
@@ -685,19 +816,38 @@ impl Connection {
             users,
             online,
             channels,
-            voice: self.state.voice.states(),
+            voice,
             directs,
             read_states,
             server_version: env!("CARGO_PKG_VERSION").to_string(),
             gif_provider: self.state.gifs.as_ref().map(|g| g.name().to_string()),
             max_upload_mb: self.state.config.max_upload_mb,
+            roles,
+            blocked,
+            mentions,
         };
         if self.send(&ServerMsg::Ready(ready)).await { Flow::Continue } else { Flow::Close }
     }
 
     fn leave_voice(&self, id: UserId) {
+        // Called when a connection closes; a private call's members find out from its channel.
+        let channel = self.state.voice.channel_of(id);
+        let (db, state, conn_id) = (self.state.db.clone(), self.state.clone(), self.conn_id);
+        if !state.voice.leave(id, conn_id) {
+            return;
+        }
+        tokio::spawn(async move {
+            let to = match channel {
+                Some(c) => voice_audience(&db, c).await.ok().flatten(),
+                None => None,
+            };
+            state.broadcast(&ServerMsg::VoiceStateUpdate { user_id: id, state: None }, to);
+        });
+    }
+
+    fn leave_voice_to(&self, id: UserId, to: Option<Arc<[UserId]>>) {
         if self.state.voice.leave(id, self.conn_id) {
-            self.broadcast(&ServerMsg::VoiceStateUpdate { user_id: id, state: None });
+            self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id: id, state: None }, to);
         }
     }
 

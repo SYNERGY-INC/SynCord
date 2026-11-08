@@ -7,6 +7,7 @@ pub mod gateway;
 pub mod gifs;
 pub mod http;
 pub mod media;
+pub mod previews;
 pub mod tls;
 pub mod update;
 pub mod voice;
@@ -45,6 +46,10 @@ pub struct Config {
     /// Only for testing: a different address for the GIF service.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub gif_api_base: String,
+    /// For tests only: let link previews reach this computer and the home network.
+    /// Never turn this on for a real server: anyone could use it to poke at your network.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unsafe_allow_private_link_previews: bool,
     /// Install new server versions automatically (Windows), or just log them (elsewhere).
     pub auto_update: bool,
     /// Where to look for new versions.
@@ -63,6 +68,7 @@ impl Default for Config {
             giphy_api_key: String::new(),
             klipy_api_key: String::new(),
             gif_api_base: String::new(),
+            unsafe_allow_private_link_previews: false,
             auto_update: true,
             update_url: syncord_update::MANIFEST_URL.into(),
         }
@@ -94,6 +100,8 @@ pub struct AppState {
     pub voice: Arc<voice::Voice>,
     /// GIF search, if a key is configured.
     pub gifs: Option<gifs::GifSearch>,
+    /// Link previews.
+    pub previews: embeds::Fetcher,
     /// UDP port voice is served on (0 until [`start_udp`] runs).
     pub udp_port: AtomicU16,
     pub next_conn_id: AtomicU64,
@@ -107,6 +115,11 @@ impl AppState {
         let gifs = gifs::GifSearch::from_config(&config);
         Arc::new(Self {
             gifs,
+            previews: if config.unsafe_allow_private_link_previews {
+                embeds::Fetcher::new_for_tests()
+            } else {
+                embeds::Fetcher::new()
+            },
             db,
             config,
             events,
@@ -115,6 +128,15 @@ impl AppState {
             udp_port: AtomicU16::new(0),
             next_conn_id: AtomicU64::new(1),
         })
+    }
+}
+
+impl AppState {
+    /// Send an event to everyone (`None`) or only to the listed people.
+    pub fn broadcast(&self, msg: &syncord_proto::ServerMsg, to: Option<Arc<[UserId]>>) {
+        let json: Arc<str> = serde_json::to_string(msg).expect("serialize").into();
+        // Err only means nobody is listening right now.
+        let _ = self.events.send(Event { json, to });
     }
 }
 
@@ -138,6 +160,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(http::upload).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route(&format!("{}/{{id}}", syncord_proto::FILES_PATH), get(http::download))
+        .route(
+            syncord_proto::PROFILE_IMAGE_PATH,
+            axum::routing::post(http::upload_profile_image)
+                .layer(axum::extract::DefaultBodyLimit::max(http::MAX_PROFILE_IMAGE as usize)),
+        )
+        .route(&format!("{}/{{id}}", syncord_proto::PROFILE_IMAGE_PATH), get(http::download_profile_image))
         .with_state(state)
 }
 

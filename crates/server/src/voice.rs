@@ -64,6 +64,11 @@ impl Voice {
         *self.udp.lock().unwrap() = Some(socket);
     }
 
+    /// The voice channel someone is in, if any.
+    pub fn channel_of(&self, user_id: UserId) -> Option<ChannelId> {
+        self.lock().get(&user_id).map(|m| m.state.channel_id)
+    }
+
     pub fn states(&self) -> Vec<VoiceState> {
         self.lock().values().map(|m| m.state.clone()).collect()
     }

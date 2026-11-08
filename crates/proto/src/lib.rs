@@ -10,6 +10,93 @@ pub mod voice;
 pub type UserId = i64;
 pub type ChannelId = i64;
 pub type MessageId = i64;
+pub type RoleId = i64;
+
+/// The role everyone has. It can't be deleted; its permissions are the defaults.
+pub const EVERYONE_ROLE: RoleId = 1;
+/// Most roles a server can have.
+pub const MAX_ROLES: usize = 50;
+
+/// What roles allow, as bits in [`Role::permissions`].
+pub mod perms {
+    /// Everything below, and roles are no limit (except on the owner).
+    pub const ADMINISTRATOR: u64 = 1 << 0;
+    /// Create and delete channels.
+    pub const MANAGE_CHANNELS: u64 = 1 << 1;
+    /// Create, edit and hand out roles lower than your own.
+    pub const MANAGE_ROLES: u64 = 1 << 2;
+    /// Delete other people's messages.
+    pub const MANAGE_MESSAGES: u64 = 1 << 3;
+    /// Ping everyone with @everyone.
+    pub const MENTION_EVERYONE: u64 = 1 << 4;
+    pub const SEND_MESSAGES: u64 = 1 << 5;
+    pub const ATTACH_FILES: u64 = 1 << 6;
+    pub const CONNECT_VOICE: u64 = 1 << 7;
+    /// Links in your messages get a preview.
+    pub const EMBED_LINKS: u64 = 1 << 8;
+    pub const ADD_REACTIONS: u64 = 1 << 9;
+
+    pub const ALL: u64 = (1 << 10) - 1;
+    /// What the everyone role starts with.
+    pub const DEFAULT: u64 = SEND_MESSAGES | ATTACH_FILES | CONNECT_VOICE | EMBED_LINKS | ADD_REACTIONS;
+
+    /// Every permission with a name and an explanation, in the order the settings show them.
+    pub const LIST: &[(u64, &str, &str)] = &[
+        (ADMINISTRATOR, "Administrator", "Every permission. Give this one carefully."),
+        (MANAGE_CHANNELS, "Manage channels", "Create and delete channels."),
+        (MANAGE_ROLES, "Manage roles", "Create and edit roles below their own, and give them to people."),
+        (MANAGE_MESSAGES, "Manage messages", "Delete other people's messages."),
+        (MENTION_EVERYONE, "Mention @everyone", "Ping the whole server with @everyone."),
+        (SEND_MESSAGES, "Send messages", "Write in text channels."),
+        (ATTACH_FILES, "Attach files", "Send pictures, videos and files."),
+        (EMBED_LINKS, "Embed links", "Links they post show a preview."),
+        (ADD_REACTIONS, "Add reactions", "React to messages with emoji."),
+        (CONNECT_VOICE, "Join voice", "Join voice channels."),
+    ];
+}
+
+/// A role: a name, an optional colour, and permissions. Higher `position` ranks higher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Role {
+    pub id: RoleId,
+    pub name: String,
+    /// Name colour (0xRRGGBB) for people whose highest coloured role this is.
+    #[serde(default)]
+    pub color: Option<u32>,
+    #[serde(default)]
+    pub permissions: u64,
+    #[serde(default)]
+    pub position: i64,
+    /// List people with this role separately in the member list.
+    #[serde(default)]
+    pub hoist: bool,
+}
+
+impl Role {
+    pub fn sanitized(mut self) -> Self {
+        self.name = self.name.trim().chars().filter(|c| !c.is_control()).take(32).collect();
+        if self.name.is_empty() {
+            self.name = "new role".into();
+        }
+        self.color = self.color.map(|c| c & 0xFFFFFF);
+        self.permissions &= perms::ALL;
+        self
+    }
+}
+
+/// How many unread messages in a channel mention you.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MentionCount {
+    pub channel_id: ChannelId,
+    pub count: u32,
+}
+
+/// HTTP endpoint for profile pictures and banners: `POST /api/profile-image?kind=avatar|banner`
+/// with the (already cropped) picture as the body. `GET /api/profile-image/<id>` downloads one.
+pub const PROFILE_IMAGE_PATH: &str = "/api/profile-image";
+/// Pixel sizes the app crops profile pictures and banners to (banners are 5:2, like Discord's).
+pub const AVATAR_SIZE: u32 = 256;
+pub const BANNER_SIZE: (u32, u32) = (680, 272);
 
 /// Maximum length of a chat message, in characters.
 pub const MAX_MESSAGE_LEN: usize = 4000;
@@ -35,6 +122,9 @@ pub struct User {
     pub username: String,
     pub profile: Profile,
     pub is_owner: bool,
+    /// Roles besides [`EVERYONE_ROLE`] (which everyone has).
+    #[serde(default)]
+    pub roles: Vec<RoleId>,
 }
 
 impl User {
@@ -61,6 +151,20 @@ pub struct Profile {
     pub avatar_ring: AvatarRing,
     /// Colour of the avatar ring (0xRRGGBB).
     pub ring_color: u32,
+    /// e.g. "she/her", shown on the profile card.
+    pub pronouns: String,
+    /// Uploaded profile picture, replacing the letter avatar.
+    pub avatar: Option<ProfileImage>,
+    /// Uploaded banner picture or GIF, replacing the banner colour.
+    pub banner: Option<ProfileImage>,
+}
+
+/// A picture uploaded for a profile (see [`PROFILE_IMAGE_PATH`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileImage {
+    pub id: String,
+    #[serde(default)]
+    pub animated: bool,
 }
 
 impl Default for Profile {
@@ -74,6 +178,9 @@ impl Default for Profile {
             avatar_glyph: String::new(),
             avatar_ring: AvatarRing::None,
             ring_color: 0xFFFFFF,
+            pronouns: String::new(),
+            avatar: None,
+            banner: None,
         }
     }
 }
@@ -87,6 +194,7 @@ impl Profile {
         clip(&mut self.display_name, 32);
         clip(&mut self.status_text, 64);
         clip(&mut self.avatar_glyph, 2);
+        clip(&mut self.pronouns, 40);
         self.bio = self.bio.chars().take(400).collect();
         self.accent_color &= 0xFFFFFF;
         self.banner_color &= 0xFFFFFF;
@@ -174,12 +282,46 @@ pub struct Attachment {
     /// True for animated GIFs.
     #[serde(default)]
     pub animated: bool,
+    /// Set for videos the app can play (the size above is the video's; the preview is its first frame).
+    #[serde(default)]
+    pub video: Option<VideoInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoInfo {
+    pub duration_ms: u64,
+    pub has_audio: bool,
 }
 
 impl Attachment {
     pub fn is_image(&self) -> bool {
-        self.width.is_some() && self.height.is_some()
+        self.width.is_some() && self.height.is_some() && self.video.is_none()
     }
+
+    pub fn is_video(&self) -> bool {
+        self.video.is_some()
+    }
+}
+
+/// A link preview under a message, made by the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Embed {
+    pub url: String,
+    #[serde(default)]
+    pub site_name: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Accent colour of the card's left edge (0xRRGGBB).
+    #[serde(default)]
+    pub color: Option<u32>,
+    /// A picture, downloadable like an attachment (`FILES_PATH/<id>`).
+    #[serde(default)]
+    pub image: Option<Attachment>,
+    /// The link itself is a picture or GIF: show it big, without a card.
+    #[serde(default)]
+    pub media: bool,
 }
 
 /// A GIF from the server's GIF search (GIPHY or KLIPY).
@@ -230,6 +372,13 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
     #[serde(default)]
     pub reactions: Vec<Reaction>,
+    /// Link previews (filled in a moment after the message is sent).
+    #[serde(default)]
+    pub embeds: Vec<Embed>,
+    /// Everyone this message pings: people @mentioned, people with a mentioned role, or
+    /// everyone for @everyone. Mentions are written `<@user id>`, `<@&role id>` and `@everyone`.
+    #[serde(default)]
+    pub mentions: Vec<UserId>,
 }
 
 /// Snapshot sent right after a successful login.
@@ -258,6 +407,14 @@ pub struct Ready {
     /// Largest upload the server accepts, in MB (0 for servers older than 0.4).
     #[serde(default)]
     pub max_upload_mb: u64,
+    #[serde(default)]
+    pub roles: Vec<Role>,
+    /// People you've blocked.
+    #[serde(default)]
+    pub blocked: Vec<UserId>,
+    /// Unread mentions of you, per channel.
+    #[serde(default)]
+    pub mentions: Vec<MentionCount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,6 +503,28 @@ pub enum ClientMsg {
         muted: bool,
         deafened: bool,
     },
+    /// Needs the manage roles permission (and only roles below your own).
+    CreateRole {
+        name: String,
+    },
+    UpdateRole(Role),
+    DeleteRole {
+        role_id: RoleId,
+    },
+    /// Replace someone's roles (only roles below your own are changed).
+    SetUserRoles {
+        user_id: UserId,
+        roles: Vec<RoleId>,
+    },
+    /// Blocked people can't message you, and their messages are hidden for you.
+    SetBlocked {
+        user_id: UserId,
+        blocked: bool,
+    },
+    /// Remove your uploaded profile picture or banner.
+    ClearProfileImage {
+        banner: bool,
+    },
     Ping,
 }
 
@@ -414,7 +593,40 @@ pub enum ServerMsg {
     Error {
         message: String,
     },
+    RoleUpdated(Role),
+    RoleDeleted {
+        role_id: RoleId,
+    },
+    /// Sent only to you when you block or unblock someone.
+    BlockUpdated {
+        user_id: UserId,
+        blocked: bool,
+    },
     Pong,
+}
+
+/// Mentions in message text, in the order written: users (`<@id>`), roles (`<@&id>`), and whether @everyone appears.
+pub fn parse_mentions(text: &str) -> (Vec<UserId>, Vec<RoleId>, bool) {
+    let (mut users, mut roles) = (Vec::new(), Vec::new());
+    let mut rest = text;
+    while let Some(i) = rest.find("<@") {
+        rest = &rest[i + 2..];
+        let (is_role, digits) = match rest.strip_prefix('&') {
+            Some(r) => (true, r),
+            None => (false, rest),
+        };
+        let end = digits.find('>').unwrap_or(0);
+        if end > 0
+            && let Ok(id) = digits[..end].parse::<i64>()
+        {
+            let list = if is_role { &mut roles } else { &mut users };
+            if !list.contains(&id) {
+                list.push(id);
+            }
+        }
+    }
+    let everyone = text.contains("@everyone") || text.contains("@here");
+    (users, roles, everyone)
 }
 
 /// Normalize a channel name the same way on both ends: lowercase, dashes for spaces.
@@ -482,6 +694,25 @@ mod tests {
         assert!(valid_reaction("👨‍👩‍👧"));
         assert!(!valid_reaction("a b"));
         assert!(!valid_reaction(""));
+    }
+
+    #[test]
+    fn mentions() {
+        let (u, r, e) = parse_mentions("hi <@12> and <@&3>, <@12> again <@x> <@> @everyone");
+        assert_eq!((u, r, e), (vec![12], vec![3], true));
+        assert_eq!(parse_mentions("no pings here"), (vec![], vec![], false));
+    }
+
+    #[test]
+    fn old_messages_and_profiles_still_read() {
+        let m: Message = serde_json::from_str(
+            r#"{"id":1,"channel_id":2,"author_id":3,"content":"x","created_at":0,"edited_at":null}"#,
+        )
+        .unwrap();
+        assert!(m.embeds.is_empty() && m.mentions.is_empty());
+        let p: Profile = serde_json::from_str(r#"{"display_name":"a"}"#).unwrap();
+        assert_eq!(p.pronouns, "");
+        assert!(p.avatar.is_none());
     }
 
     #[test]
