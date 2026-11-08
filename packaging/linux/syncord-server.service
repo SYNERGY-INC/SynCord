@@ -1,0 +1,20 @@
+[Unit]
+Description=SynCord chat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd creates an unprivileged user and /var/lib/syncord for us.
+DynamicUser=yes
+StateDirectory=syncord
+WorkingDirectory=/var/lib/syncord
+ExecStart=/usr/bin/syncord-server /var/lib/syncord/syncord-server.toml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

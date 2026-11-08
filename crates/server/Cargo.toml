@@ -20,3 +20,6 @@ rand = "0.9"
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"
+
+[build-dependencies]
+winresource = "0.1"

@@ -25,7 +25,27 @@ fn main() -> iced::Result {
         .title(App::title)
         .theme(App::iced_theme)
         .subscription(App::subscription)
-        .window_size((1280.0, 800.0))
+        .window(iced::window::Settings {
+            size: iced::Size::new(1280.0, 800.0),
+            min_size: Some(iced::Size::new(940.0, 560.0)),
+            icon: iced::window::icon::from_rgba(
+                include_bytes!("../../../packaging/icons/syncord-64.rgba").to_vec(),
+                64,
+                64,
+            )
+            .ok(),
+            // Lets Linux desktops match the window to syncord.desktop (and its icon).
+            #[cfg(target_os = "linux")]
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: "syncord".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .antialiasing(true)
+        .font(include_bytes!("../assets/fonts/Inter-Regular.otf").as_slice())
+        .font(include_bytes!("../assets/fonts/Inter-SemiBold.otf").as_slice())
+        .font(include_bytes!("../assets/fonts/Inter-Bold.otf").as_slice())
+        .default_font(style::INTER)
         .run()
 }

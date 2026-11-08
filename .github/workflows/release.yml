@@ -1,0 +1,169 @@
+name: Release
+
+# Builds installers for Windows, macOS and Linux, tests the Windows installers on
+# a real Windows machine, then publishes everything as a GitHub Release.
+#
+# Run it from the Actions tab ("Run workflow"), or push a tag like v0.1.0.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    # Built on the oldest supported Ubuntu so the binaries run on older distros too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo build --release --locked
+      - run: packaging/linux/build-packages.sh "${{ needs.version.outputs.version }}" target/release dist
+      - name: Smoke test the packages
+        run: |
+          sudo apt-get install -y ./dist/syncord_*_amd64.deb ./dist/syncord-server_*_amd64.deb
+          mkdir -p /tmp/srv && (syncord-server /tmp/srv/syncord-server.toml > /tmp/srv/log 2>&1 &)
+          sleep 3
+          curl -fsS http://127.0.0.1:7878/ | grep -q "SynCord server is running"
+          grep -q invite_code /tmp/srv/syncord-server.toml
+          test -f /usr/share/applications/syncord.desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/
+
+  windows-build:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            target/release/syncord.exe
+            target/release/syncord-server.exe
+
+  windows-installers:
+    needs: [version, windows-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y nsis
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: bin
+      - name: Build installers
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          mkdir -p dist
+          cd packaging/windows
+          makensis -WX -DVERSION="$v" -DBIN_DIR="$GITHUB_WORKSPACE/bin" -DOUT_FILE="$GITHUB_WORKSPACE/dist/SynCord-Setup-$v.exe" syncord.nsi
+          makensis -WX -DVERSION="$v" -DBIN_DIR="$GITHUB_WORKSPACE/bin" -DOUT_FILE="$GITHUB_WORKSPACE/dist/SynCord-Server-Setup-$v.exe" syncord-server.nsi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/
+
+  windows-test:
+    needs: [version, windows-installers]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: dist
+      - name: Install, check and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = '${{ needs.version.outputs.version }}'
+
+          # App installer (per-user)
+          Start-Process "dist\SynCord-Setup-$v.exe" -ArgumentList '/S' -Wait
+          $app = "$env:LOCALAPPDATA\Programs\SynCord"
+          if (-not (Test-Path "$app\SynCord.exe")) { throw 'SynCord.exe was not installed' }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\SynCord.lnk")) { throw 'No Start menu shortcut' }
+          Start-Process "$app\Uninstall.exe" -ArgumentList '/S', "_?=$app" -Wait
+          if (Test-Path "$app\SynCord.exe") { throw 'Uninstall left SynCord.exe behind' }
+
+          # Server installer (admin): startup task, firewall rule, running server
+          Start-Process "dist\SynCord-Server-Setup-$v.exe" -ArgumentList '/S' -Wait
+          $task = Get-ScheduledTask -TaskName 'SynCord Server'
+          if ($task.Settings.ExecutionTimeLimit -ne 'PT0S') { throw "Task time limit is $($task.Settings.ExecutionTimeLimit)" }
+          Get-NetFirewallRule -DisplayName 'SynCord Server' | Out-Null
+          $config = "$env:ProgramData\SynCord Server\syncord-server.toml"
+          if (-not (Select-String -Path $config -Pattern 'invite_code' -Quiet)) { throw 'No settings file' }
+          $reply = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7878/).Content
+          if ($reply -notmatch 'SynCord server is running') { throw "Unexpected reply: $reply" }
+          if (-not (Test-Path "$env:ProgramData\SynCord Server\syncord.db")) { throw 'Database not next to settings' }
+          Write-Host "Server is up: $reply"
+
+          $dir = "$env:ProgramFiles\SynCord Server"
+          Start-Process "$dir\Uninstall.exe" -ArgumentList '/S', "_?=$dir" -Wait
+          if (Get-ScheduledTask -TaskName 'SynCord Server' -ErrorAction SilentlyContinue) { throw 'Startup task not removed' }
+          if (Get-Process syncord-server -ErrorAction SilentlyContinue) { throw 'Server still running' }
+          Write-Host 'Windows installers OK'
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: packaging/macos/build-dmg.sh "${{ needs.version.outputs.version }}" dist
+      - name: Check the app bundle
+        run: |
+          hdiutil attach dist/SynCord-*-macOS.dmg -mountpoint /tmp/syncord-dmg -nobrowse
+          lipo -archs /tmp/syncord-dmg/SynCord.app/Contents/MacOS/SynCord | grep -q 'x86_64 arm64'
+          plutil -lint /tmp/syncord-dmg/SynCord.app/Contents/Info.plist
+          codesign --verify --deep --strict /tmp/syncord-dmg/SynCord.app
+          hdiutil detach /tmp/syncord-dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/
+
+  release:
+    needs: [version, linux, windows-installers, windows-test, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Write release notes
+        run: sed "s/@VERSION@/${{ needs.version.outputs.version }}/g" packaging/RELEASE_NOTES.md > notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: SynCord ${{ needs.version.outputs.version }}
+          body_path: notes.md
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: dist/*

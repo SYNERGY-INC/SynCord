@@ -1,0 +1,96 @@
+; SynCord app installer (per-user, no admin rights needed).
+;
+; Build:  makensis -DVERSION=0.1.0 -DBIN_DIR=<folder with syncord.exe> -DOUT_FILE=<setup.exe> syncord.nsi
+
+Unicode true
+!include "MUI2.nsh"
+
+!ifndef VERSION
+  !error "Pass -DVERSION=x.y.z"
+!endif
+!ifndef BIN_DIR
+  !error "Pass -DBIN_DIR=<folder containing syncord.exe>"
+!endif
+!ifndef OUT_FILE
+  !define OUT_FILE "SynCord-Setup-${VERSION}.exe"
+!endif
+
+!define APP "SynCord"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP}"
+
+Name "${APP}"
+OutFile "${OUT_FILE}"
+InstallDir "$LOCALAPPDATA\Programs\${APP}"
+InstallDirRegKey HKCU "Software\${APP}" "InstallDir"
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+BrandingText "${APP} ${VERSION}"
+
+VIProductVersion "${VERSION}.0"
+VIAddVersionKey "ProductName" "${APP}"
+VIAddVersionKey "FileDescription" "${APP} installer"
+VIAddVersionKey "ProductVersion" "${VERSION}"
+VIAddVersionKey "FileVersion" "${VERSION}"
+VIAddVersionKey "LegalCopyright" "MIT licensed"
+
+!define MUI_ICON "..\icons\syncord.ico"
+!define MUI_UNICON "..\icons\syncord.ico"
+!define MUI_ABORTWARNING
+!define MUI_WELCOMEPAGE_TEXT "This will install ${APP} ${VERSION}, a lightweight chat app with text and voice channels.$\r$\n$\r$\nYou'll need the server address and an invite code from whoever runs your server.$\r$\n$\r$\nClick Next to continue."
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP}.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Open ${APP} now"
+
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_COMPONENTS
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "English"
+
+Section "${APP}" SecApp
+  SectionIn RO
+  ; Close a running copy so its file can be replaced.
+  nsExec::Exec 'taskkill /IM "${APP}.exe" /F'
+  Sleep 300
+
+  SetOutPath "$INSTDIR"
+  File "/oname=${APP}.exe" "${BIN_DIR}\syncord.exe"
+  WriteUninstaller "$INSTDIR\Uninstall.exe"
+  CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\${APP}.exe"
+
+  WriteRegStr HKCU "Software\${APP}" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${APP}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${APP}.exe"
+  WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
+  WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
+  WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" 20000
+SectionEnd
+
+Section "Desktop shortcut" SecDesktop
+  CreateShortcut "$DESKTOP\${APP}.lnk" "$INSTDIR\${APP}.exe"
+SectionEnd
+
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The ${APP} app."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "Put a ${APP} icon on your desktop."
+!insertmacro MUI_FUNCTION_DESCRIPTION_END
+
+Section "Uninstall"
+  nsExec::Exec 'taskkill /IM "${APP}.exe" /F'
+  Sleep 300
+  Delete "$INSTDIR\${APP}.exe"
+  Delete "$INSTDIR\Uninstall.exe"
+  RMDir "$INSTDIR"
+  Delete "$SMPROGRAMS\${APP}.lnk"
+  Delete "$DESKTOP\${APP}.lnk"
+  DeleteRegKey HKCU "${UNINST_KEY}"
+  DeleteRegKey HKCU "Software\${APP}"
+  ; Your settings and themes in %APPDATA%\syncord are left alone.
+SectionEnd

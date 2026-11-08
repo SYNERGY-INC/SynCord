@@ -6,8 +6,10 @@ use syncord_proto::{AvatarRing, Profile};
 
 use crate::theme::{AppTheme, contrast_text, rgb, with_alpha};
 
-pub const BOLD: Font = Font { weight: font::Weight::Bold, ..Font::DEFAULT };
-pub const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..Font::DEFAULT };
+/// The bundled UI font (see `assets/fonts`), so text looks the same on every computer.
+pub const INTER: Font = Font::with_name("Inter");
+pub const BOLD: Font = Font { weight: font::Weight::Bold, ..INTER };
+pub const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..INTER };
 
 pub fn bg(c: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style { background: Some(c.into()), ..Default::default() }

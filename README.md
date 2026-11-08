@@ -11,9 +11,9 @@ feature is free.
 
 | | SynCord | Typical Electron chat app |
 |---|---|---|
-| Client memory (idle, one server) | **~22 MB** (low memory mode) | 300 MB to 1 GB+ |
-| Client memory (in a voice call) | **~27 MB** | higher still |
-| Client download | ~16 MB, single file | 100 MB+ installer |
+| Client memory (idle, one server) | **~29 MB** (low memory mode) | 300 MB to 1 GB+ |
+| Client memory (in a voice call) | **~31 MB** | higher still |
+| Client download | ~6 MB installer | 100 MB+ installer |
 | Server memory | under 50 MB | n/a (someone else's cloud) |
 | Themes, profile colours, avatar rings | free | paid |
 | Who owns your messages | you (one SQLite file) | them |
@@ -58,14 +58,30 @@ off in **Settings → Appearance** for GPU rendering.
 
 ## Getting the apps
 
-There are two programs:
+**Download the latest release:** <https://github.com/bxpo/SynCord/releases/latest>
 
-- `syncord-server` runs on the one PC that hosts everything (your friend's PC).
-- `syncord` is the app everyone opens to chat.
+Send that link to your friends. The release page explains which file each person needs:
 
-**Easiest:** open this repo's **Actions** tab on GitHub, click the latest successful
-**Build** run, and download `syncord-windows`, `syncord-macos` or `syncord-linux` from the
-**Artifacts** section. Each zip contains both programs.
+| | Everyone (to chat) | The host PC (to run the server) |
+|---|---|---|
+| **Windows** | `SynCord-Setup-x.y.z.exe` | `SynCord-Server-Setup-x.y.z.exe` |
+| **Mac** | `SynCord-x.y.z-macOS.dmg` (Intel and Apple Silicon) | `SynCord-Server-x.y.z-macOS.zip` |
+| **Ubuntu / Debian** | `syncord_x.y.z_amd64.deb` | `syncord-server_x.y.z_amd64.deb` |
+| **Other Linux** | `syncord-x.y.z-linux-x86_64.tar.gz` | `syncord-server-x.y.z-linux-x86_64.tar.gz` |
+
+- The **Windows server installer** does the whole hosting setup: it starts the server with Windows,
+  opens the firewall and shows the invite code. On Ubuntu/Debian the server `.deb` sets up a
+  background service the same way.
+- The apps aren't signed with paid certificates. **Windows** may say *"Windows protected your PC"*
+  (click **More info → Run anyway**), and **macOS** needs you to allow the app the first time
+  (macOS 15+: **System Settings → Privacy & Security → Open Anyway**; older: right-click → **Open**).
+- **Phones and tablets** aren't supported yet. SynCord is a desktop app for now.
+
+### Making a new release
+
+Change `version` in `Cargo.toml`, push, then on GitHub open **Actions → Release → Run workflow**.
+It builds every installer, tests the Windows ones on a real Windows machine, and publishes a
+release named after the version. The packaging scripts are in [`packaging/`](packaging/).
 
 **From source:** install Rust from <https://rustup.rs> and [CMake](https://cmake.org) (used to
 build the Opus audio codec). On Linux, also install the ALSA headers (`libasound2-dev` on

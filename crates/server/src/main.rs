@@ -9,9 +9,14 @@ use tracing::{info, warn};
 
 const CONFIG_FILE: &str = "syncord-server.toml";
 
+/// Load the config named on the command line (or `syncord-server.toml` in the
+/// current folder), creating it with defaults if it doesn't exist yet.
+///
+/// A relative `database` path is taken relative to the config file's folder, so
+/// the server finds its data no matter which folder it was started from.
 fn load_config() -> Config {
     let path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| CONFIG_FILE.into());
-    match std::fs::read_to_string(&path) {
+    let mut cfg = match std::fs::read_to_string(&path) {
         Ok(text) => match toml::from_str(&text) {
             Ok(cfg) => cfg,
             Err(e) => {
@@ -25,13 +30,22 @@ fn load_config() -> Config {
                 "# SynCord server settings. Restart the server after editing.\n{}",
                 toml::to_string_pretty(&cfg).unwrap()
             );
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                let _ = std::fs::create_dir_all(dir);
+            }
             match std::fs::write(&path, text) {
                 Ok(()) => info!("wrote default config to {}", path.display()),
                 Err(e) => warn!("could not write {}: {e}", path.display()),
             }
             cfg
         }
+    };
+    if cfg.database.is_relative()
+        && let Some(dir) = path.parent()
+    {
+        cfg.database = dir.join(&cfg.database);
     }
+    cfg
 }
 
 #[tokio::main]
