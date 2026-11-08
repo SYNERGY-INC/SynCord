@@ -238,6 +238,10 @@ pub enum Message {
     WindowFocused(bool),
     /// Open a link from a message in the browser.
     OpenLink(String),
+    /// "Trust this site" in the leaving-SynCord dialog.
+    TrustLinkSite(bool),
+    VisitLink,
+    UntrustSite(String),
     /// Show a folded-away message from someone blocked or ignored.
     RevealMessage(MessageId),
     /// Call someone in your direct messages.
@@ -460,6 +464,11 @@ pub enum Overlay {
     StatusPicker,
     /// Choosing what to share.
     ScreenPicker(crate::live::ScreenList),
+    /// "You're leaving SynCord" before opening a link; `trust`: don't ask again for its site.
+    ConfirmLink {
+        url: String,
+        trust: bool,
+    },
 }
 
 #[derive(Default)]
@@ -1647,7 +1656,32 @@ impl App {
 
             Message::OpenLink(url) => {
                 // Only web links; anything else in a message could start a program.
-                if url.starts_with("https://") || url.starts_with("http://") {
+                let Some(site) = link_site(&url) else { return Task::none() };
+                if self.settings.trusted_sites.contains(&site) {
+                    crate::updater::open_in_browser(&url);
+                } else {
+                    self.close_overlay();
+                    self.overlay = Some(Overlay::ConfirmLink { url, trust: false });
+                }
+            }
+            Message::TrustLinkSite(on) => {
+                if let Some(Overlay::ConfirmLink { trust, .. }) = &mut self.overlay {
+                    *trust = on;
+                }
+            }
+            Message::UntrustSite(site) => {
+                self.settings.trusted_sites.retain(|s| *s != site);
+                self.settings.save();
+            }
+            Message::VisitLink => {
+                if let Some(Overlay::ConfirmLink { url, trust }) = self.overlay.clone() {
+                    if let Some(site) = link_site(&url).filter(|_| trust)
+                        && !self.settings.trusted_sites.contains(&site)
+                    {
+                        self.settings.trusted_sites.push(site);
+                        self.settings.save();
+                    }
+                    self.close_overlay();
                     crate::updater::open_in_browser(&url);
                 }
             }
@@ -2460,6 +2494,22 @@ impl App {
     }
 }
 
+/// The website a link goes to ("example.com" for https://www.example.com:8080/x),
+/// or None if it isn't a web link.
+pub(crate) fn link_site(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    // Anything before an @ is a user name, not where the link goes.
+    let host = authority.rsplit('@').next()?;
+    let host = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next()?,
+        None => host.split(':').next()?,
+    };
+    let host = host.trim_end_matches('.').to_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
+    (!host.is_empty()).then_some(host)
+}
+
 /// Old servers reject requests they don't know with a technical message
 /// ("unknown variant `OpenDirect`"); explain what's actually going on.
 fn friendly_error(message: String) -> String {
@@ -2475,6 +2525,19 @@ fn friendly_error(message: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::friendly_error;
+
+
+    #[test]
+    fn link_sites() {
+        use super::link_site;
+        assert_eq!(link_site("https://www.Example.com:8080/a?b#c").as_deref(), Some("example.com"));
+        assert_eq!(link_site("http://youtube.com").as_deref(), Some("youtube.com"));
+        // The part before @ is just a user name: this goes to evil.example.
+        assert_eq!(link_site("https://google.com@evil.example/login").as_deref(), Some("evil.example"));
+        assert_eq!(link_site("https://[::1]:80/").as_deref(), Some("::1"));
+        assert_eq!(link_site("file:///etc/passwd"), None);
+        assert_eq!(link_site("javascript:alert(1)"), None);
+    }
 
     #[test]
     fn explains_outdated_servers() {

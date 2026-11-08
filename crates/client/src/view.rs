@@ -74,6 +74,7 @@ impl App {
                     Overlay::Shortcuts => self.shortcuts_dialog(),
                     Overlay::StatusPicker => self.status_picker(session),
                     Overlay::ScreenPicker(list) => self.screen_picker(list),
+                    Overlay::ConfirmLink { url, trust } => self.confirm_link_dialog(url, *trust),
                 };
                 let dim = if matches!(overlay, Overlay::Image(_)) { 0.88 } else { 0.6 };
                 // The backdrop fades in while the dialog pops up.
@@ -1359,6 +1360,48 @@ impl App {
         container(body).width(440).padding(24).style(card(t.chat.0, t.radius * 1.5)).into()
     }
 
+    /// "You're leaving SynCord": shows exactly where a link goes before opening it.
+    fn confirm_link_dialog<'a>(&'a self, url: &'a str, trust: bool) -> Element<'a, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let site = crate::app::link_site(url).unwrap_or_default();
+        let shown = crate::view::truncate(url, 300);
+        let body = column![
+            text("Leaving SynCord").size(fs * 1.3).font(bold()).color(t.header.0),
+            text("This link goes to a website outside SynCord. Are you sure you want to open it?")
+                .size(fs * 0.95)
+                .color(t.text.0),
+            container(
+                column![
+                    text(site.clone()).size(fs * 1.05).font(bold()).color(t.header.0),
+                    text(shown).size(fs * 0.85).color(t.muted.0),
+                ]
+                .spacing(4),
+            )
+            .padding(12)
+            .width(Length::Fill)
+            .style(card(t.rail.0, t.radius * 0.6)),
+            iced::widget::checkbox(trust)
+                .label(format!("Trust {site} links from now on"))
+                .on_toggle(Message::TrustLinkSite)
+                .text_size(fs * 0.9),
+            row![
+                space::horizontal(),
+                button(text("Go Back").size(fs))
+                    .padding([8, 16])
+                    .on_press(Message::CloseOverlay)
+                    .style(style::link_button(t.text.0, t.header.0)),
+                button(text("Visit Site").size(fs))
+                    .padding([8, 16])
+                    .on_press(Message::VisitLink)
+                    .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+            ]
+            .spacing(8),
+        ]
+        .spacing(14);
+        container(body).width(460).padding(24).style(card(t.chat.0, t.radius * 1.5)).into()
+    }
+
     fn confirm_delete_dialog<'a>(&'a self, s: &'a Session, id: i64) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
@@ -1945,12 +1988,40 @@ impl App {
             } else {
                 text("On Linux, closing the window quits SynCord.").size(fs * 0.85).color(t.muted.0).into()
             })
+            .push(self.trusted_sites_section())
             .push(self.updates_section());
         col.into()
     }
 }
 
 impl App {
+    /// Sites whose links open without asking (ticked in the leaving-SynCord dialog).
+    fn trusted_sites_section(&self) -> Element<'_, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let mut col = column![label(t, "Trusted websites", fs)].spacing(6);
+        if self.settings.trusted_sites.is_empty() {
+            col = col.push(
+                text("Links ask before opening. Tick \"Trust\" in that box to skip it for a site.")
+                    .size(fs * 0.85)
+                    .color(t.muted.0),
+            );
+        }
+        for site in &self.settings.trusted_sites {
+            col = col.push(
+                row![
+                    text(site.clone()).size(fs * 0.9).color(t.text.0).width(Length::Fill),
+                    button(text("Remove").size(fs * 0.8))
+                        .padding([3, 10])
+                        .on_press(Message::UntrustSite(site.clone()))
+                        .style(style::solid_button(t.floating.0, t.radius * 0.6)),
+                ]
+                .align_y(Alignment::Center),
+            );
+        }
+        col.into()
+    }
+
     fn font_settings(&self) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();

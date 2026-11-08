@@ -76,6 +76,8 @@ pub struct Settings {
     pub video_muted: bool,
     /// Camera for video calls, by name (None: the first one).
     pub camera: Option<String>,
+    /// Websites whose links open without asking first.
+    pub trusted_sites: Vec<String>,
 }
 
 /// A GIF starred for quick re-sending (remembered per server).
@@ -122,6 +124,7 @@ impl Default for Settings {
             custom_activity: None,
             detect_games: true,
             camera: None,
+            trusted_sites: Vec::new(),
             video_muted: false,
         }
     }
