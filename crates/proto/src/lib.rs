@@ -182,6 +182,22 @@ impl Attachment {
     }
 }
 
+/// A GIF from the server's GIF search (GIPHY or KLIPY).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GifResult {
+    pub id: String,
+    pub title: String,
+    /// Small animated preview to show in the picker.
+    pub preview_url: String,
+    /// A still frame of the preview (cheaper to show many of).
+    #[serde(default)]
+    pub still_url: String,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+}
+
 /// One emoji reaction on a message and who added it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reaction {
@@ -236,6 +252,12 @@ pub struct Ready {
     /// The server program's version (empty for servers older than 0.3).
     #[serde(default)]
     pub server_version: String,
+    /// Name of the GIF search service ("GIPHY" or "KLIPY"), if the server has one set up.
+    #[serde(default)]
+    pub gif_provider: Option<String>,
+    /// Largest upload the server accepts, in MB (0 for servers older than 0.4).
+    #[serde(default)]
+    pub max_upload_mb: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +321,15 @@ pub enum ClientMsg {
     OpenDirect {
         user_id: UserId,
     },
+    /// Search for GIFs (an empty query means trending GIFs).
+    SearchGifs {
+        query: String,
+    },
+    /// Post a GIF from the search results; the server downloads and attaches it.
+    SendGif {
+        channel_id: ChannelId,
+        gif_id: String,
+    },
     /// Remember that you've read a channel up to this message.
     MarkRead {
         channel_id: ChannelId,
@@ -346,6 +377,10 @@ pub enum ServerMsg {
     ChannelCreated(Channel),
     ChannelDeleted {
         channel_id: ChannelId,
+    },
+    GifResults {
+        query: String,
+        results: Vec<GifResult>,
     },
     /// A direct-message conversation was opened (sent only to its two members).
     DirectOpened(DirectChannel),

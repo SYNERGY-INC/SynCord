@@ -40,11 +40,16 @@ off in **Settings → Appearance** for GPU rendering.
 ### Pictures, GIFs and files
 
 - Send pictures and files with the **+** button, by **dragging** them into the window, or by
-  **pasting** a picture (Ctrl+V / Cmd+V)
-- Pictures show in the chat; click one to see it full size or save it
+  **pasting** (Ctrl+V / Cmd+V): take a screenshot (Win+Shift+S, Print Screen, Cmd+Ctrl+Shift+4)
+  and paste it, or copy files in File Explorer / Finder and paste them
+- Files up to **1 GB**, sent and saved in pieces so big ones don't fill your memory, with
+  progress bars both ways
+- Pictures show in the chat; click one to see it full size, save it, or **copy** it (Ctrl+C)
+- **GIF search** in the GIF tab of the emoji picker, powered by GIPHY or KLIPY (the server owner
+  adds a free key, see [GIF search](#gif-search)); click one to send it
 - **GIFs** play right in the chat (or only when you point at them, if you prefer), and you can
   **star** GIFs to keep them in your favourites for quick re-sending
-- Other files (documents, zips, ...) show as a card with a download button
+- Other files (documents, zips, videos, ...) show as a card with a download button
 - The server makes small previews, so the app only ever downloads and keeps small pictures in
   memory (with a cap, so a channel full of GIFs can't eat your RAM)
 
@@ -160,6 +165,8 @@ Put `syncord-server` (`syncord-server.exe` on Windows) in its own folder, for ex
 - `syncord.db`: the database that holds all accounts, channels and messages
 - `uploads/`: pictures and files people send
 
+(With the Windows installer they're in `C:\ProgramData\SynCord Server` instead.)
+
 The console prints the **invite code** your friends need to sign up. Open
 `syncord-server.toml` to change it or to rename the server:
 
@@ -169,12 +176,31 @@ community_name = "The Hangout" # shown at the top of the channel list
 invite_code = "pick-something" # needed to create an account; "" lets anyone sign up
 database = "syncord.db"
 uploads = "uploads"            # folder for pictures and files people send
-max_upload_mb = 25             # biggest file people can send
+max_upload_mb = 1024           # biggest file people can send (1 GB)
 auto_update = true             # install new server versions by itself (Windows)
+giphy_api_key = ""             # for GIF search, see below
+klipy_api_key = ""
 ```
 
 Restart the server after editing. To check it's running, open <http://localhost:7878> on that
 PC. It should say *SynCord server is running.*
+
+Big files take up disk space on the server PC; lower `max_upload_mb` if that's a worry.
+
+#### GIF search
+
+GIF search goes through the server, so only the server owner needs a key, and it's free. Pick
+one service:
+
+- **GIPHY**: sign in at <https://developers.giphy.com/dashboard/>, click *Create an App*, choose
+  *API*, give it any name, and copy the API key. New keys allow a limited number of searches an
+  hour, which is plenty for a group of friends.
+- **KLIPY**: sign up at <https://partner.klipy.com/>, create an app, and copy its API key.
+
+Paste the key into the settings file, for example `giphy_api_key = "abc123..."`, save, and
+restart the server (on Windows: Start menu → *SynCord Server* → *Restart server*, or restart the
+PC). The GIF tab in everyone's emoji picker now has a search box. If both keys are set, GIPHY is
+used.
 
 ### 2. Let your friends reach it
 
@@ -342,7 +368,7 @@ Themes are plain files, so you can send them to friends.
 
 1. Echo cancellation and push-to-talk (needs a global hotkey that works while the app is in
    the background)
-2. GIF search (needs a free Tenor or Giphy API key on the server), link previews
+2. Link previews
 3. Markdown formatting, replies, @mentions and desktop notifications
 4. Custom server emoji, group DMs, animated avatars, uploadable avatar and banner images
 5. Screen sharing

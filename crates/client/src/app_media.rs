@@ -1,25 +1,27 @@
 //! Update logic for pictures and files: uploads, previews, the viewer,
 //! saving, GIF playback and favourite GIFs.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use iced::Task;
 use syncord_proto::{Attachment, MAX_ATTACHMENTS};
 
-use crate::app::{App, Message, Overlay, PendingUpload, UploadState};
-use crate::media::{self, Picture};
+use crate::app::{App, Clip, Download, Message, Overlay, PendingUpload, UploadState};
+use crate::media::{self, Picture, Source};
 use crate::net;
 use crate::settings::FavoriteGif;
 
-/// Where an upload's bytes come from.
-enum Source {
-    File(std::path::PathBuf),
-    Bytes(Vec<u8>),
-}
-
 /// Largest file the app will try to upload (the server may allow less).
-const MAX_FILE: u64 = 100 * 1024 * 1024;
+const MAX_FILE_MB: u64 = 1024;
+const OLD_SERVER_LIMIT_MB: u64 = 25;
+
+/// "1 GB" or "250 MB".
+fn limit_text(mb: u64) -> String {
+    if mb >= 1024 && mb.is_multiple_of(1024) { format!("{} GB", mb / 1024) } else { format!("{mb} MB") }
+}
 
 impl App {
     /// HTTP client, server base URL and login token, if logged in.
@@ -77,7 +79,10 @@ impl App {
             return a.animated;
         }
         if matches!(self.emoji_picker.as_ref().map(|p| p.tab), Some(crate::app::PickerTab::Gifs)) {
-            return true;
+            // Favourites play, and so does the search result under the mouse.
+            let mut keys: Vec<String> = self.settings.favorites_here().map(|f| f.attachment.id.clone()).collect();
+            keys.extend(self.gifs.hovered.as_deref().map(|id| media::gif_key(id, true)));
+            return self.images.has_animation(&keys);
         }
         let keys = self.visible_picture_keys();
         if self.settings.autoplay_gifs {
@@ -111,31 +116,67 @@ impl App {
         if let Some(Overlay::Image(a)) = self.overlay.take() {
             self.images.remove(&media::key(&a.id, true));
         }
+        self.copying = None;
     }
 
-    fn start_upload(&mut self, filename: String, source: Source) -> Task<Message> {
+    /// The upload limit: the server's, and never more than the app's.
+    fn upload_limit_mb(&self) -> u64 {
+        match self.session.as_ref().map(|s| s.max_upload_mb) {
+            Some(mb) if mb > 0 => mb.min(MAX_FILE_MB),
+            // Servers older than 0.4 don't say; they allowed 25 MB unless changed.
+            _ => OLD_SERVER_LIMIT_MB,
+        }
+    }
+
+    fn start_upload(&mut self, filename: String, source: Source, size: u64) -> Task<Message> {
         let Some(channel) = self.session.as_ref().and_then(|s| s.current) else { return Task::none() };
         if self.pending.len() >= MAX_ATTACHMENTS {
             self.notice = Some(format!("You can attach up to {MAX_ATTACHMENTS} files to one message."));
             return Task::none();
         }
+        let limit = self.upload_limit_mb();
+        if size > limit * 1024 * 1024 {
+            let mut notice = format!("{filename} is too big: files can be up to {} here.", limit_text(limit));
+            if self.session.as_ref().is_some_and(|s| s.max_upload_mb == 0) {
+                notice.push_str(" Updating the server raises this to 1 GB.");
+            }
+            self.notice = Some(notice);
+            return Task::none();
+        }
+        if size == 0 {
+            self.notice = Some(format!("{filename} is empty."));
+            return Task::none();
+        }
         let id = self.next_upload_id;
         self.next_upload_id += 1;
-        self.pending.push(PendingUpload { id, filename: filename.clone(), state: UploadState::Uploading });
+        let sent = Arc::new(AtomicU64::new(0));
+        self.pending.push(PendingUpload {
+            id,
+            filename: filename.clone(),
+            state: UploadState::Uploading,
+            sent: sent.clone(),
+            size,
+        });
         let Some((http, base, token)) = self.http_ctx() else { return Task::none() };
-        Task::perform(
-            async move {
-                let bytes = match source {
-                    Source::Bytes(b) => b,
-                    // Read in the background so big files don't freeze the window.
-                    Source::File(path) => {
-                        tokio::fs::read(&path).await.map_err(|e| format!("Couldn't read {filename}: {e}"))?
-                    }
-                };
-                media::upload(http, base, token, channel, filename, bytes).await
-            },
-            move |r| Message::Uploaded(id, r),
-        )
+        Task::perform(media::upload(http, base, token, channel, filename, source, sent), move |r| {
+            Message::Uploaded(id, r)
+        })
+    }
+
+    fn attach_paths(&mut self, paths: Vec<PathBuf>) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for path in paths {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+            if path.is_dir() {
+                self.notice = Some(format!("{name} is a folder. Zip it first to send it."));
+                continue;
+            }
+            match std::fs::metadata(&path) {
+                Ok(m) => tasks.push(self.start_upload(name, Source::File(path), m.len())),
+                Err(e) => self.notice = Some(format!("Couldn't read {name}: {e}")),
+            }
+        }
+        Task::batch(tasks)
     }
 
     fn can_attach_here(&self) -> bool {
@@ -160,59 +201,64 @@ impl App {
                 if !self.can_attach_here() {
                     return Task::none();
                 }
-                let mut tasks = Vec::new();
-                for path in paths {
-                    let name =
-                        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-                    if path.is_dir() {
-                        self.notice = Some(format!("{name} is a folder. Zip it first to send it."));
-                        continue;
-                    }
-                    if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_FILE) {
-                        self.notice = Some(format!("{name} is bigger than 100 MB."));
-                        continue;
-                    }
-                    tasks.push(self.start_upload(name, Source::File(path)));
-                }
-                return Task::batch(tasks);
+                return self.attach_paths(paths);
             }
             Message::PasteShortcut => {
                 if !self.can_attach_here() {
                     return Task::none();
                 }
                 return Task::perform(
-                    async {
-                        tokio::task::spawn_blocking(|| {
-                            let img = arboard::Clipboard::new().ok()?.get_image().ok()?;
-                            let rgba = image::RgbaImage::from_raw(
-                                img.width as u32,
-                                img.height as u32,
-                                img.bytes.into_owned(),
-                            )?;
-                            let mut png = std::io::Cursor::new(Vec::new());
-                            rgba.write_to(&mut png, image::ImageFormat::Png).ok()?;
-                            Some(png.into_inner())
-                        })
-                        .await
-                        .ok()
-                        .flatten()
-                    },
+                    async { tokio::task::spawn_blocking(read_clipboard).await.ok().flatten() },
                     Message::Pasted,
                 );
             }
-            Message::Pasted(Some(png)) => {
-                return self.start_upload("pasted-image.png".into(), Source::Bytes(png));
+            Message::Pasted(Some(Clip::Image(png))) => {
+                let name = format!("screenshot-{}.png", chrono::Local::now().format("%Y-%m-%d-%H%M%S"));
+                let size = png.len() as u64;
+                return self.start_upload(name, Source::Bytes(png), size);
+            }
+            Message::Pasted(Some(Clip::Files(paths))) => {
+                // Some file managers also offer the files' names as text, which the message box
+                // has already pasted; take that back out.
+                for path in &paths {
+                    let full = path.display().to_string();
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    for needle in [format!("file://{full}"), full, name] {
+                        if !needle.is_empty() && self.composer.contains(&needle) {
+                            self.composer = self.composer.replacen(&needle, "", 1);
+                            break;
+                        }
+                    }
+                }
+                self.composer = self.composer.trim_end().to_string();
+                return self.attach_paths(paths);
             }
             Message::Pasted(None) => {} // plain text paste: the text box handles it
             Message::Uploaded(id, result) => {
                 if self.pending_channel != self.session.as_ref().and_then(|s| s.current) {
                     return Task::none();
                 }
+                let mut preview = None;
                 if let Some(p) = self.pending.iter_mut().find(|p| p.id == id) {
                     p.state = match result {
-                        Ok(a) => UploadState::Ready(a),
+                        Ok(a) => {
+                            if a.is_image() {
+                                preview = Some(a.id.clone());
+                            }
+                            UploadState::Ready(a)
+                        }
                         Err(e) => UploadState::Failed(e),
                     };
+                }
+                // Show a small preview of pictures waiting to be sent.
+                if let Some(key) = preview
+                    && self.images.start(&key)
+                    && let Some((http, base, token)) = self.http_ctx()
+                {
+                    let k = key.clone();
+                    return Task::perform(media::load(http, base, token, key, true), move |r| {
+                        Message::PictureLoaded(k.clone(), r)
+                    });
                 }
             }
             Message::RemovePending(id) => self.pending.retain(|p| p.id != id),
@@ -244,23 +290,75 @@ impl App {
                 }
             }
             Message::SaveAttachment(a) => {
-                let Some((http, base, token)) = self.http_ctx() else { return Task::none() };
                 return Task::perform(
                     async move {
-                        let Some(file) = rfd::AsyncFileDialog::new().set_file_name(&a.filename).save_file().await
-                        else {
-                            return Ok(None);
-                        };
-                        let bytes = media::download(http, base, token, a.id, false).await?;
-                        tokio::fs::write(file.path(), bytes).await.map_err(|e| format!("Couldn't save: {e}"))?;
-                        Ok(Some(file.path().display().to_string()))
+                        let file = rfd::AsyncFileDialog::new().set_file_name(&a.filename).save_file().await;
+                        (a, file.map(|f| f.path().to_path_buf()))
                     },
-                    Message::Saved,
+                    |(a, path)| Message::SaveTo(a, path),
                 );
             }
-            Message::Saved(Ok(Some(path))) => self.notice = Some(format!("Saved to {path}")),
-            Message::Saved(Ok(None)) => {}
-            Message::Saved(Err(e)) => self.notice = Some(e),
+            Message::SaveTo(_, None) => {}
+            Message::SaveTo(a, Some(path)) => {
+                let Some((http, base, token)) = self.http_ctx() else { return Task::none() };
+                let id = self.next_download_id;
+                self.next_download_id += 1;
+                let done = Arc::new(AtomicU64::new(0));
+                self.downloads.push(Download { id, filename: a.filename.clone(), done: done.clone(), size: a.size });
+                return Task::perform(media::save(http, base, token, a.id, path, done), move |r| Message::Saved(id, r));
+            }
+            Message::Saved(id, result) => {
+                self.downloads.retain(|d| d.id != id);
+                self.notice = Some(match result {
+                    Ok(path) => format!("Saved to {path}"),
+                    Err(e) => e,
+                });
+            }
+            Message::CopyShortcut => {
+                // Ctrl+C in the picture viewer copies the picture; elsewhere text boxes handle it.
+                if let Some(Overlay::Image(a)) = &self.overlay {
+                    return self.update_media(Message::CopyImage(a.clone()));
+                }
+            }
+            Message::CopyImage(a) => {
+                let Some((http, base, token)) = self.http_ctx() else { return Task::none() };
+                self.copying = Some((a.id.clone(), false));
+                let id = a.id.clone();
+                return Task::perform(
+                    async move {
+                        let bytes = media::download(http, base, token, a.id, false).await?;
+                        let (w, h, rgba) = tokio::task::spawn_blocking(move || media::decode_for_clipboard(&bytes))
+                            .await
+                            .map_err(|e| e.to_string())??;
+                        Ok((w, h, Arc::new(rgba)))
+                    },
+                    move |r| Message::CopyReady(id.clone(), r),
+                );
+            }
+            Message::CopyReady(id, Ok((width, height, rgba))) => {
+                if self.clipboard.is_none() {
+                    self.clipboard = arboard::Clipboard::new().ok();
+                }
+                let bytes = Arc::try_unwrap(rgba).unwrap_or_else(|a| (*a).clone());
+                let image = arboard::ImageData { width, height, bytes: bytes.into() };
+                match self.clipboard.as_mut().map(|c| c.set_image(image)) {
+                    Some(Ok(())) => {
+                        // The viewer's button says "Copied"; without the viewer, say so in the notice bar.
+                        if self.copying.as_ref().is_some_and(|(c, _)| *c == id) {
+                            self.copying = Some((id, true));
+                        } else {
+                            self.notice = Some("Picture copied. Paste it anywhere with Ctrl+V.".into());
+                        }
+                    }
+                    Some(Err(e)) => self.notice = Some(format!("Couldn't copy the picture: {e}")),
+                    None => self.notice = Some("Couldn't open the clipboard.".into()),
+                }
+            }
+            Message::CopyReady(_, Err(e)) => {
+                self.copying = None;
+                self.notice = Some(format!("Couldn't copy the picture: {e}"));
+            }
+            Message::TransferTick => {} // just redraws the progress bars
             Message::ToggleFavoriteGif(a) => {
                 let server = self.settings.server.clone();
                 let before = self.settings.favorite_gifs.len();
@@ -278,11 +376,18 @@ impl App {
                 // Copy the GIF into this conversation, then send it straight away.
                 let id = self.next_upload_id;
                 self.next_upload_id += 1;
-                self.pending.push(PendingUpload { id, filename: a.filename.clone(), state: UploadState::Uploading });
+                let sent = Arc::new(AtomicU64::new(0));
+                self.pending.push(PendingUpload {
+                    id,
+                    filename: a.filename.clone(),
+                    state: UploadState::Uploading,
+                    sent: sent.clone(),
+                    size: a.size,
+                });
                 return Task::perform(
                     async move {
                         let bytes = media::download(http.clone(), base.clone(), token.clone(), a.id, false).await?;
-                        media::upload(http, base, token, channel, a.filename, bytes).await
+                        media::upload(http, base, token, channel, a.filename, Source::Bytes(bytes), sent).await
                     },
                     move |r| Message::Uploaded(id, r),
                 )
@@ -309,4 +414,19 @@ impl App {
     pub(crate) fn picture_failed(&self, a: &Attachment) -> bool {
         matches!(self.images.get(&media::key(&a.id, false)), Some(media::Entry::Failed))
     }
+}
+
+/// What's on the clipboard that can be sent: copied files first, then a picture.
+fn read_clipboard() -> Option<Clip> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    if let Ok(files) = clipboard.get().file_list()
+        && !files.is_empty()
+    {
+        return Some(Clip::Files(files));
+    }
+    let img = clipboard.get_image().ok()?;
+    let rgba = image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    rgba.write_to(&mut png, image::ImageFormat::Png).ok()?;
+    Some(Clip::Image(png.into_inner()))
 }

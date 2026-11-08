@@ -394,6 +394,59 @@ impl Connection {
                         self.broadcast_to(&theirs, Some(Arc::from([user_id])));
                     }
                 }
+                ClientMsg::SearchGifs { query } => {
+                    let Some(gifs) = &self.state.gifs else {
+                        return Ok(self.error("GIF search isn't set up on this server").await);
+                    };
+                    match gifs.search(&query, me).await {
+                        Ok(results) => {
+                            self.send(&ServerMsg::GifResults { query, results }).await;
+                        }
+                        Err(e) => {
+                            warn!("{e}");
+                            return Ok(self.error("GIF search isn't working right now. Try again in a moment.").await);
+                        }
+                    }
+                }
+                ClientMsg::SendGif { channel_id, gif_id } => {
+                    let Some(gifs) = &self.state.gifs else {
+                        return Ok(self.error("GIF search isn't set up on this server").await);
+                    };
+                    let Some((url, title)) = gifs.lookup(&gif_id) else {
+                        return Ok(self
+                            .error("That GIF has expired. Search again and pick it from the new results.")
+                            .await);
+                    };
+                    let Some((kind, to)) = audience(&db, me, channel_id).await? else {
+                        return Ok(self.error("That channel no longer exists").await);
+                    };
+                    if !matches!(kind, ChannelKind::Text | ChannelKind::Direct) {
+                        return Ok(self.error("You can't send messages there").await);
+                    }
+                    let bytes = match gifs.download(&url).await {
+                        Ok(b) => b,
+                        Err(e) => return Ok(self.error(format!("Couldn't send that GIF: {e}")).await),
+                    };
+                    let name: String = title.chars().filter(|c| c.is_alphanumeric() || *c == ' ').take(40).collect();
+                    let name = format!("{}.gif", if name.trim().is_empty() { "gif" } else { name.trim() });
+                    let attachment = match crate::http::store_bytes(&self.state, me, channel_id, &name, &bytes).await {
+                        Ok(a) => a,
+                        Err((_, e)) => return Ok(self.error(format!("Couldn't send that GIF: {e}")).await),
+                    };
+                    let ids = vec![attachment.id];
+                    let sent = db
+                        .call(move |c| {
+                            let sent = db::insert_message(c, channel_id, me, "", &ids)?;
+                            if let Ok(m) = &sent {
+                                db::mark_read(c, me, channel_id, m.id)?;
+                            }
+                            Ok(sent)
+                        })
+                        .await?;
+                    if let Ok(msg) = sent {
+                        self.broadcast_to(&ServerMsg::MessageCreated(msg), to);
+                    }
+                }
                 ClientMsg::MarkRead { channel_id, message_id } => {
                     if audience(&db, me, channel_id).await?.is_some() {
                         db.call(move |c| db::mark_read(c, me, channel_id, message_id)).await?;
@@ -628,6 +681,8 @@ impl Connection {
             directs,
             read_states,
             server_version: env!("CARGO_PKG_VERSION").to_string(),
+            gif_provider: self.state.gifs.as_ref().map(|g| g.name().to_string()),
+            max_upload_mb: self.state.config.max_upload_mb,
         };
         if self.send(&ServerMsg::Ready(ready)).await { Flow::Continue } else { Flow::Close }
     }

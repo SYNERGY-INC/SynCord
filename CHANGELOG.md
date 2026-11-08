@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.4.0
+
+**New: paste screenshots, send files up to 1 GB, and search for GIFs.**
+
+- Take a screenshot (Win+Shift+S, Print Screen, or Cmd+Ctrl+Shift+4 on a Mac) and press Ctrl+V
+  in SynCord: it uploads straight away and shows a preview, then press Enter to send.
+- Copy files in File Explorer or Finder and paste them into SynCord to send them.
+- Click a picture and press *Copy* (or Ctrl+C) to put it on your clipboard.
+- Files can now be up to 1 GB. Uploads and downloads show a progress bar, and big files are sent
+  and saved in pieces, so they don't use lots of memory.
+- GIF search in the GIF tab of the emoji picker, with trending GIFs when you haven't typed
+  anything. Point at a GIF to see it move, click to send. The server owner needs to add a free
+  GIPHY or KLIPY key to the server settings once (see the README); until then the tab shows how.
+
+Server owners: the upload limit goes up from 25 MB to 1 GB by itself (unless you'd changed it).
+
 ## v0.3.1
 
 - Clearer messages when your server is older than the app: instead of a technical error, SynCord

@@ -3,6 +3,7 @@
 
 pub mod db;
 pub mod gateway;
+pub mod gifs;
 pub mod http;
 pub mod media;
 pub mod update;
@@ -35,6 +36,13 @@ pub struct Config {
     pub uploads: PathBuf,
     /// Largest file people can upload, in megabytes.
     pub max_upload_mb: u64,
+    /// GIF search: a free key from developers.giphy.com (or use KLIPY below).
+    pub giphy_api_key: String,
+    /// GIF search: a free key from partner.klipy.com.
+    pub klipy_api_key: String,
+    /// Only for testing: a different address for the GIF service.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gif_api_base: String,
     /// Install new server versions automatically (Windows), or just log them (elsewhere).
     pub auto_update: bool,
     /// Where to look for new versions.
@@ -49,7 +57,10 @@ impl Default for Config {
             invite_code: gateway::random_token(6),
             database: "syncord.db".into(),
             uploads: "uploads".into(),
-            max_upload_mb: 25,
+            max_upload_mb: 1024,
+            giphy_api_key: String::new(),
+            klipy_api_key: String::new(),
+            gif_api_base: String::new(),
             auto_update: true,
             update_url: syncord_update::MANIFEST_URL.into(),
         }
@@ -79,6 +90,8 @@ pub struct AppState {
     /// Number of open connections per user (a user may be logged in on several devices).
     pub online: Mutex<HashMap<UserId, usize>>,
     pub voice: Arc<voice::Voice>,
+    /// GIF search, if a key is configured.
+    pub gifs: Option<gifs::GifSearch>,
     /// UDP port voice is served on (0 until [`start_udp`] runs).
     pub udp_port: AtomicU16,
     pub next_conn_id: AtomicU64,
@@ -87,7 +100,9 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config, db: db::Db) -> Arc<Self> {
         let (events, _) = broadcast::channel(1024);
+        let gifs = gifs::GifSearch::from_config(&config);
         Arc::new(Self {
+            gifs,
             db,
             config,
             events,
@@ -110,13 +125,13 @@ pub async fn start_udp(state: &Arc<AppState>, addr: SocketAddr) -> std::io::Resu
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    let max_upload = (state.config.max_upload_mb as usize).saturating_mul(1024 * 1024).max(1024);
     Router::new()
         .route("/", get(|| async { "SynCord server is running.\n" }))
         .route("/ws", get(gateway::upgrade))
+        // Uploads are streamed to disk and size-checked as they arrive.
         .route(
             syncord_proto::UPLOAD_PATH,
-            axum::routing::post(http::upload).layer(axum::extract::DefaultBodyLimit::max(max_upload)),
+            axum::routing::post(http::upload).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route(&format!("{}/{{id}}", syncord_proto::FILES_PATH), get(http::download))
         .with_state(state)

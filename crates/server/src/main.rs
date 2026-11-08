@@ -45,12 +45,39 @@ fn open_log(dir: &Path) -> Option<File> {
 ///
 /// A relative `database` path is taken relative to the settings file's folder,
 /// so the server finds its data no matter which folder it was started from.
+/// Bring a settings file written by an older version up to date, keeping the owner's choices.
+fn upgrade_settings(path: &Path, mut text: String) -> String {
+    let original = text.clone();
+    // 25 MB was the old default; files can now be up to 1 GB.
+    if text.lines().any(|l| l.trim() == "max_upload_mb = 25") {
+        text = text.replace("max_upload_mb = 25\n", "max_upload_mb = 1024\n");
+        info!("raised the upload limit to the new default of 1 GB (max_upload_mb)");
+    }
+    if !text.contains("giphy_api_key") && !text.contains("klipy_api_key") {
+        text.push_str(
+            "\n# GIF search in the emoji picker: paste a free API key from GIPHY\n\
+             # (developers.giphy.com) or KLIPY (partner.klipy.com), then restart the server.\n\
+             giphy_api_key = \"\"\n\
+             klipy_api_key = \"\"\n",
+        );
+    }
+    if text != original
+        && let Err(e) = std::fs::write(path, &text)
+    {
+        warn!("could not update settings file {}: {e}", path.display());
+    }
+    text
+}
+
 fn load_config(path: &Path) -> Config {
     let mut cfg = match std::fs::read_to_string(path) {
-        Ok(text) => match toml::from_str(&text) {
-            Ok(cfg) => cfg,
-            Err(e) => fail(format!("The settings file {} has a mistake in it: {e}", path.display())),
-        },
+        Ok(text) => {
+            let text = upgrade_settings(path, text);
+            match toml::from_str(&text) {
+                Ok(cfg) => cfg,
+                Err(e) => fail(format!("The settings file {} has a mistake in it: {e}", path.display())),
+            }
+        }
         Err(_) => {
             let cfg = Config::default();
             let text = format!(

@@ -1,9 +1,11 @@
 //! Views for pictures, files, emoji, reactions and direct messages.
 
 use iced::widget::{
-    Id, button, center, column, container, image, mouse_area, row, scrollable, space, stack, text, text_input, tooltip,
+    Id, button, center, column, container, image, mouse_area, progress_bar, row, scrollable, space, stack, text,
+    text_input, tooltip,
 };
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding};
+use std::sync::atomic::Ordering;
 use syncord_proto::{Attachment, Message as ChatMessage, User};
 
 use crate::app::{App, Message, PickerTab, PickerTarget, Session, UploadState};
@@ -15,6 +17,31 @@ use crate::theme::{contrast_text, with_alpha};
 
 const PICTURE_W: f32 = 400.0;
 const PICTURE_H: f32 = 300.0;
+/// GIF tiles in the picker: three to a row.
+const GIF_TILE_W: f32 = 120.0;
+const GIF_TILE_H: f32 = 96.0;
+
+/// A picture shrunk to fit a fixed-size box, keeping its shape, centred on a backdrop.
+fn boxed_picture<'a>(
+    p: &media::Picture,
+    ms: u64,
+    w: f32,
+    h: f32,
+    radius: f32,
+    backdrop: Color,
+) -> Element<'a, Message> {
+    let (width, height) = p.size();
+    let (fw, fh) = media::fit(width, height, w, h);
+    center(image(p.frame(ms).clone()).width(fw).height(fh).border_radius(radius))
+        .width(w)
+        .height(h)
+        .style(card(backdrop, radius))
+        .into()
+}
+
+fn percent(done: u64, total: u64) -> u64 {
+    (done * 100).checked_div(total).unwrap_or(0).min(100)
+}
 
 impl App {
     // ------------------------------------------------------------------ attachments
@@ -158,31 +185,74 @@ impl App {
 
     // ------------------------------------------------------------------ composer extras
 
-    /// Files waiting to be sent with the next message.
+    /// A thin progress bar in the theme's colours.
+    fn progress<'a>(&self, done: u64, total: u64, width: f32) -> Element<'a, Message> {
+        let (accent, track) = (self.theme.accent.0, self.theme.rail.0);
+        let value = if total == 0 { 0.0 } else { (done as f64 / total as f64).clamp(0.0, 1.0) as f32 };
+        progress_bar(0.0..=1.0, value)
+            .length(width)
+            .girth(4)
+            .style(move |_| progress_bar::Style {
+                background: track.into(),
+                bar: accent.into(),
+                border: Border { radius: 2.0.into(), ..Default::default() },
+            })
+            .into()
+    }
+
+    /// Files waiting to be sent with the next message, and files being saved.
     pub(crate) fn pending_view(&self) -> Option<Element<'_, Message>> {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && self.downloads.is_empty() {
             return None;
         }
         let t = &self.theme;
         let fs = self.fs();
         let mut r = row![].spacing(8);
         for p in &self.pending {
-            let (status, color) = match &p.state {
-                UploadState::Uploading => ("Uploading...".to_string(), t.muted.0),
-                UploadState::Ready(a) => (format_size(a.size), t.online.0),
-                UploadState::Failed(e) => (e.clone(), t.danger.0),
+            let sent = p.sent.load(Ordering::Relaxed).min(p.size);
+            let mut info = column![text(crate::view::truncate(&p.filename, 28)).size(fs * 0.85).color(t.text.0)]
+                .spacing(3)
+                .width(180);
+            info = match &p.state {
+                UploadState::Uploading => info.push(self.progress(sent, p.size, 180.0)).push(
+                    text(format!("{}% · {} of {}", percent(sent, p.size), format_size(sent), format_size(p.size)))
+                        .size(fs * 0.72)
+                        .color(t.muted.0),
+                ),
+                UploadState::Ready(a) => info.push(text(format_size(a.size)).size(fs * 0.72).color(t.online.0)),
+                UploadState::Failed(e) => info.push(text(e.clone()).size(fs * 0.72).color(t.danger.0)),
+            };
+            let thumb: Element<'_, Message> = match &p.state {
+                UploadState::Ready(a) if self.preview(a).is_some() => {
+                    boxed_picture(self.preview(a).unwrap(), 0, 40.0, 40.0, 4.0, t.rail.0)
+                }
+                _ => icon(&icons::FILE, 22.0, t.muted.0),
             };
             let chip = row![
-                icon(&icons::FILE, 22.0, t.muted.0),
-                column![
-                    text(crate::view::truncate(&p.filename, 28)).size(fs * 0.85).color(t.text.0),
-                    text(status).size(fs * 0.72).color(color),
-                ]
-                .spacing(1),
+                thumb,
+                info,
                 button(icon(&icons::CLOSE, 14.0, t.muted.0))
                     .padding(4)
                     .on_press(Message::RemovePending(p.id))
                     .style(style::icon_button(t)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            r = r.push(container(chip).padding([6, 8]).style(card(t.floating.0, t.radius)));
+        }
+        for d in &self.downloads {
+            let done = d.done.load(Ordering::Relaxed).min(d.size);
+            let chip = row![
+                icon(&icons::DOWNLOAD, 20.0, t.muted.0),
+                column![
+                    text(format!("Saving {}", crate::view::truncate(&d.filename, 24))).size(fs * 0.85).color(t.text.0),
+                    self.progress(done, d.size, 180.0),
+                    text(format!("{}% · {} of {}", percent(done, d.size), format_size(done), format_size(d.size)))
+                        .size(fs * 0.72)
+                        .color(t.muted.0),
+                ]
+                .spacing(3)
+                .width(180),
             ]
             .spacing(8)
             .align_y(Alignment::Center);
@@ -227,7 +297,7 @@ impl App {
             button(content)
                 .padding([4, 5])
                 .on_press(Message::PickerTab(tab))
-                .style(style::row_button(t, picker.tab == tab && picker.search.is_empty()))
+                .style(style::row_button(t, picker.tab == tab && (picker.search.is_empty() || tab == PickerTab::Gifs)))
         };
         let mut tabs = row![].spacing(2);
         if !self.settings.recent_emoji.is_empty() {
@@ -240,15 +310,22 @@ impl App {
             tabs = tabs.push(tab_button(text("GIF").size(fs * 0.8).font(BOLD).into(), PickerTab::Gifs));
         }
 
-        let search = text_input("Find the perfect emoji", &picker.search)
+        let gifs_tab = picker.tab == PickerTab::Gifs;
+        let provider = self.session.as_ref().and_then(|s| s.gif_provider.as_deref());
+        let placeholder = match (gifs_tab, provider) {
+            (true, Some(p)) => format!("Search {p}"),
+            (true, None) => "Search your favourite GIFs".to_string(),
+            (false, _) => "Find the perfect emoji".to_string(),
+        };
+        let search = text_input(&placeholder, &picker.search)
             .id(Id::new("emoji-search"))
             .on_input(Message::EmojiSearch)
             .padding(8)
             .size(fs * 0.9)
             .style(style::input(t, t.rail.0));
 
-        let body: Element<'_, Message> = if picker.tab == PickerTab::Gifs && picker.search.is_empty() {
-            self.favorite_gifs_view()
+        let body: Element<'_, Message> = if gifs_tab {
+            self.gifs_view(&picker.search, provider)
         } else {
             let (title, list): (String, Vec<String>) = if !picker.search.is_empty() {
                 (
@@ -296,43 +373,115 @@ impl App {
         )
     }
 
-    fn favorite_gifs_view(&self) -> Element<'_, Message> {
+    /// The GIF tab: favourites and GIF search.
+    fn gifs_view<'a>(&'a self, search: &str, provider: Option<&'a str>) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let favorites: Vec<&Attachment> = self.settings.favorites_here().map(|f| &f.attachment).collect();
-        if favorites.is_empty() {
-            return center(
-                text("Hover a GIF in the chat and click its star to save it here.")
-                    .size(fs * 0.9)
-                    .color(t.muted.0)
-                    .center(),
-            )
-            .into();
+        let search = search.trim();
+        let mut col = column![].spacing(8);
+
+        // Favourites (filtered by name while searching).
+        let needle = search.to_lowercase();
+        let favorites: Vec<&Attachment> = self
+            .settings
+            .favorites_here()
+            .map(|f| &f.attachment)
+            .filter(|a| needle.is_empty() || a.filename.to_lowercase().contains(&needle))
+            .collect();
+        if !favorites.is_empty() {
+            let mut grid = row![].spacing(6);
+            for a in favorites {
+                let content: Element<'_, Message> = match self.images.picture(&a.id) {
+                    Some(p) => boxed_picture(p, self.animation_ms(None), GIF_TILE_W, GIF_TILE_H, 6.0, t.rail.0),
+                    None => container(space()).width(GIF_TILE_W).height(GIF_TILE_H).style(card(t.rail.0, 6.0)).into(),
+                };
+                grid = grid.push(
+                    button(content)
+                        .padding(0)
+                        .on_press(Message::SendFavorite(a.clone()))
+                        .style(|_, _| button::Style::default()),
+                );
+            }
+            col = col.push(label(t, "Favourites", fs)).push(grid.wrap().vertical_spacing(6));
         }
-        let mut grid = row![].spacing(6);
-        for a in favorites {
-            let (w, h) = media::fit(a.width.unwrap_or(1), a.height.unwrap_or(1), 170.0, 120.0);
-            let content: Element<'_, Message> = match self.images.picture(&a.id) {
-                Some(p) => image(p.frame(self.animation_ms(None)).clone())
-                    .width(w)
-                    .height(h)
-                    .content_fit(ContentFit::Cover)
-                    .into(),
-                None => container(space()).width(w).height(h).style(card(t.rail.0, 6.0)).into(),
-            };
-            grid = grid.push(
-                button(content)
-                    .padding(0)
-                    .on_press(Message::SendFavorite(a.clone()))
-                    .style(|_, _| button::Style::default()),
+
+        match provider {
+            None => {
+                col = col.push(
+                    container(
+                        text(
+                            "GIF search isn't set up on this server yet. The server owner can add a free GIPHY or \
+                             KLIPY key to syncord-server.toml. Meanwhile, star GIFs in the chat to keep them here.",
+                        )
+                        .size(fs * 0.85)
+                        .color(t.muted.0),
+                    )
+                    .padding([8, 0]),
+                );
+            }
+            Some(provider) => {
+                let title = if search.is_empty() { format!("Trending on {provider}") } else { "Results".to_string() };
+                col = col.push(label(t, title, fs));
+                let shown = self.gifs.query.as_deref() == Some(search);
+                if let Some(e) = &self.gifs.error {
+                    col = col.push(text(e.clone()).size(fs * 0.85).color(t.danger.0));
+                } else if !shown || self.gifs.waiting.is_some() && self.gifs.results.is_empty() {
+                    col = col.push(text("Searching...").size(fs * 0.85).color(t.muted.0));
+                } else if self.gifs.results.is_empty() {
+                    col = col.push(text("No GIFs found. Try other words.").size(fs * 0.85).color(t.muted.0));
+                }
+                if shown || !self.gifs.results.is_empty() {
+                    let mut grid = row![].spacing(6);
+                    for r in &self.gifs.results {
+                        let hovered = self.gifs.hovered.as_deref() == Some(r.id.as_str());
+                        let picture = hovered
+                            .then(|| self.images.picture(&media::gif_key(&r.id, true)))
+                            .flatten()
+                            .or_else(|| self.images.picture(&media::gif_key(&r.id, false)));
+                        let content: Element<'_, Message> = match picture {
+                            Some(p) => boxed_picture(p, self.animation_ms(None), GIF_TILE_W, GIF_TILE_H, 6.0, t.rail.0),
+                            None => container(space())
+                                .width(GIF_TILE_W)
+                                .height(GIF_TILE_H)
+                                .style(card(t.rail.0, 6.0))
+                                .into(),
+                        };
+                        let tile = button(content).padding(0).on_press(Message::SendGif(r.id.clone())).style(
+                            move |_, status| button::Style {
+                                border: Border {
+                                    radius: 6.0.into(),
+                                    width: if matches!(status, button::Status::Hovered) { 2.0 } else { 0.0 },
+                                    color: t.accent.0,
+                                },
+                                ..Default::default()
+                            },
+                        );
+                        grid = grid.push(
+                            mouse_area(tooltip(
+                                tile,
+                                container(text(r.title.clone()).size(fs * 0.75))
+                                    .padding([3, 6])
+                                    .style(card(t.rail.0, 4.0)),
+                                tooltip::Position::Bottom,
+                            ))
+                            .on_enter(Message::GifHover(r.id.clone(), true))
+                            .on_exit(Message::GifHover(r.id.clone(), false)),
+                        );
+                    }
+                    col = col.push(grid.wrap().vertical_spacing(6));
+                }
+            }
+        }
+
+        let mut page = column![scrollable(col).spacing(4).height(Length::Fill).style(style::scroll(t))].spacing(4);
+        if let Some(provider) = provider {
+            page = page.push(
+                container(text(format!("Powered by {provider}")).size(fs * 0.7).font(BOLD).color(t.muted.0))
+                    .width(Length::Fill)
+                    .align_x(Alignment::End),
             );
         }
-        column![
-            label(t, "Favourite GIFs (click to send)", fs),
-            scrollable(grid.wrap().vertical_spacing(6)).height(Length::Fill).style(style::scroll(t)),
-        ]
-        .spacing(6)
-        .into()
+        page.into()
     }
 
     // ------------------------------------------------------------------ overlays
@@ -362,6 +511,21 @@ impl App {
             .padding([6, 12])
             .on_press(Message::SaveAttachment(a.clone()))
             .style(style::solid_button(t.floating.0, t.radius * 0.6)),
+            tooltip(
+                button(
+                    text(match &self.copying {
+                        Some((id, false)) if *id == a.id => "Copying...",
+                        Some((id, true)) if *id == a.id => "Copied!",
+                        _ => "Copy",
+                    })
+                    .size(fs * 0.85)
+                )
+                .padding([6, 12])
+                .on_press(Message::CopyImage(a.clone()))
+                .style(style::solid_button(t.floating.0, t.radius * 0.6)),
+                container(text("Copy the picture (Ctrl+C)").size(fs * 0.75)).padding([3, 6]).style(card(t.rail.0, 4.0)),
+                tooltip::Position::Top,
+            ),
             button(icon(&icons::CLOSE, 18.0, Color::WHITE))
                 .padding(6)
                 .on_press(Message::CloseOverlay)

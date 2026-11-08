@@ -407,3 +407,148 @@ async fn direct_messages_files_and_reactions() {
     expect(&mut bob, |x| matches!(x, ServerMsg::MessageDeleted { .. })).await;
     assert_eq!(download(&alice_token, &att.id, false).await.unwrap().status(), 404);
 }
+
+fn gif_bytes() -> Vec<u8> {
+    use image::codecs::gif::GifEncoder;
+    use image::{Delay, Frame, Rgba, RgbaImage};
+    let frames: Vec<Frame> = (0..3)
+        .map(|i| {
+            Frame::from_parts(
+                RgbaImage::from_pixel(40, 30, Rgba([i * 80, 0, 0, 255])),
+                0,
+                0,
+                Delay::from_numer_denom_ms(100, 1),
+            )
+        })
+        .collect();
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.encode_frames(frames).unwrap();
+    }
+    out
+}
+
+/// A stand-in for GIPHY: search/trending answer in GIPHY's format, pointing at a GIF it serves.
+async fn start_fake_giphy() -> String {
+    use axum::routing::get;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let b = base.clone();
+    let results = move |q: axum::extract::Query<std::collections::HashMap<String, String>>| {
+        let b = b.clone();
+        async move {
+            assert_eq!(q.get("api_key").map(String::as_str), Some("test-key"), "the server sends its key");
+            let title = q.get("q").cloned().unwrap_or_else(|| "trending".into());
+            axum::Json(serde_json::json!({"data": [{
+                "id": "gif1", "title": title,
+                "images": {
+                    "fixed_width_small": {"url": format!("{b}/small.gif"), "width": "40", "height": "30"},
+                    "fixed_width_small_still": {"url": format!("{b}/still.gif")},
+                    "downsized_medium": {"url": format!("{b}/full.gif")}
+                }
+            }]}))
+        }
+    };
+    let app = axum::Router::new()
+        .route("/search", get(results.clone()))
+        .route("/trending", get(results))
+        .route("/full.gif", get(|| async { gif_bytes() }));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    base
+}
+
+#[tokio::test]
+async fn gif_search_and_sending() {
+    let gif_base = start_fake_giphy().await;
+    let uploads = std::env::temp_dir().join(format!("syncord-test-{}", rand_suffix()));
+    let config = Config {
+        invite_code: "x".into(),
+        uploads,
+        giphy_api_key: "test-key".into(),
+        gif_api_base: gif_base,
+        ..Config::default()
+    };
+    let state = AppState::new(config, Db::open_in_memory().unwrap());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let (mut alice, r) = register(&url, "alice", "x").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    assert_eq!(ready.gif_provider.as_deref(), Some("GIPHY"));
+    let general = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+
+    // Trending (empty query) and search both come back in our own format.
+    send(&mut alice, ClientMsg::SearchGifs { query: String::new() }).await;
+    let ServerMsg::GifResults { results, .. } = expect(&mut alice, |m| matches!(m, ServerMsg::GifResults { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(results[0].title, "trending");
+    send(&mut alice, ClientMsg::SearchGifs { query: "cat".into() }).await;
+    let ServerMsg::GifResults { query, results } =
+        expect(&mut alice, |m| matches!(m, ServerMsg::GifResults { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(query, "cat");
+    assert_eq!((results[0].id.as_str(), results[0].width), ("gif1", 40));
+    assert!(results[0].still_url.ends_with("/still.gif"));
+
+    // Sending: the server fetches the GIF and posts it as an animated attachment.
+    send(&mut alice, ClientMsg::SendGif { channel_id: general, gif_id: "gif1".into() }).await;
+    let ServerMsg::MessageCreated(m) = expect(&mut alice, |m| matches!(m, ServerMsg::MessageCreated(_))).await else {
+        unreachable!()
+    };
+    assert_eq!(m.attachments.len(), 1);
+    assert!(m.attachments[0].animated);
+    assert_eq!(m.attachments[0].filename, "cat.gif");
+
+    // Only GIFs from recent results can be sent: no fetching arbitrary addresses.
+    send(&mut alice, ClientMsg::SendGif { channel_id: general, gif_id: "http://evil/x.gif".into() }).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::Error { message } if message.contains("expired"))).await;
+}
+
+#[tokio::test]
+async fn upload_size_limit_and_streamed_download() {
+    let uploads = std::env::temp_dir().join(format!("syncord-test-{}", rand_suffix()));
+    let config = Config { invite_code: "x".into(), uploads, max_upload_mb: 1, ..Config::default() };
+    let state = AppState::new(config, Db::open_in_memory().unwrap());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let base = http_base(&url);
+    tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let http = reqwest::Client::new();
+
+    let (_alice, r) = register(&url, "alice", "x").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let general = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+    let upload = |body: Vec<u8>| {
+        http.post(format!("{base}{}?channel_id={general}&filename=data.bin", syncord_proto::UPLOAD_PATH))
+            .header("Authorization", format!("Bearer {}", ready.token))
+            .body(body)
+            .send()
+    };
+
+    // Over the limit: refused while streaming, and nothing is left behind.
+    assert_eq!(upload(vec![7u8; 1_100_000]).await.unwrap().status(), 413);
+
+    // Under the limit: stored, and downloads come back whole with a length.
+    let body: Vec<u8> = (0..900_000u32).map(|i| (i % 251) as u8).collect();
+    let r = upload(body.clone()).await.unwrap();
+    assert_eq!(r.status(), 200);
+    let att: syncord_proto::Attachment = serde_json::from_slice(&r.bytes().await.unwrap()).unwrap();
+    assert_eq!(att.size, 900_000);
+    assert_eq!(att.mime, "application/octet-stream");
+    let r = http
+        .get(format!("{base}{}/{}", syncord_proto::FILES_PATH, att.id))
+        .header("Authorization", format!("Bearer {}", ready.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["content-length"], "900000");
+    assert_eq!(r.bytes().await.unwrap().to_vec(), body);
+}

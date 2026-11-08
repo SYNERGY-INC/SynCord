@@ -4,7 +4,10 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+use futures::StreamExt;
 
 use iced::widget::image::Handle;
 use image::{AnimationDecoder, ImageFormat, codecs::gif::GifDecoder, imageops::FilterType};
@@ -42,20 +45,60 @@ fn describe(status: reqwest::StatusCode) -> String {
     }
 }
 
+/// Where an upload's bytes come from.
+pub enum Source {
+    File(std::path::PathBuf),
+    Bytes(Vec<u8>),
+}
+
+/// Size of the pieces a file is sent in.
+const CHUNK: usize = 256 * 1024;
+
+/// Upload a file without loading it all into memory, counting bytes sent in `sent`.
 pub async fn upload(
     http: reqwest::Client,
     base: String,
     token: String,
     channel: ChannelId,
     filename: String,
-    bytes: Vec<u8>,
+    source: Source,
+    sent: Arc<AtomicU64>,
 ) -> Result<Attachment, String> {
     let url = reqwest::Url::parse_with_params(
         &format!("{base}{UPLOAD_PATH}"),
-        &[("channel_id", channel.to_string()), ("filename", filename)],
+        &[("channel_id", channel.to_string()), ("filename", filename.clone())],
     )
     .map_err(|e| format!("Bad server address: {e}"))?;
-    let resp = http.post(url).bearer_auth(token).body(bytes).send().await.map_err(|e| format!("Upload failed: {e}"))?;
+    let counter = sent.clone();
+    let count = move |chunk: Result<bytes::Bytes, std::io::Error>| {
+        if let Ok(c) = &chunk {
+            counter.fetch_add(c.len() as u64, Ordering::Relaxed);
+        }
+        chunk
+    };
+    let (body, size) = match source {
+        Source::File(path) => {
+            let file = tokio::fs::File::open(&path).await.map_err(|e| format!("Couldn't read {filename}: {e}"))?;
+            let size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+            let stream = tokio_util::io::ReaderStream::with_capacity(file, CHUNK).map(count);
+            (reqwest::Body::wrap_stream(stream), size)
+        }
+        Source::Bytes(bytes) => {
+            let size = bytes.len() as u64;
+            let bytes = bytes::Bytes::from(bytes);
+            let chunks: Vec<_> =
+                (0..bytes.len()).step_by(CHUNK).map(|i| Ok(bytes.slice(i..(i + CHUNK).min(bytes.len())))).collect();
+            (reqwest::Body::wrap_stream(futures::stream::iter(chunks).map(count)), size)
+        }
+    };
+    let resp = http
+        .post(url)
+        .bearer_auth(token)
+        .header(reqwest::header::CONTENT_LENGTH, size)
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("Upload failed: {}", root_cause(&e)))?;
     if matches!(resp.status().as_u16(), 404 | 405) {
         return Err("The server doesn't support files yet: it needs the latest SynCord Server.".into());
     }
@@ -64,6 +107,15 @@ pub async fn upload(
     }
     let body = resp.bytes().await.map_err(|e| format!("Upload failed: {e}"))?;
     serde_json::from_slice(&body).map_err(|e| format!("Unexpected answer from the server: {e}"))
+}
+
+/// The innermost error, which is usually the one that explains what happened.
+fn root_cause(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut e = e;
+    while let Some(inner) = e.source() {
+        e = inner;
+    }
+    e.to_string()
 }
 
 pub async fn download(
@@ -79,6 +131,66 @@ pub async fn download(
         return Err(describe(resp.status()));
     }
     Ok(resp.bytes().await.map_err(|e| format!("Download failed: {e}"))?.to_vec())
+}
+
+/// Save a file straight to disk as it arrives, counting bytes in `done`.
+pub async fn save(
+    http: reqwest::Client,
+    base: String,
+    token: String,
+    id: String,
+    path: std::path::PathBuf,
+    done: Arc<AtomicU64>,
+) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
+    let url = format!("{base}{FILES_PATH}/{id}");
+    let mut resp = http.get(url).bearer_auth(token).send().await.map_err(|e| format!("Download failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(describe(resp.status()));
+    }
+    // Write next to the destination, and only replace it once everything has arrived.
+    let part = path.with_extension(match path.extension() {
+        Some(ext) => format!("{}.part", ext.to_string_lossy()),
+        None => "part".into(),
+    });
+    let result = async {
+        let mut file = tokio::fs::File::create(&part).await.map_err(|e| format!("Couldn't save: {e}"))?;
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Download failed: {e}"))? {
+            file.write_all(&chunk).await.map_err(|e| format!("Couldn't save: {e}"))?;
+            done.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
+        file.flush().await.map_err(|e| format!("Couldn't save: {e}"))?;
+        drop(file);
+        tokio::fs::rename(&part, &path).await.map_err(|e| format!("Couldn't save: {e}"))
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&part).await;
+    }
+    result.map(|()| path.display().to_string())
+}
+
+/// Download and decode a picture from the web (GIF search previews).
+pub async fn load_url(http: reqwest::Client, url: String, max_side: u32) -> Result<Arc<Picture>, String> {
+    let resp = http.get(url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("error {}", resp.status().as_u16()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || decode(&bytes, max_side)).await.map_err(|e| e.to_string())?.map(Arc::new)
+}
+
+/// Cache key for a GIF search preview.
+pub fn gif_key(id: &str, animated: bool) -> String {
+    if animated { format!("gif:{id}:anim") } else { format!("gif:{id}") }
+}
+
+/// Decode a picture at full size for copying to the clipboard: (width, height, RGBA).
+pub fn decode_for_clipboard(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
+    let img = image::load_from_memory(bytes).map_err(|e| format!("Couldn't read the picture: {e}"))?;
+    let img = if img.width().max(img.height()) > 8192 { img.thumbnail(8192, 8192) } else { img };
+    let rgba = img.to_rgba8();
+    Ok((rgba.width() as usize, rgba.height() as usize, rgba.into_raw()))
 }
 
 /// A decoded picture, ready to draw.
@@ -280,7 +392,8 @@ pub fn format_size(bytes: u64) -> String {
     match bytes {
         0..=1023 => format!("{bytes} B"),
         1024..=1_048_575 => format!("{:.0} KB", bytes as f64 / 1024.0),
-        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        1_048_576..=1_073_741_823 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        _ => format!("{:.2} GB", bytes as f64 / 1_073_741_824.0),
     }
 }
 
@@ -352,11 +465,96 @@ mod tests {
         assert!(!cache.start("k9"), "already loaded");
     }
 
+    /// A big file goes up and comes back down in pieces, with progress counted both ways.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streamed_upload_and_save_with_progress() {
+        use futures::StreamExt;
+        use syncord_proto::{ChannelKind, ClientMsg, ServerMsg};
+        use syncord_server::{AppState, Config, db::Db, router};
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = std::env::temp_dir().join(format!("syncord-media-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config { invite_code: "x".into(), uploads: dir.join("uploads"), ..Config::default() };
+        std::fs::create_dir_all(&config.uploads).unwrap();
+        let state = AppState::new(config, Db::open_in_memory().unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+
+        let mut events = Box::pin(crate::net::connect(format!("ws://{addr}/ws"), Default::default()));
+        let Some(crate::net::Event::Connected(conn)) = events.next().await else { panic!("connect failed") };
+        conn.send(ClientMsg::Register { username: "sam".into(), password: "password123".into(), invite: "x".into() });
+        let (token, channel, limit) = loop {
+            if let Some(crate::net::Event::Received(msg)) = events.next().await
+                && let ServerMsg::Ready(r) = *msg
+            {
+                let c = r.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+                break (r.token, c, r.max_upload_mb);
+            }
+        };
+        assert_eq!(limit, 1024);
+
+        // 5 MB of varied bytes from a file on disk.
+        let original: Vec<u8> = (0..5_000_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+        let source = dir.join("big.bin");
+        std::fs::write(&source, &original).unwrap();
+
+        let http = client();
+        let base = format!("http://{addr}");
+        let sent = Arc::new(AtomicU64::new(0));
+        let a = upload(
+            http.clone(),
+            base.clone(),
+            token.clone(),
+            channel,
+            "big.bin".into(),
+            Source::File(source),
+            sent.clone(),
+        )
+        .await
+        .expect("upload");
+        assert_eq!(a.size, 5_000_000);
+        assert_eq!(sent.load(Ordering::Relaxed), 5_000_000);
+
+        // Pasted bytes go up the same way.
+        let small = Arc::new(AtomicU64::new(0));
+        let b = upload(
+            http.clone(),
+            base.clone(),
+            token.clone(),
+            channel,
+            "x.txt".into(),
+            Source::Bytes(vec![7; 600_000]),
+            small.clone(),
+        )
+        .await
+        .expect("upload bytes");
+        assert_eq!((b.size, small.load(Ordering::Relaxed)), (600_000, 600_000));
+
+        let dest = dir.join("saved.bin");
+        let done = Arc::new(AtomicU64::new(0));
+        let path = save(http.clone(), base.clone(), token.clone(), a.id.clone(), dest.clone(), done.clone())
+            .await
+            .expect("save");
+        assert_eq!(path, dest.display().to_string());
+        assert_eq!(done.load(Ordering::Relaxed), 5_000_000);
+        assert!(std::fs::read(&dest).unwrap() == original, "saved file matches");
+        assert!(!dir.join("saved.bin.part").exists(), "no leftover partial file");
+
+        // A missing file leaves nothing behind.
+        let err = save(http, base, token, "nope".into(), dir.join("missing.bin"), Arc::default()).await.unwrap_err();
+        assert!(err.contains("isn't available"), "{err}");
+        assert!(!dir.join("missing.bin").exists() && !dir.join("missing.bin.part").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn sizes() {
         assert_eq!(format_size(500), "500 B");
         assert_eq!(format_size(2048), "2 KB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GB");
         assert_eq!(fit(1000, 500, 400.0, 300.0), (400.0, 200.0));
         assert_eq!(fit(100, 100, 400.0, 300.0), (100.0, 100.0));
     }

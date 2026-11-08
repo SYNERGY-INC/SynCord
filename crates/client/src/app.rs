@@ -12,6 +12,7 @@ use syncord_proto::{
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use crate::media::{self, ImageCache, Picture};
 use crate::net::{self, Connection};
@@ -100,13 +101,19 @@ pub enum Message {
     AttachFiles,
     FilesChosen(Vec<PathBuf>),
     PasteShortcut,
-    Pasted(Option<Vec<u8>>),
+    Pasted(Option<Clip>),
     Uploaded(u64, Result<Attachment, String>),
     RemovePending(u64),
     PictureLoaded(String, Result<Arc<Picture>, String>),
     OpenViewer(Attachment),
     SaveAttachment(Attachment),
-    Saved(Result<Option<String>, String>),
+    SaveTo(Attachment, Option<PathBuf>),
+    Saved(u64, Result<String, String>),
+    CopyImage(Attachment),
+    CopyReady(String, Result<(usize, usize, Arc<Vec<u8>>), String>),
+    CopyShortcut,
+    /// Redraw upload/download progress.
+    TransferTick,
     ToggleFavoriteGif(Attachment),
     SendFavorite(Attachment),
     AnimationTick,
@@ -114,11 +121,18 @@ pub enum Message {
 
     // Emoji and reactions
     OpenEmojiPicker(PickerTarget),
+    /// The GIF button next to the message box.
+    OpenGifPicker,
     EmojiSearch(String),
     PickerTab(PickerTab),
     PickEmoji(String),
     PickEmojiSuggestion(String),
     ToggleReaction(MessageId, String),
+    /// The search box hasn't changed for a moment: search for GIFs.
+    GifSearchDue(String),
+    /// The mouse moved onto (true) or off (false) a GIF search result.
+    GifHover(String, bool),
+    SendGif(String),
 
     // Updates
     CheckForUpdates,
@@ -160,11 +174,43 @@ pub struct EmojiPicker {
     pub tab: PickerTab,
 }
 
+/// What Ctrl+V found on the clipboard.
+#[derive(Debug, Clone)]
+pub enum Clip {
+    /// A picture (a screenshot, or one copied from a browser), as PNG.
+    Image(Vec<u8>),
+    /// Files copied in the file manager.
+    Files(Vec<PathBuf>),
+}
+
 /// A file being uploaded for the next message.
 pub struct PendingUpload {
     pub id: u64,
     pub filename: String,
     pub state: UploadState,
+    /// Bytes sent so far, out of `size`.
+    pub sent: Arc<AtomicU64>,
+    pub size: u64,
+}
+
+/// A file being saved to disk.
+pub struct Download {
+    pub id: u64,
+    pub filename: String,
+    pub done: Arc<AtomicU64>,
+    pub size: u64,
+}
+
+/// GIF search results in the picker.
+#[derive(Default)]
+pub struct GifSearch {
+    /// The search these results are for ("" is trending).
+    pub query: Option<String>,
+    pub results: Vec<syncord_proto::GifResult>,
+    /// Search waiting for an answer.
+    pub waiting: Option<String>,
+    pub error: Option<String>,
+    pub hovered: Option<String>,
 }
 
 pub enum UploadState {
@@ -257,6 +303,10 @@ pub struct Session {
     /// Server channel to go back to when leaving the DM home.
     pub last_server_channel: Option<ChannelId>,
     pub server_version: String,
+    /// GIF search service the server offers, if any.
+    pub gif_provider: Option<String>,
+    /// Largest upload the server accepts, in MB (0 if it doesn't say).
+    pub max_upload_mb: u64,
 }
 
 impl Session {
@@ -402,6 +452,13 @@ pub struct App {
     pub(crate) pending_channel: Option<ChannelId>,
     pub(crate) next_upload_id: u64,
     pub emoji_picker: Option<EmojiPicker>,
+    pub gifs: GifSearch,
+    pub downloads: Vec<Download>,
+    pub(crate) next_download_id: u64,
+    /// Kept open so pictures copied from SynCord stay on the clipboard (needed on Linux).
+    pub(crate) clipboard: Option<arboard::Clipboard>,
+    /// Picture being copied from the viewer, and whether it's done.
+    pub copying: Option<(String, bool)>,
     pub(crate) pending_direct: Option<UserId>,
     pub update: crate::updater::Stage,
 }
@@ -455,6 +512,11 @@ impl App {
             pending_channel: None,
             next_upload_id: 1,
             emoji_picker: None,
+            gifs: GifSearch::default(),
+            downloads: Vec::new(),
+            next_download_id: 1,
+            clipboard: None,
+            copying: None,
             pending_direct: None,
             update: crate::updater::Stage::Checking,
         };
@@ -504,9 +566,22 @@ impl App {
                 ..
             }) => Some(Message::Escape),
             iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FilesChosen(vec![path])),
-            iced::Event::Keyboard(keyboard::Event::KeyPressed {
-                key: keyboard::Key::Character(c), modifiers, ..
-            }) if modifiers.command() && c.as_str() == "v" => Some(Message::PasteShortcut),
+            // Match the letter or the key's position, so it works with any keyboard layout.
+            iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. })
+                if modifiers.command() && !modifiers.alt() =>
+            {
+                let is = |letter: &str, code: keyboard::key::Code| {
+                    matches!(&key, keyboard::Key::Character(c) if c.as_str().eq_ignore_ascii_case(letter))
+                        || physical_key == keyboard::key::Physical::Code(code)
+                };
+                if is("v", keyboard::key::Code::KeyV) {
+                    Some(Message::PasteShortcut)
+                } else if is("c", keyboard::key::Code::KeyC) {
+                    Some(Message::CopyShortcut)
+                } else {
+                    None
+                }
+            }
             _ => None,
         })];
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
@@ -528,6 +603,9 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        if !self.downloads.is_empty() || self.pending.iter().any(|p| matches!(p.state, UploadState::Uploading)) {
+            subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::TransferTick));
         }
         if self.wants_animation() {
             subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
@@ -917,17 +995,26 @@ impl App {
             | Message::PictureLoaded(..)
             | Message::OpenViewer(_)
             | Message::SaveAttachment(_)
-            | Message::Saved(_)
+            | Message::SaveTo(..)
+            | Message::Saved(..)
+            | Message::CopyImage(_)
+            | Message::CopyReady(..)
+            | Message::CopyShortcut
+            | Message::TransferTick
             | Message::ToggleFavoriteGif(_)
             | Message::SendFavorite(_)
             | Message::AnimationTick
             | Message::ToggleAutoplayGifs(_) => return self.update_media(message),
             Message::OpenEmojiPicker(_)
+            | Message::OpenGifPicker
             | Message::EmojiSearch(_)
             | Message::PickerTab(_)
             | Message::PickEmoji(_)
             | Message::PickEmojiSuggestion(_)
             | Message::ToggleReaction(..)
+            | Message::GifSearchDue(_)
+            | Message::GifHover(..)
+            | Message::SendGif(_)
             | Message::ShowHome
             | Message::ShowServer
             | Message::OpenDirect(_)
@@ -1284,7 +1371,10 @@ impl App {
             latest,
             last_server_channel: None,
             server_version: ready.server_version,
+            gif_provider: ready.gif_provider,
+            max_upload_mb: ready.max_upload_mb,
         });
+        self.gifs = GifSearch::default();
         if let Some(channel_id) = self.rejoin_voice.take()
             && self.session.as_ref().is_some_and(|s| s.channels.iter().any(|c| c.id == channel_id))
         {
@@ -1309,7 +1399,7 @@ impl App {
             self.on_voice(msg);
             return Task::none();
         }
-        if matches!(msg, ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. }) {
+        if matches!(msg, ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } | ServerMsg::GifResults { .. }) {
             return self.on_social(msg);
         }
         let me = self.session.as_ref().map(|s| s.me);
@@ -1318,7 +1408,7 @@ impl App {
         match msg {
             ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. } | ServerMsg::Pong => {}
             ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. } => {} // handled in on_voice
-            ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } => {}     // handled in on_social
+            ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } | ServerMsg::GifResults { .. } => {} // on_social
             ServerMsg::MessageCreated(m) => {
                 if let Some(t) = s.typing.get_mut(&m.channel_id) {
                     t.remove(&m.author_id);
@@ -1412,7 +1502,14 @@ impl App {
                     }
                 }
             }
-            ServerMsg::Error { message } => self.notice = Some(friendly_error(message)),
+            ServerMsg::Error { message } => {
+                // A failed GIF search shows its error in the picker.
+                if self.gifs.waiting.take().is_some() && message.contains("GIF search") {
+                    self.gifs.error = Some(message);
+                } else {
+                    self.notice = Some(friendly_error(message));
+                }
+            }
         }
         Task::none()
     }

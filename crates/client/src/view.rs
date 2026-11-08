@@ -783,6 +783,15 @@ impl App {
                     .on_press(Message::AttachFiles)
                     .style(style::icon_button(t)),
                 input,
+                button(container(text("GIF").size(fs * 0.7).font(style::BOLD).color(t.muted.0)).padding([1, 4]).style(
+                    move |_| container::Style {
+                        border: iced::Border { radius: 4.0.into(), width: 1.5, color: t.muted.0 },
+                        ..Default::default()
+                    }
+                ))
+                .padding(8)
+                .on_press(Message::OpenGifPicker)
+                .style(style::icon_button(t)),
                 button(icons::icon(&icons::SMILE, fs * 1.4, t.muted.0))
                     .padding(8)
                     .on_press(Message::OpenEmojiPicker(PickerTarget::Composer))

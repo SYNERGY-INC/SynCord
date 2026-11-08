@@ -5,6 +5,12 @@ use syncord_proto::{ClientMsg, Reaction, ServerMsg};
 
 use crate::app::{App, EmojiPicker, Message, Overlay, PickerTab, PickerTarget, View};
 use crate::emoji;
+use crate::media;
+
+/// Wait this long after the last key press before searching for GIFs.
+const GIF_SEARCH_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+/// Longest side of GIF previews in the picker.
+const GIF_TILE_SIDE: u32 = 200;
 
 impl App {
     /// Emoji suggestions for a half-typed `:code` at the end of the message box.
@@ -44,6 +50,19 @@ impl App {
 
     pub(crate) fn update_social(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::OpenGifPicker => {
+                let open = self
+                    .emoji_picker
+                    .as_ref()
+                    .is_some_and(|p| p.target == PickerTarget::Composer && p.tab == PickerTab::Gifs);
+                if open {
+                    self.emoji_picker = None;
+                    return Task::none();
+                }
+                self.emoji_picker =
+                    Some(EmojiPicker { target: PickerTarget::Composer, search: String::new(), tab: PickerTab::Gifs });
+                return self.update_social(Message::PickerTab(PickerTab::Gifs));
+            }
             Message::OpenEmojiPicker(target) => {
                 let same = self.emoji_picker.as_ref().is_some_and(|p| p.target == target);
                 self.emoji_picker = if same {
@@ -60,8 +79,46 @@ impl App {
             }
             Message::EmojiSearch(q) => {
                 if let Some(p) = &mut self.emoji_picker {
-                    p.search = q;
+                    p.search = q.clone();
+                    if p.tab == PickerTab::Gifs {
+                        // Search once typing pauses, not on every key.
+                        return Task::perform(tokio::time::sleep(GIF_SEARCH_DELAY), move |_| {
+                            Message::GifSearchDue(q.clone())
+                        });
+                    }
                 }
+            }
+            Message::GifSearchDue(q) => {
+                if self.emoji_picker.as_ref().is_some_and(|p| p.tab == PickerTab::Gifs && p.search == q) {
+                    self.search_gifs(&q);
+                }
+            }
+            Message::GifHover(id, true) => {
+                if let Some(old) = self.gifs.hovered.replace(id.clone())
+                    && old != id
+                {
+                    // Animated previews are only kept while the mouse is on them.
+                    self.images.remove(&media::gif_key(&old, true));
+                }
+                if let Some(url) = self.gifs.results.iter().find(|r| r.id == id).map(|r| r.preview_url.clone()) {
+                    return self.load_gif_preview(&id, url, true);
+                }
+            }
+            Message::GifHover(id, false) => {
+                // Only if the mouse hasn't already moved onto another GIF.
+                if self.gifs.hovered.as_deref() == Some(id.as_str()) {
+                    self.gifs.hovered = None;
+                    self.images.remove(&media::gif_key(&id, true));
+                }
+            }
+            Message::SendGif(gif_id) => {
+                let Some(channel_id) = self.session.as_ref().and_then(|s| s.current) else { return Task::none() };
+                self.emoji_picker = None;
+                self.send(ClientMsg::SendGif { channel_id, gif_id });
+                return iced::widget::operation::snap_to(
+                    iced::widget::Id::new(crate::app::MESSAGES_ID),
+                    iced::widget::operation::RelativeOffset::START,
+                );
             }
             Message::PickerTab(tab) => {
                 if let Some(p) = &mut self.emoji_picker {
@@ -69,7 +126,12 @@ impl App {
                     p.search.clear();
                 }
                 if tab == PickerTab::Gifs {
-                    return self.update_media(Message::AnimationTick);
+                    if self.gifs.query.as_deref() != Some("") || self.gifs.error.is_some() {
+                        self.search_gifs("");
+                    }
+                    let previews = self.load_gif_stills();
+                    let focus = iced::widget::operation::focus(iced::widget::Id::new("emoji-search"));
+                    return Task::batch([previews, self.update_media(Message::AnimationTick), focus]);
                 }
             }
             Message::PickEmoji(e) => {
@@ -152,7 +214,54 @@ impl App {
             .is_some_and(|r| r.users.contains(&s.me))
     }
 
+    /// Ask the server for GIFs ("" for trending).
+    fn search_gifs(&mut self, query: &str) {
+        let query = query.trim().to_string();
+        if self.session.as_ref().is_none_or(|s| s.gif_provider.is_none())
+            || self.gifs.waiting.as_deref() == Some(query.as_str())
+            || (self.gifs.query.as_deref() == Some(query.as_str()) && self.gifs.error.is_none())
+        {
+            return;
+        }
+        self.gifs.waiting = Some(query.clone());
+        self.send(ClientMsg::SearchGifs { query });
+    }
+
+    fn load_gif_preview(&mut self, id: &str, url: String, animated: bool) -> Task<Message> {
+        let key = media::gif_key(id, animated);
+        if url.is_empty() || !self.images.start(&key) {
+            return Task::none();
+        }
+        let http = self.http.clone();
+        Task::perform(media::load_url(http, url, GIF_TILE_SIDE), move |r| Message::PictureLoaded(key.clone(), r))
+    }
+
+    /// Still pictures for the GIF results (they only play under the mouse, to save memory).
+    fn load_gif_stills(&mut self) -> Task<Message> {
+        let wanted: Vec<(String, String)> = self
+            .gifs
+            .results
+            .iter()
+            .map(|r| (r.id.clone(), if r.still_url.is_empty() { r.preview_url.clone() } else { r.still_url.clone() }))
+            .collect();
+        Task::batch(wanted.into_iter().map(|(id, url)| self.load_gif_preview(&id, url, false)))
+    }
+
     pub(crate) fn on_social(&mut self, msg: ServerMsg) -> Task<Message> {
+        if let ServerMsg::GifResults { query, results } = msg {
+            let current = self.emoji_picker.as_ref().map(|p| p.search.trim().to_string());
+            if self.gifs.waiting.as_deref() == Some(query.as_str()) {
+                self.gifs.waiting = None;
+            }
+            // Ignore answers to searches the box no longer shows.
+            if current.as_deref() == Some(query.as_str()) || self.gifs.query.is_none() {
+                self.gifs.query = Some(query);
+                self.gifs.results = results;
+                self.gifs.error = None;
+                return self.load_gif_stills();
+            }
+            return Task::none();
+        }
         let Some(s) = &mut self.session else { return Task::none() };
         match msg {
             ServerMsg::DirectOpened(d) => {
