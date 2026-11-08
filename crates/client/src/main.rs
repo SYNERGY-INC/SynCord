@@ -6,6 +6,7 @@
 mod app;
 mod app_avatars;
 mod app_media;
+mod app_messages;
 mod app_people;
 mod app_social;
 mod composer;
@@ -17,8 +18,10 @@ mod net;
 mod settings;
 mod shortcuts;
 mod sound;
+mod sounds;
 mod style;
 mod theme;
+mod theme_editor;
 mod tls;
 mod updater;
 mod video;

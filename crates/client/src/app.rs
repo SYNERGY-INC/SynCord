@@ -62,6 +62,16 @@ pub enum Message {
     SubmitEdit,
     CancelEdit,
     DeleteMessage(MessageId),
+    /// Right-clicked a message (or pressed its "more" button): show its menu at the pointer.
+    OpenMessageMenu(MessageId),
+    CloseMessageMenu,
+    CopyMessageText(MessageId),
+    SelectMessageText(MessageId),
+    SelectAction(iced::widget::text_editor::Action),
+    StopSelecting,
+    MenuReact(MessageId),
+    MenuEdit(MessageId),
+    MenuDelete(MessageId),
     ToggleMembers,
     DismissNotice,
 
@@ -85,6 +95,11 @@ pub enum Message {
     ResetProfile,
     PickTheme(String),
     ReloadThemes,
+    OpenThemeEditor,
+    ThemeEditorAction(iced::widget::text_editor::Action),
+    ThemeEditorFormat(crate::theme_editor::ThemeFormat),
+    SaveThemeEditor,
+    CloseThemeEditor,
     TextScale(f32),
     ToggleCompact(bool),
     ToggleLowMemory(bool),
@@ -104,6 +119,12 @@ pub enum Message {
     ToggleNoiseSuppression(bool),
     ToggleMicTest,
     UserVolume(UserId, f32),
+    ToggleDmSound(bool),
+    ToggleServerSound(bool),
+    ToggleVoiceSounds(bool),
+    TogglePingSound(bool),
+    SoundVolume(f32),
+    TestSound,
 
     // Pictures and files
     AttachFiles,
@@ -522,6 +543,7 @@ pub struct App {
     pub themes: Vec<AppTheme>,
     pub theme_errors: Vec<String>,
     pub theme: AppTheme,
+    pub theme_editor: Option<crate::theme_editor::ThemeEditor>,
 
     generation: u64,
     pub(crate) conn: Option<Connection>,
@@ -544,6 +566,10 @@ pub struct App {
     last_typing_sent: Option<Instant>,
     pub hovered: Option<MessageId>,
     pub editing: Option<(MessageId, String)>,
+    /// Message whose right-click menu is open, and where (window coordinates).
+    pub message_menu: Option<(MessageId, iced::Point)>,
+    /// Message whose text is being selected.
+    pub selecting: Option<crate::app_messages::Selecting>,
     pub overlay: Option<Overlay>,
     pub settings_tab: Option<SettingsTab>,
     pub draft: ProfileDraft,
@@ -620,6 +646,7 @@ impl App {
             themes,
             theme_errors,
             theme,
+            theme_editor: None,
             generation: 0,
             conn: None,
             voice_sink: Default::default(),
@@ -635,6 +662,8 @@ impl App {
             last_typing_sent: None,
             hovered: None,
             editing: None,
+            message_menu: None,
+            selecting: None,
             overlay: None,
             settings_tab: None,
             draft: ProfileDraft::default(),
@@ -728,6 +757,11 @@ impl App {
             iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FilesChosen(vec![path])),
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(true)),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowFocused(false)),
+            // Remembered for placing the message menu; not a message, so moving the mouse costs nothing.
+            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                crate::app_messages::remember_cursor(position);
+                None
+            }
             // Ctrl+K and friends (plain arrow keys only matter while the quick switcher is open).
             iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. })
                 if crate::shortcuts::from_key(&key, physical_key, modifiers, true).is_some() =>
@@ -1074,6 +1108,10 @@ impl App {
                 self.overlay = None;
             }
             Message::CloseSettings => {
+                // Leaving settings abandons unsaved theme edits.
+                if let Some(ed) = self.theme_editor.take() {
+                    self.theme = ed.original;
+                }
                 self.settings_tab = None;
                 self.mic_test = None;
             }
@@ -1113,6 +1151,8 @@ impl App {
                 }
             }
             Message::PickTheme(name) => {
+                // Picking a theme abandons unsaved edits.
+                self.theme_editor = None;
                 if let Some(t) = self.themes.iter().find(|t| t.name == name) {
                     self.theme = t.clone();
                     self.settings.theme = name;
@@ -1120,6 +1160,7 @@ impl App {
                 }
             }
             Message::ReloadThemes => {
+                self.theme_editor = None;
                 let (themes, errors) = theme::load_all();
                 self.themes = themes;
                 self.theme_errors = errors;
@@ -1157,6 +1198,9 @@ impl App {
                 self.send(ClientMsg::JoinVoice { channel_id: id, encrypted: true });
             }
             Message::LeaveVoice => {
+                if self.voice.is_some() && self.settings.voice_sounds {
+                    self.settings.play(crate::sounds::Sound::Leave);
+                }
                 self.send(ClientMsg::LeaveVoice);
                 self.voice_joining = None;
                 self.rejoin_voice = None;
@@ -1222,6 +1266,27 @@ impl App {
                 self.settings.noise_suppression = v;
                 self.save_and_apply_voice_config();
             }
+            Message::ToggleDmSound(v) => {
+                self.settings.dm_sound = v;
+                self.settings.save();
+            }
+            Message::ToggleServerSound(v) => {
+                self.settings.server_sound = v;
+                self.settings.save();
+            }
+            Message::ToggleVoiceSounds(v) => {
+                self.settings.voice_sounds = v;
+                self.settings.save();
+            }
+            Message::TogglePingSound(v) => {
+                self.settings.ping_sound = v;
+                self.settings.save();
+            }
+            Message::SoundVolume(v) => {
+                self.settings.sound_volume = v;
+                self.settings.save();
+            }
+            Message::TestSound => self.settings.play(crate::sounds::Sound::Message),
             Message::ToggleMicTest => {
                 if self.mic_test.take().is_none() && self.voice.is_none() {
                     match VoiceEngine::start(self.settings.voice_config(), Link::Loopback, false, false) {
@@ -1276,6 +1341,21 @@ impl App {
             | Message::ShowServer
             | Message::OpenDirect(_)
             | Message::NewDirect => return self.update_social(message),
+
+            Message::OpenMessageMenu(_)
+            | Message::CloseMessageMenu
+            | Message::CopyMessageText(_)
+            | Message::SelectMessageText(_)
+            | Message::SelectAction(_)
+            | Message::StopSelecting
+            | Message::MenuReact(_)
+            | Message::MenuEdit(_)
+            | Message::MenuDelete(_) => return self.update_messages(message),
+            Message::OpenThemeEditor
+            | Message::ThemeEditorAction(_)
+            | Message::ThemeEditorFormat(_)
+            | Message::SaveThemeEditor
+            | Message::CloseThemeEditor => return self.update_theme_editor(message),
 
             Message::CheckForUpdates
             | Message::UpdateFound(_)
@@ -1352,12 +1432,18 @@ impl App {
                 }
             }
             Message::Escape => {
-                if self.emoji_picker.is_some() {
+                if self.message_menu.is_some() {
+                    self.message_menu = None;
+                } else if self.selecting.is_some() {
+                    self.selecting = None;
+                } else if self.emoji_picker.is_some() {
                     self.emoji_picker = None;
                 } else if self.overlay.is_some() {
                     self.close_overlay();
                 } else if self.editing.is_some() {
                     self.editing = None;
+                } else if self.theme_editor.is_some() {
+                    return self.update_theme_editor(Message::CloseThemeEditor);
                 } else if self.settings_tab.is_some() {
                     self.settings_tab = None;
                 }
@@ -1536,6 +1622,9 @@ impl App {
                 match self.start_engine(token, key, udp_port) {
                     Ok(engine) => {
                         self.install_engine(channel_id, ssrc, token, key, udp_port, engine);
+                        if self.settings.voice_sounds && !self.deafened {
+                            self.settings.play(crate::sounds::Sound::Join);
+                        }
                         if self.muted || self.deafened {
                             self.apply_mute_state();
                         }
@@ -1549,6 +1638,20 @@ impl App {
             ServerMsg::VoiceStateUpdate { user_id, state } => {
                 let Some(s) = &mut self.session else { return };
                 let me = s.me;
+                // Someone else came into or left the voice channel we're in.
+                if let Some(mine) = self.voice.as_ref().map(|v| v.channel_id)
+                    && user_id != me
+                    && self.settings.voice_sounds
+                    && !self.deafened
+                {
+                    let was_here = s.voice.get(&user_id).is_some_and(|v| v.channel_id == mine);
+                    let is_here = state.as_ref().is_some_and(|v| v.channel_id == mine);
+                    match (was_here, is_here) {
+                        (false, true) => self.settings.play(crate::sounds::Sound::Join),
+                        (true, false) => self.settings.play(crate::sounds::Sound::Leave),
+                        _ => {}
+                    }
+                }
                 match &state {
                     Some(st) => s.voice.insert(user_id, st.clone()),
                     None => s.voice.remove(&user_id),
@@ -1575,8 +1678,8 @@ impl App {
                     match in_dm_call {
                         Some(c) if mine != Some(c) && self.ringing != Some(c) => {
                             self.ringing = Some(c);
-                            if self.settings.ping_sound {
-                                crate::sound::ping(self.settings.output_device.clone(), self.settings.output_volume);
+                            if self.settings.ping_sound && !self.deafened {
+                                crate::sound::ping(self.settings.output_device.clone(), self.settings.sound_volume);
                             }
                         }
                         Some(_) => {}
@@ -1625,6 +1728,8 @@ impl App {
             self.set_composer(String::new());
             self.composer_mentions.clear();
             self.editing = None;
+            self.message_menu = None;
+            self.selecting = None;
             self.last_typing_sent = None;
             self.emoji_picker = None;
             self.pending.clear();
@@ -1813,6 +1918,17 @@ impl App {
                     t.remove(&m.author_id);
                 }
                 let channel = m.channel_id;
+                // Chime for messages from others (not while deafened). Pings have their own
+                // sound (see on_mention), and blocked or ignored people make none.
+                let quiet = s.mentions_me(&m)
+                    || s.blocked.contains(&m.author_id)
+                    || self.settings.ignored_here(&self.settings.server).contains(&m.author_id);
+                if Some(m.author_id) != me && !self.deafened && !quiet {
+                    let in_server = s.channels.iter().any(|c| c.id == channel);
+                    if (in_server && self.settings.server_sound) || (!in_server && self.settings.dm_sound) {
+                        self.settings.play(crate::sounds::Sound::Message);
+                    }
+                }
                 let latest = s.latest.entry(channel).or_insert(m.id);
                 *latest = (*latest).max(m.id);
                 if Some(m.author_id) == me {

@@ -23,7 +23,19 @@
 - **Twemoji**, the same emoji Discord uses, on every computer, including the newest emoji.
 - Remove GIFs from your favourites with the star in the GIF picker.
 - Long file names no longer run out of their box.
+- **Videos play in the chat** (MP4/MOV from phones and screen recorders): press play, then
+  pause, seek and change the volume right there.
 - Menus and dialogs pop open with a little bounce.
+
+From hepbep (thanks!):
+
+- **Right-click a message** (or its ⋯ button) to react, copy its text, select part of it, edit or
+  delete it. Double-click a message to select its text.
+- **Sounds**: a chime for new messages (separate switches for DMs and server channels), chimes
+  when people join or leave your voice channel, a volume slider and a Test button
+  (Voice & Audio → Sounds).
+- **Theme editor** in Appearance: edit your theme as CSS or TOML with a live preview. `.css` theme
+  files work too.
 
 ## v0.4.0
 

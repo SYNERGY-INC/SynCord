@@ -198,8 +198,8 @@ impl App {
             return iced::Task::none();
         }
         *s.mention_counts.entry(m.channel_id).or_default() += 1;
-        if self.settings.ping_sound {
-            crate::sound::ping(self.settings.output_device.clone(), self.settings.output_volume);
+        if self.settings.ping_sound && !self.deafened {
+            crate::sound::ping(self.settings.output_device.clone(), self.settings.sound_volume);
         }
         iced::window::latest()
             .and_then(|id| iced::window::request_user_attention(id, Some(iced::window::UserAttention::Informational)))

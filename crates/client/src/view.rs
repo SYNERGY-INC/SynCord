@@ -54,7 +54,7 @@ impl App {
 
         let base: Element<'_, Message> = match self.settings_tab {
             Some(tab) => self.settings_view(session, tab),
-            None => self.main_view(session),
+            None => self.with_message_menu(self.main_view(session)),
         };
 
         match &self.overlay {
@@ -710,6 +710,7 @@ impl App {
 
         let jumbo = crate::emoji::is_jumbo(&m.content);
         let body_text = self.message_text(s, &m.content, if jumbo { fs * 2.6 } else { fs });
+        let selecting = self.selecting.as_ref().filter(|sel| sel.message_id == m.id);
         let body: Element<'a, Message> = match editing {
             Some((_, value)) => column![
                 text_input("", value)
@@ -732,7 +733,9 @@ impl App {
             .into(),
             None => {
                 let mut col = column![].spacing(6);
-                if !m.content.is_empty() {
+                if let Some(sel) = selecting {
+                    col = col.push(self.selectable_body(sel, fs));
+                } else if !m.content.is_empty() {
                     let mut r = row![body_text].spacing(6).align_y(Alignment::End);
                     if m.edited_at.is_some() {
                         r = r.push(text("(edited)").size(fs * 0.7).color(t.muted.0));
@@ -823,7 +826,7 @@ impl App {
         let mine = Some(m.author_id) == Some(s.me);
         let in_server = s.channels.iter().any(|c| c.id == m.channel_id);
         let mut line = row![container(content).width(Length::Fill)].align_y(Alignment::Start);
-        if hovered && editing.is_none() {
+        if hovered && editing.is_none() && selecting.is_none() {
             let mut tools = row![
                 button(icons::icon(&icons::SMILE, fs * 1.1, t.muted.0))
                     .padding([3, 6])
@@ -849,6 +852,12 @@ impl App {
                         .style(style::link_button(danger, style::darken(danger, 0.2))),
                 );
             }
+            tools = tools.push(
+                button(icons::icon(&icons::MORE, fs * 1.1, t.muted.0))
+                    .padding([3, 6])
+                    .on_press(Message::OpenMessageMenu(m.id))
+                    .style(style::icon_button(t)),
+            );
             line = line.push(container(tools).padding(2).style(card(t.floating.0, t.radius * 0.6)));
         }
 
@@ -873,6 +882,8 @@ impl App {
         )
         .on_enter(Message::HoverMessage(Some(m.id)))
         .on_exit(Message::HoverMessage(None))
+        .on_right_press(Message::OpenMessageMenu(m.id))
+        .on_double_click(Message::SelectMessageText(m.id))
         .into()
     }
 
@@ -1429,6 +1440,35 @@ impl App {
             text("Tip: use headphones so others don't hear themselves echo through your mic.")
                 .size(fs * 0.8)
                 .color(t.muted.0),
+            divider(t.hover.0),
+            label(t, "Sounds", fs),
+            toggler(st.dm_sound).label("Play a sound for new direct messages").on_toggle(Message::ToggleDmSound).text_size(fs),
+            toggler(st.server_sound)
+                .label("Play a sound for new messages in server channels")
+                .on_toggle(Message::ToggleServerSound)
+                .text_size(fs),
+            toggler(st.ping_sound)
+                .label("Play a sound when someone mentions you or calls you")
+                .on_toggle(Message::TogglePingSound)
+                .text_size(fs),
+            toggler(st.voice_sounds)
+                .label("Play a sound when people join or leave your voice channel")
+                .on_toggle(Message::ToggleVoiceSounds)
+                .text_size(fs),
+            row![
+                text("Sound volume").size(fs * 0.9).color(t.text.0),
+                slider(0.0..=1.0, st.sound_volume, Message::SoundVolume).step(0.05_f32).width(240),
+                text(format!("{:.0}%", st.sound_volume * 100.0)).size(fs * 0.85).color(t.text.0).width(48),
+                button(text("Test").size(fs * 0.9))
+                    .padding([6, 14])
+                    .on_press(Message::TestSound)
+                    .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+            text("Sounds play on the output device above and are muted while you're deafened.")
+                .size(fs * 0.8)
+                .color(t.muted.0),
         ]
         .spacing(14);
         if let Some(notice) = &self.notice {
@@ -1605,7 +1645,7 @@ impl App {
             label(t, "Custom themes", fs),
             text(match themes_dir() {
                 Some(dir) => format!(
-                    "Drop .toml theme files into {}. An example.toml is there to copy. Then press Reload.",
+                    "Drop .toml or .css theme files into {}. An example.toml is there to copy. Then press Reload.",
                     dir.display()
                 ),
                 None => "Custom themes aren't supported on this system.".into(),
@@ -1622,6 +1662,7 @@ impl App {
         for err in &self.theme_errors {
             col = col.push(text(format!("Couldn't load {err}")).size(fs * 0.85).color(t.danger.0));
         }
+        col = col.push(label(t, "Theme editor", fs)).push(self.theme_editor_view());
 
         col = col
             .push(label(t, "Text size", fs))
