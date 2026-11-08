@@ -203,9 +203,9 @@ impl App {
         if s.view == View::Home {
             let mut layout = row![self.server_rail(s), self.home_sidebar(s), self.chat_area(s)];
             if self.search.open {
-                layout = layout.push(self.search_panel(s));
+                layout = layout.push(self.sliding_panel(self.search_panel(s)));
             } else if let Some(p) = &self.pins {
-                layout = layout.push(self.pins_panel(s, p));
+                layout = layout.push(self.sliding_panel(self.pins_panel(s, p)));
             }
             return layout.height(Length::Fill).into();
         }
@@ -222,13 +222,19 @@ impl App {
         }
         let mut layout = row![self.server_rail(s), self.channel_sidebar(s), self.chat_area(s)];
         if self.search.open {
-            layout = layout.push(self.search_panel(s));
+            layout = layout.push(self.sliding_panel(self.search_panel(s)));
         } else if let Some(p) = &self.pins {
-            layout = layout.push(self.pins_panel(s, p));
+            layout = layout.push(self.sliding_panel(self.pins_panel(s, p)));
         } else if self.settings.show_members {
-            layout = layout.push(self.member_list(s));
+            layout = layout.push(self.sliding_panel(self.member_list(s)));
         }
         layout.height(Length::Fill).into()
+    }
+
+    /// A right-hand panel, sliding in from the edge as it opens.
+    fn sliding_panel<'a>(&self, panel: Element<'a, Message>) -> Element<'a, Message> {
+        let dx = self.slid(self.panel_opened, 36.0);
+        crate::widgets::slide(panel, iced::Vector::new(dx, 0.0)).into()
     }
 
     fn server_rail<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
@@ -385,13 +391,11 @@ impl App {
             if s.mention_count(ch.id) > 0 && !selected {
                 line = line.push(mention_badge(t, s.mention_count(ch.id), fs));
             }
-            list = list.push(
-                button(line)
-                    .width(Length::Fill)
-                    .padding([6, 8])
-                    .on_press(Message::SelectChannel(ch.id))
-                    .style(style::row_button(t, selected)),
-            );
+            list = list.push(style::fade_row(
+                t,
+                button(line).width(Length::Fill).padding([6, 8]).on_press(Message::SelectChannel(ch.id)),
+                selected,
+            ));
         }
 
         list = list.push(self.category(s, "Voice channels", ChannelKind::Voice));
@@ -887,6 +891,8 @@ impl App {
             prev = Some(m);
         }
 
+        // Switching channels: the messages ease up into place.
+        let list = crate::widgets::slide(list, iced::Vector::new(0.0, self.slid(self.switched, 18.0)));
         scrollable(list)
             .id(Id::new(MESSAGES_ID))
             .anchor_bottom()
@@ -1085,7 +1091,8 @@ impl App {
             (true, _, _) => Some(with_alpha(t.accent.0, 0.2)),
             (_, true, true) => Some(with_alpha(gold, 0.14)),
             (_, true, false) => Some(with_alpha(gold, 0.09)),
-            (_, false, true) => Some(with_alpha(style::darken(t.chat.0, 0.12), 1.0)),
+            // Plain hovering fades in (below).
+            (_, false, true) => None,
             (_, false, false) => None,
         };
         let bar_color = if jumped {
@@ -1105,7 +1112,7 @@ impl App {
             .width(2)
             .height(Length::Fill)
             .style(move |_| container::Style { background: Some(bar_color.into()), ..Default::default() });
-        mouse_area(
+        let row = mouse_area(
             container(row![bar, container(line).padding([2, 14]).width(Length::Fill)])
                 .width(Length::Fill)
                 .style(move |_| container::Style { background: hover_bg.map(Into::into), ..Default::default() }),
@@ -1113,8 +1120,13 @@ impl App {
         .on_enter(Message::HoverMessage(Some(m.id)))
         .on_exit(Message::HoverMessage(None))
         .on_right_press(Message::OpenMessageMenu(m.id))
-        .on_double_click(Message::SelectMessageText(m.id))
-        .into()
+        .on_double_click(Message::SelectMessageText(m.id));
+        let row = crate::widgets::hover_fade(row, style::darken(t.chat.0, 0.12), 0.0);
+        // New messages slide up into place.
+        match self.arrived.get(&m.id) {
+            Some(at) => crate::widgets::slide(row, iced::Vector::new(0.0, self.slid(*at, 14.0))).into(),
+            None => row.into(),
+        }
     }
 
     fn composer<'a>(&'a self, s: &'a Session, ch: ChannelInfo<'a>) -> Element<'a, Message> {
@@ -1251,14 +1263,18 @@ impl App {
                 let row_content = row![self.avatar_status(u, 32.0, is_online, t.sidebar.0), info]
                     .spacing(12)
                     .align_y(Alignment::Center);
-                let mut entry = button(row_content)
-                    .width(Length::Fill)
-                    .padding([4, 8])
-                    .on_press(Message::ShowProfile(u.id))
-                    .style(style::row_button(t, false));
-                if !is_online {
-                    entry = entry.style(dimmed(style::row_button(t, false)));
-                }
+                let entry =
+                    button(row_content).width(Length::Fill).padding([4, 8]).on_press(Message::ShowProfile(u.id));
+                let entry: Element<'a, Message> = if is_online {
+                    style::fade_row(t, entry, false)
+                } else {
+                    crate::widgets::hover_fade(
+                        entry.style(dimmed(style::row_button_still(t, false))),
+                        t.hover.0,
+                        t.radius * 0.6,
+                    )
+                    .into()
+                };
                 list = list.push(self.with_user_menu(entry, u.id));
             }
         }

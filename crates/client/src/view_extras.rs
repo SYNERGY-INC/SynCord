@@ -728,13 +728,11 @@ impl App {
             } else if unread {
                 line = line.push(container(space()).width(8).height(8).style(style::flat(t.header.0, 4.0)));
             }
-            list = list.push(
-                button(line)
-                    .width(Length::Fill)
-                    .padding([5, 8])
-                    .on_press(Message::SelectChannel(d.id))
-                    .style(style::row_button(t, selected)),
-            );
+            list = list.push(style::fade_row(
+                t,
+                button(line).width(Length::Fill).padding([5, 8]).on_press(Message::SelectChannel(d.id)),
+                selected,
+            ));
         }
 
         container(column![

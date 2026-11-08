@@ -274,13 +274,34 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for MenuOverlay<'_, '_,
 /// Draw `content` scaled about its middle (layout and clicks are unchanged).
 /// Used for the little "pop" when dialogs and menus open.
 pub fn pop<'a, Message: 'a>(content: impl Into<Element<'a, Message>>, scale: f32) -> Pop<'a, Message> {
-    Pop { content: content.into(), scale }
+    Pop { content: content.into(), scale, offset: Vector::ZERO }
+}
+
+/// `content` drawn moved by `offset` (for sliding things into place). Like [`pop`],
+/// only the drawing moves, so it's free when the offset is zero.
+pub fn slide<'a, Message: 'a>(content: impl Into<Element<'a, Message>>, offset: Vector) -> Pop<'a, Message> {
+    Pop { content: content.into(), scale: 1.0, offset }
 }
 
 pub struct Pop<'a, Message> {
     content: Element<'a, Message>,
     scale: f32,
+    offset: Vector,
 }
+
+/// Quick ease-out: fast at first, gently settling.
+pub fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+/// How far something sliding `distance` px into place over `duration_ms` still has to
+/// go after `elapsed_ms` (0 once it's there).
+pub fn slide_left(elapsed_ms: f32, duration_ms: f32, distance: f32) -> f32 {
+    distance * (1.0 - ease_out(elapsed_ms / duration_ms))
+}
+
+/// How long slides take.
+pub const SLIDE_MS: f32 = 220.0;
 
 /// How big something that opened `elapsed_ms` ago is drawn: a quick grow with a
 /// slight overshoot, settling at full size after [`POP_MS`].
@@ -360,11 +381,11 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Pop<'a, Message> {
         viewport: &Rectangle,
     ) {
         use iced::advanced::Renderer as _;
-        if (self.scale - 1.0).abs() < 0.001 {
+        if (self.scale - 1.0).abs() < 0.001 && self.offset.x.abs() < 0.1 && self.offset.y.abs() < 0.1 {
             return self.content.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
         }
         let c = layout.bounds().center();
-        let t = iced::Transformation::translate(c.x, c.y)
+        let t = iced::Transformation::translate(c.x + self.offset.x, c.y + self.offset.y)
             * iced::Transformation::scale(self.scale)
             * iced::Transformation::translate(-c.x, -c.y);
         renderer.with_transformation(t, |r| {
@@ -411,5 +432,175 @@ mod tests {
         assert!(peak > 1.0 && peak < 1.04, "a small bounce past full size: {peak}");
         assert!((pop_scale(260.0) - 1.0).abs() < 1e-4);
         assert!((pop_scale(9999.0) - 1.0).abs() < 1e-4);
+    }
+}
+
+// ---- Hover fade
+
+/// A background that fades in when the pointer is over `content` and out when it
+/// leaves (instead of switching instantly). Redraws only while fading.
+pub fn hover_fade<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    color: iced::Color,
+    radius: f32,
+) -> HoverFade<'a, Message> {
+    HoverFade { content: content.into(), color, radius }
+}
+
+pub struct HoverFade<'a, Message> {
+    content: Element<'a, Message>,
+    color: iced::Color,
+    radius: f32,
+}
+
+/// Fade length in milliseconds.
+const FADE_MS: f32 = 140.0;
+
+#[derive(Default)]
+struct FadeState {
+    hovered: bool,
+    /// When `hovered` last changed, and how faded-in it was then.
+    since: Option<(std::time::Instant, f32)>,
+}
+
+impl FadeState {
+    fn level(&self) -> f32 {
+        let target = if self.hovered { 1.0 } else { 0.0 };
+        let Some((at, from)) = self.since else { return target };
+        let t = ease_out(at.elapsed().as_secs_f32() * 1000.0 / FADE_MS);
+        from + (target - from) * t
+    }
+
+    fn fading(&self) -> bool {
+        self.since.is_some_and(|(at, _)| at.elapsed().as_secs_f32() * 1000.0 < FADE_MS)
+    }
+}
+
+impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for HoverFade<'a, Message> {
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn state(&self) -> widget::tree::State {
+        widget::tree::State::new(FadeState::default())
+    }
+
+    fn tag(&self) -> widget::tree::Tag {
+        widget::tree::Tag::of::<FadeState>()
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let state = tree.state.downcast_mut::<FadeState>();
+        match event {
+            Event::Mouse(_) => {
+                let over = cursor.is_over(layout.bounds());
+                if over != state.hovered {
+                    state.since = Some((std::time::Instant::now(), state.level()));
+                    state.hovered = over;
+                    shell.request_redraw();
+                }
+            }
+            Event::Window(iced::window::Event::RedrawRequested(_)) if state.fading() => shell.request_redraw(),
+            _ => {}
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        use iced::advanced::Renderer as _;
+        let level = tree.state.downcast_ref::<FadeState>().level();
+        if level > 0.01 {
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: layout.bounds(),
+                    border: iced::Border { radius: self.radius.into(), ..Default::default() },
+                    ..Default::default()
+                },
+                iced::Color { a: self.color.a * level, ..self.color },
+            );
+        }
+        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        self.content.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, Message: 'a> From<HoverFade<'a, Message>> for Element<'a, Message> {
+    fn from(h: HoverFade<'a, Message>) -> Self {
+        Element::new(h)
     }
 }

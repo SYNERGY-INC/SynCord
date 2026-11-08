@@ -746,6 +746,11 @@ pub struct App {
     /// Start of the GIF animation clock, and the latest tick.
     pub anim_epoch: Instant,
     pub now: Instant,
+    /// Messages that just arrived in the open channel (they slide in).
+    pub(crate) arrived: HashMap<MessageId, Instant>,
+    /// When the side panel (members, search, pins) last opened, and the channel last changed.
+    pub(crate) panel_opened: Instant,
+    pub(crate) switched: Instant,
     pub pending: Vec<PendingUpload>,
     pub(crate) pending_channel: Option<ChannelId>,
     pub(crate) next_upload_id: u64,
@@ -859,6 +864,9 @@ impl App {
             images: ImageCache::default(),
             anim_epoch: Instant::now(),
             now: Instant::now(),
+            arrived: HashMap::new(),
+            panel_opened: Instant::now(),
+            switched: Instant::now(),
             pending: Vec::new(),
             pending_channel: None,
             next_upload_id: 1,
@@ -1093,9 +1101,17 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         // Note when a dialog, menu or picker opens, so it can pop in.
+        let panel = |a: &Self| (a.search.open, a.pins.is_some(), a.settings.show_members);
+        let panel_before = panel(self);
         let before = (self.overlay.as_ref().map(std::mem::discriminant), self.emoji_picker.is_some(), self.ringing);
         let task = self.update_inner(message);
         let after = (self.overlay.as_ref().map(std::mem::discriminant), self.emoji_picker.is_some(), self.ringing);
+        // A side panel opening (or swapping for another) slides in.
+        let panel_after = panel(self);
+        if panel_after != panel_before && (panel_after.0 || panel_after.1 || panel_after.2) {
+            self.panel_opened = Instant::now();
+            self.now = self.panel_opened;
+        }
         if after.0.is_some() && after.0 != before.0 {
             self.popped = Instant::now();
             self.now = self.popped;
@@ -1118,7 +1134,19 @@ impl App {
 
     fn animating_pops(&self) -> bool {
         let busy = |at: Instant| at.elapsed().as_secs_f32() * 1000.0 < crate::widgets::POP_MS + 40.0;
-        busy(self.popped) || busy(self.picker_popped) || busy(self.call_popped)
+        let sliding = |at: &Instant| at.elapsed().as_secs_f32() * 1000.0 < crate::widgets::SLIDE_MS + 40.0;
+        busy(self.popped)
+            || busy(self.picker_popped)
+            || busy(self.call_popped)
+            || sliding(&self.panel_opened)
+            || sliding(&self.switched)
+            || self.arrived.values().any(sliding)
+    }
+
+    /// How far something that started sliding at `at` still is from its place.
+    pub(crate) fn slid(&self, at: Instant, distance: f32) -> f32 {
+        let ms = self.now.saturating_duration_since(at).as_secs_f32() * 1000.0;
+        crate::widgets::slide_left(ms, crate::widgets::SLIDE_MS, distance)
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
@@ -2157,6 +2185,10 @@ impl App {
 
     pub(crate) fn select_channel(&mut self, id: ChannelId) -> Task<Message> {
         let Some(current) = self.session.as_ref().map(|s| s.current) else { return Task::none() };
+        if current != Some(id) {
+            self.switched = Instant::now();
+            self.now = self.switched;
+        }
         // The pins panel follows you to the new channel.
         if let Some(p) = self.pins.as_mut().filter(|p| p.channel != id) {
             *p = crate::app_search::Pins { channel: id, messages: None };
@@ -2420,6 +2452,12 @@ impl App {
                 // Sending while looking at older messages takes you back to the newest.
                 let back_to_present = st.detached && Some(m.author_id) == me && s.current == Some(channel);
                 if st.loaded && !st.detached && !st.messages.iter().any(|x| x.id == m.id) {
+                    if s.current == Some(channel) {
+                        let now = Instant::now();
+                        self.arrived.retain(|_, at| now.duration_since(*at) < Duration::from_secs(1));
+                        self.arrived.insert(m.id, now);
+                        self.now = now;
+                    }
                     st.messages.push(m);
                 }
                 let attention = if flash { self.request_attention() } else { Task::none() };

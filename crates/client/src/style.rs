@@ -64,6 +64,23 @@ pub fn row_button(t: &AppTheme, selected: bool) -> impl Fn(&Theme, button::Statu
     }
 }
 
+/// A list row whose hover background fades (see [`fade_row`]): only the selected
+/// state is drawn here.
+pub fn row_button_still(t: &AppTheme, selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style + use<> {
+    let (sel, text, header, radius) = (t.selected.0, t.muted.0, t.header.0, t.radius * 0.6);
+    move |_, status| button::Style {
+        background: selected.then(|| sel.into()),
+        text_color: if selected || matches!(status, button::Status::Hovered) { header } else { text },
+        border: Border { radius: radius.into(), ..Default::default() },
+        ..Default::default()
+    }
+}
+
+/// A list row (channel, person, conversation) with a hover highlight that fades in and out.
+pub fn fade_row<'a, M: Clone + 'a>(t: &AppTheme, row: iced::widget::Button<'a, M>, selected: bool) -> Element<'a, M> {
+    crate::widgets::hover_fade(row.style(row_button_still(t, selected)), t.hover.0, t.radius * 0.6).into()
+}
+
 /// Solid button in the given colour.
 pub fn solid_button(color: Color, radius: f32) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| {
