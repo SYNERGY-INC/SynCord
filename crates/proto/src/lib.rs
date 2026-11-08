@@ -233,6 +233,9 @@ pub struct Ready {
     /// What you've already read, per channel.
     #[serde(default)]
     pub read_states: Vec<ReadState>,
+    /// The server program's version (empty for servers older than 0.3).
+    #[serde(default)]
+    pub server_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

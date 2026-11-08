@@ -82,6 +82,8 @@ fn load_config(path: &Path) -> Config {
 
 #[tokio::main]
 async fn main() {
+    // Update downloads use HTTPS; use the same small crypto library as everything else.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let config_path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| CONFIG_FILE.into());
     let config_path = std::path::absolute(&config_path).unwrap_or(config_path);
     let dir = config_path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -119,6 +121,7 @@ async fn main() {
     let state = AppState::new(config, db);
     let app = router(state.clone());
     start_cleanup(state.clone());
+    syncord_server::update::start(state.clone());
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,

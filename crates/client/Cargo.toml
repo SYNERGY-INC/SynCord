@@ -29,6 +29,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 emojis = "0.9"
+syncord-update.workspace = true
 
 [dev-dependencies]
 syncord-server = { path = "../server" }

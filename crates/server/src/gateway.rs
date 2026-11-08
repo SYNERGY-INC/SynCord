@@ -627,6 +627,7 @@ impl Connection {
             voice: self.state.voice.states(),
             directs,
             read_states,
+            server_version: env!("CARGO_PKG_VERSION").to_string(),
         };
         if self.send(&ServerMsg::Ready(ready)).await { Flow::Continue } else { Flow::Close }
     }

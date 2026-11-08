@@ -4,6 +4,7 @@
 
 Unicode true
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
 
 !ifndef VERSION
   !error "Pass -DVERSION=x.y.z"
@@ -76,6 +77,15 @@ SectionEnd
 Section "Desktop shortcut" SecDesktop
   CreateShortcut "$DESKTOP\${APP}.lnk" "$INSTDIR\${APP}.exe"
 SectionEnd
+
+; Automatic updates run this installer with /S /RELAUNCH: reopen SynCord when done.
+Function .onInstSuccess
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/RELAUNCH" $1
+  IfErrors +2
+    Exec '"$INSTDIR\${APP}.exe"'
+FunctionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The ${APP} app."

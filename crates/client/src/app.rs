@@ -120,6 +120,15 @@ pub enum Message {
     PickEmojiSuggestion(String),
     ToggleReaction(MessageId, String),
 
+    // Updates
+    CheckForUpdates,
+    UpdateFound(Result<crate::updater::Found, String>),
+    UpdateTick,
+    UpdateNow,
+    UpdateLater,
+    OpenUpdatePage,
+    DismissUpdate,
+
     // Direct messages
     ShowHome,
     ShowServer,
@@ -247,6 +256,7 @@ pub struct Session {
     pub latest: HashMap<ChannelId, MessageId>,
     /// Server channel to go back to when leaving the DM home.
     pub last_server_channel: Option<ChannelId>,
+    pub server_version: String,
 }
 
 impl Session {
@@ -393,6 +403,7 @@ pub struct App {
     pub(crate) next_upload_id: u64,
     pub emoji_picker: Option<EmojiPicker>,
     pub(crate) pending_direct: Option<UserId>,
+    pub update: crate::updater::Stage,
 }
 
 impl App {
@@ -445,6 +456,7 @@ impl App {
             next_upload_id: 1,
             emoji_picker: None,
             pending_direct: None,
+            update: crate::updater::Stage::Checking,
         };
 
         // Log straight back in if we have a saved session.
@@ -456,7 +468,15 @@ impl App {
             }
             _ => Task::none(),
         };
-        (app, task)
+        // Look for updates shortly after starting.
+        let check = Task::perform(
+            async {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                crate::updater::check_and_download().await
+            },
+            Message::UpdateFound,
+        );
+        (app, Task::batch([task, check]))
     }
 
     pub fn title(&self) -> String {
@@ -496,6 +516,18 @@ impl App {
         if self.voice.is_some() || self.mic_test.is_some() {
             // Refresh speaking indicators and the mic meter.
             subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::VoiceTick));
+        }
+        {
+            use crate::updater::{CHECK_EVERY, Stage};
+            match self.update {
+                Stage::Ready { .. } => {
+                    subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::UpdateTick))
+                }
+                Stage::UpToDate | Stage::Failed(_) => {
+                    subs.push(iced::time::every(CHECK_EVERY).map(|_| Message::CheckForUpdates))
+                }
+                _ => {}
+            }
         }
         if self.wants_animation() {
             subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
@@ -901,6 +933,14 @@ impl App {
             | Message::OpenDirect(_)
             | Message::NewDirect => return self.update_social(message),
 
+            Message::CheckForUpdates
+            | Message::UpdateFound(_)
+            | Message::UpdateTick
+            | Message::UpdateNow
+            | Message::UpdateLater
+            | Message::OpenUpdatePage
+            | Message::DismissUpdate => return self.update_updates(message),
+
             Message::Tick => {
                 if let Some(s) = &mut self.session {
                     for users in s.typing.values_mut() {
@@ -921,6 +961,81 @@ impl App {
             }
         }
         Task::none()
+    }
+
+    fn update_updates(&mut self, message: Message) -> Task<Message> {
+        use crate::updater::{self, COUNTDOWN, Found, Stage};
+        let countdown = || Instant::now() + Duration::from_secs(COUNTDOWN);
+        match message {
+            Message::CheckForUpdates => {
+                if matches!(self.update, Stage::Checking | Stage::Ready { .. } | Stage::Installing(_)) {
+                    return Task::none();
+                }
+                self.update = Stage::Checking;
+                return Task::perform(updater::check_and_download(), Message::UpdateFound);
+            }
+            Message::UpdateFound(result) => {
+                self.update = match result {
+                    Ok(Found::UpToDate) => Stage::UpToDate,
+                    Ok(Found::Ready { version, notes, file }) => {
+                        Stage::Ready { version, notes, file, deadline: countdown() }
+                    }
+                    Ok(Found::Manual { version, page }) => Stage::Manual { version, page, dismissed: false },
+                    Err(e) => {
+                        eprintln!("update check failed: {e}");
+                        Stage::Failed(e)
+                    }
+                };
+            }
+            Message::UpdateTick => {
+                let in_call = self.voice.is_some() || self.voice_joining.is_some();
+                if let Stage::Ready { deadline, .. } = &mut self.update {
+                    if in_call {
+                        // Never interrupt a call: start counting again once it's over.
+                        *deadline = countdown();
+                    } else if Instant::now() >= *deadline {
+                        return self.install_update();
+                    }
+                }
+            }
+            Message::UpdateNow => return self.install_update(),
+            Message::UpdateLater => {
+                if let Stage::Ready { version, .. } = &self.update {
+                    self.update = Stage::Postponed { version: version.clone() };
+                }
+            }
+            Message::OpenUpdatePage => {
+                if let Stage::Manual { page, .. } = &self.update {
+                    updater::open_in_browser(page);
+                }
+            }
+            Message::DismissUpdate => {
+                if let Stage::Manual { dismissed, .. } = &mut self.update {
+                    *dismissed = true;
+                }
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
+    fn install_update(&mut self) -> Task<Message> {
+        use crate::updater::{self, Stage};
+        let Stage::Ready { version, file, .. } = &self.update else { return Task::none() };
+        let (version, file) = (version.clone(), file.clone());
+        self.update = Stage::Installing(version.clone());
+        match updater::install(&file) {
+            Ok(()) => {
+                // Settings are saved as they change; just make sure, then hand over to the new version.
+                self.settings.save();
+                iced::exit()
+            }
+            Err(e) => {
+                self.notice = Some(format!("Couldn't install SynCord {version}: {e}"));
+                self.update = Stage::Failed(e);
+                Task::none()
+            }
+        }
     }
 
     fn stop_voice(&mut self) {
@@ -1168,6 +1283,7 @@ impl App {
             read: ready.read_states.into_iter().map(|r| (r.channel_id, r.last_read)).collect(),
             latest,
             last_server_channel: None,
+            server_version: ready.server_version,
         });
         if let Some(channel_id) = self.rejoin_voice.take()
             && self.session.as_ref().is_some_and(|s| s.channels.iter().any(|c| c.id == channel_id))

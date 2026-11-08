@@ -105,11 +105,37 @@ Send that link to your friends. The release page explains which file each person
   (macOS 15+: **System Settings → Privacy & Security → Open Anyway**; older: right-click → **Open**).
 - **Phones and tablets** aren't supported yet. SynCord is a desktop app for now.
 
+### Automatic updates
+
+SynCord keeps itself up to date:
+
+- **The app** checks for a new release a few seconds after it opens and every few hours after
+  that, downloads it in the background, then shows a popup: *Updating SynCord to x.y.z in 10
+  seconds*. It installs on its own and reopens (or click **Update now**; **Later** installs it the
+  next time you open SynCord). If you're in a voice call, it waits until you leave.
+  - Windows and Mac update completely by themselves.
+  - Linux: the portable `.tar.gz` copy updates itself; the `.deb` package shows a download button
+    (installing system packages needs your password).
+  - **Settings → Appearance → Updates** shows your version and has a *Check for updates* button.
+- **The Windows server** checks every 6 hours and installs new versions when nobody is connected.
+  Turn this off with `auto_update = false` in its settings. Servers on Linux and Mac write a note
+  in their log instead.
+- Every release is **signed**. Apps and servers check the signature before installing anything,
+  so a tampered or fake download is refused.
+
+Apps and servers from before v0.3.0 don't have the updater, so install v0.3.0 by hand once.
+
 ### Making a new release
 
-Change `version` in `Cargo.toml`, push, then on GitHub open **Actions → Release → Run workflow**.
-It builds every installer, tests the Windows ones on a real Windows machine, and publishes a
-release named after the version. The packaging scripts are in [`packaging/`](packaging/).
+Change `version` in `Cargo.toml` and add a section for it to `CHANGELOG.md`, push, then on GitHub
+open **Actions → Release → Run workflow**. It builds every installer, tests the Windows ones on a
+real Windows machine, signs everything, and publishes a release named after the version. Every
+SynCord app and server then updates itself.
+
+Signing needs the private release key saved as a repository secret named `SYNCORD_UPDATE_KEY`
+(Settings → Secrets and variables → Actions). Keep a backup of that key somewhere safe: without
+it, future releases can't be installed automatically. Releases made without it still work as
+manual downloads. The packaging scripts are in [`packaging/`](packaging/).
 
 **From source:** install Rust from <https://rustup.rs> and [CMake](https://cmake.org) (used to
 build the Opus audio codec). On Linux, also install the ALSA headers (`libasound2-dev` on
@@ -144,6 +170,7 @@ invite_code = "pick-something" # needed to create an account; "" lets anyone sig
 database = "syncord.db"
 uploads = "uploads"            # folder for pictures and files people send
 max_upload_mb = 25             # biggest file people can send
+auto_update = true             # install new server versions by itself (Windows)
 ```
 
 Restart the server after editing. To check it's running, open <http://localhost:7878> on that

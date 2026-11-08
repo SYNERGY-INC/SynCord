@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.0
+
+**New: automatic updates.**
+
+- SynCord now updates itself. When a new version is out, a popup counts down and installs it,
+  then SynCord reopens. *Update now* skips the wait; *Later* installs it next time. It never
+  interrupts a voice call.
+- The Windows server updates itself too, at a moment when nobody is connected.
+- Updates are signed, and anything that doesn't match the signature is refused.
+- Settings → Appearance → Updates shows your version and the server's, with a *Check for updates* button.
+
+This is the last version you need to install by hand.
+
 ## v0.2.0
 
 **New: pictures, GIFs, emoji, reactions and direct messages.**

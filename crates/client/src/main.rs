@@ -13,6 +13,7 @@ mod net;
 mod settings;
 mod style;
 mod theme;
+mod updater;
 mod view;
 mod view_extras;
 mod voice;

@@ -22,6 +22,23 @@ const GROUP_WINDOW_MS: i64 = 7 * 60 * 1000;
 
 impl App {
     pub fn view(&self) -> Element<'_, Message> {
+        let main = self.view_main();
+        match self.update_popup() {
+            Some(popup) => stack![
+                main,
+                opaque(
+                    center(opaque(popup))
+                        .style(bg(Color::from_rgba(0.0, 0.0, 0.0, 0.6)))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                )
+            ]
+            .into(),
+            None => main,
+        }
+    }
+
+    fn view_main(&self) -> Element<'_, Message> {
         let Some(session) = &self.session else { return self.login_view() };
 
         let base: Element<'_, Message> = match self.settings_tab {
@@ -1250,6 +1267,145 @@ impl App {
         col.into()
     }
 
+    fn update_popup(&self) -> Option<Element<'_, Message>> {
+        use crate::updater::Stage;
+        let t = &self.theme;
+        let fs = self.fs();
+        let in_call = self.voice.is_some() || self.voice_joining.is_some();
+        let (title, body, buttons): (String, Element<'_, Message>, Element<'_, Message>) = match &self.update {
+            Stage::Ready { version, notes, deadline, .. } => {
+                let secs = deadline.saturating_duration_since(std::time::Instant::now()).as_secs() + 1;
+                let status = if in_call {
+                    "SynCord will update as soon as you leave the voice call.".to_string()
+                } else {
+                    format!("Installing in {secs} second{}... SynCord will reopen by itself.", if secs == 1 { "" } else { "s" })
+                };
+                // Release notes are Markdown; show them as plain text with bullets.
+                let summary: String = notes
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .take(6)
+                    .map(|l| {
+                        let l = l.replace("**", "").replace('`', "");
+                        match l.trim_start().strip_prefix("- ") {
+                            Some(rest) => format!("• {rest}"),
+                            None => l,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut col = column![text(status).size(fs).color(t.header.0)].spacing(10);
+                if !summary.is_empty() {
+                    col = col.push(
+                        container(scrollable(text(summary).size(fs * 0.85).color(t.text.0)).height(Length::Shrink))
+                            .max_height(160)
+                            .padding(10)
+                            .width(Length::Fill)
+                            .style(card(t.rail.0, t.radius)),
+                    );
+                }
+                let buttons = row![
+                    space::horizontal(),
+                    button(text("Later").size(fs)).padding([8, 16]).on_press(Message::UpdateLater).style(style::link_button(t.text.0, t.header.0)),
+                    button(text("Update now").size(fs))
+                        .padding([8, 16])
+                        .on_press(Message::UpdateNow)
+                        .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+                ]
+                .spacing(8);
+                (format!("Updating SynCord to {version}"), col.into(), buttons.into())
+            }
+            Stage::Installing(version) => (
+                format!("Installing SynCord {version}"),
+                text("Just a moment, SynCord will reopen by itself.").size(fs).color(t.text.0).into(),
+                space().into(),
+            ),
+            Stage::Manual { version, dismissed: false, .. } => (
+                format!("SynCord {version} is available"),
+                text("This copy was installed by your system's package manager, so it can't update itself. Download the new version and open it to install.")
+                    .size(fs)
+                    .color(t.text.0)
+                    .into(),
+                row![
+                    space::horizontal(),
+                    button(text("Close").size(fs)).padding([8, 16]).on_press(Message::DismissUpdate).style(style::link_button(t.text.0, t.header.0)),
+                    button(text("Download").size(fs))
+                        .padding([8, 16])
+                        .on_press(Message::OpenUpdatePage)
+                        .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+                ]
+                .spacing(8)
+                .into(),
+            ),
+            _ => return None,
+        };
+        Some(
+            container(
+                column![
+                    row![
+                        container(text("↑").size(fs * 1.4).font(BOLD).color(contrast_text(t.accent.0)))
+                            .center(40)
+                            .style(card(t.accent.0, 20.0)),
+                        text(title).size(fs * 1.3).font(BOLD).color(t.header.0),
+                    ]
+                    .spacing(12)
+                    .align_y(Alignment::Center),
+                    body,
+                    buttons,
+                ]
+                .spacing(16),
+            )
+            .width(460)
+            .padding(24)
+            .style(card(t.chat.0, t.radius * 1.5))
+            .into(),
+        )
+    }
+
+    fn updates_section(&self) -> Element<'_, Message> {
+        use crate::updater::{Stage, VERSION};
+        let t = &self.theme;
+        let fs = self.fs();
+        let status = match &self.update {
+            Stage::Checking => "Checking for updates...".to_string(),
+            Stage::UpToDate => "You have the newest version.".into(),
+            Stage::Ready { version, .. } => format!("{version} is ready to install."),
+            Stage::Postponed { version } => format!("{version} will install the next time you open SynCord."),
+            Stage::Manual { version, .. } => format!("{version} is available to download."),
+            Stage::Installing(v) => format!("Installing {v}..."),
+            Stage::Failed(e) => format!("Couldn't check for updates: {e}"),
+        };
+        let busy = matches!(self.update, Stage::Checking | Stage::Installing(_));
+        let mut col = column![
+            label(t, "Updates", fs),
+            text(format!("SynCord {VERSION}")).size(fs).color(t.header.0),
+            text(status).size(fs * 0.85).color(t.muted.0),
+            button(text("Check for updates").size(fs * 0.9))
+                .padding([6, 14])
+                .on_press_maybe((!busy).then_some(Message::CheckForUpdates))
+                .style(style::solid_button(t.floating.0, t.radius * 0.6)),
+        ]
+        .spacing(8);
+        if let Some(s) = &self.session {
+            let server =
+                if s.server_version.is_empty() { "older than 0.3".to_string() } else { s.server_version.clone() };
+            col = col.push(text(format!("Server version: {server}")).size(fs * 0.85).color(t.muted.0));
+            if s.is_owner()
+                && syncord_update::is_newer(
+                    VERSION,
+                    if s.server_version.is_empty() { "0.0.0" } else { &s.server_version },
+                )
+            {
+                col = col.push(
+                    text("Your server is older than this app. Windows servers update themselves overnight; on other systems, install the new server package.")
+                        .size(fs * 0.85)
+                        .color(rgb(0xF0B232)),
+                );
+            }
+        }
+        col.into()
+    }
+
     fn appearance_settings(&self) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();
@@ -1314,7 +1470,8 @@ impl App {
                     .on_toggle(Message::ToggleLowMemory)
                     .text_size(fs),
             )
-            .push(text("Takes effect the next time you open SynCord.").size(fs * 0.8).color(t.muted.0));
+            .push(text("Takes effect the next time you open SynCord.").size(fs * 0.8).color(t.muted.0))
+            .push(self.updates_section());
         col.into()
     }
 }

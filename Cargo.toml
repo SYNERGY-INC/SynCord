@@ -1,14 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/server", "crates/client"]
+members = ["crates/proto", "crates/server", "crates/client", "crates/update"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
 syncord-proto = { path = "crates/proto" }
+syncord-update = { path = "crates/update" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "fs"] }

@@ -5,6 +5,7 @@ pub mod db;
 pub mod gateway;
 pub mod http;
 pub mod media;
+pub mod update;
 pub mod voice;
 
 use std::collections::HashMap;
@@ -34,6 +35,10 @@ pub struct Config {
     pub uploads: PathBuf,
     /// Largest file people can upload, in megabytes.
     pub max_upload_mb: u64,
+    /// Install new server versions automatically (Windows), or just log them (elsewhere).
+    pub auto_update: bool,
+    /// Where to look for new versions.
+    pub update_url: String,
 }
 
 impl Default for Config {
@@ -45,6 +50,8 @@ impl Default for Config {
             database: "syncord.db".into(),
             uploads: "uploads".into(),
             max_upload_mb: 25,
+            auto_update: true,
+            update_url: syncord_update::MANIFEST_URL.into(),
         }
     }
 }

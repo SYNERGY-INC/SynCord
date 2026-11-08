@@ -183,6 +183,10 @@ jobs:
           awk -v h="## v$v" '$0 == h {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
           echo >> notes.md
           sed "s/@VERSION@/$v/g" packaging/RELEASE_NOTES.md >> notes.md
+      - name: Sign files and write the update manifest
+        env:
+          SIGNING_KEY: ${{ secrets.SYNCORD_UPDATE_KEY }}
+        run: python3 packaging/make-manifest.py "${{ needs.version.outputs.version }}" dist notes.md
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}
