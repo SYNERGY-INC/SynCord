@@ -5,7 +5,7 @@ use iced::{Alignment, Border, Color, Element, Length};
 use syncord_proto::{User, UserId};
 
 use crate::app::{App, Message};
-use crate::style::{self, SEMIBOLD};
+use crate::style::{self, semibold};
 use crate::theme::rgb;
 use crate::widgets::context_menu;
 
@@ -87,7 +87,7 @@ impl App {
         col = col.push(item("Copy Username".into(), Message::CopyText(u.username.clone()), t.text.0));
         col = col.push(item("Copy User ID".into(), Message::CopyText(u.id.to_string()), t.text.0));
 
-        let header = text(u.name().to_owned()).size(fs * 0.8).font(SEMIBOLD).color(t.muted.0);
+        let header = text(u.name().to_owned()).size(fs * 0.8).font(semibold()).color(t.muted.0);
         container(column![container(header).padding([4, 10]), col].spacing(2))
             .padding(6)
             .width(220)

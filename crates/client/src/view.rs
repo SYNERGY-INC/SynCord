@@ -10,11 +10,11 @@ use iced::{Alignment, Border, Color, Element, Length, Padding};
 use syncord_proto::{AvatarRing, ChannelKind, Message as ChatMessage, User, VoiceState};
 
 use crate::app::{
-    App, COMPOSER_ID, ChannelInfo, DEFAULT_DEVICE, DraftField, MESSAGES_ID, Message, Overlay, PickerTarget, Session,
-    SettingsTab, View,
+    App, COMPOSER_ID, ChannelInfo, DEFAULT_DEVICE, DEFAULT_FONT, DraftField, MESSAGES_ID, Message, Overlay,
+    PickerTarget, Session, SettingsTab, View,
 };
 use crate::icons;
-use crate::style::{self, BOLD, SEMIBOLD, bg, card, divider, label};
+use crate::style::{self, bg, bold, card, divider, label, semibold};
 use crate::theme::{AppTheme, contrast_text, rgb, themes_dir, with_alpha};
 
 /// Messages from the same person within this window are grouped under one header.
@@ -121,10 +121,13 @@ impl App {
         };
 
         let mut form = column![
-            column![text(title).size(fs * 1.6).font(BOLD).color(t.header.0), text(subtitle).size(fs).color(t.muted.0),]
-                .spacing(6)
-                .align_x(Alignment::Center)
-                .width(Length::Fill),
+            column![
+                text(title).size(fs * 1.6).font(bold()).color(t.header.0),
+                text(subtitle).size(fs).color(t.muted.0),
+            ]
+            .spacing(6)
+            .align_x(Alignment::Center)
+            .width(Length::Fill),
             field("Server address", &f.server, "e.g. 100.64.0.5 or chat.example.com", Message::LoginServer),
             field("Username", &f.username, "", Message::LoginUsername),
             column![
@@ -173,7 +176,7 @@ impl App {
 
         let label_text = if f.busy { "Connecting..." } else { action };
         form = form.push(
-            button(center(text(label_text).size(fs).font(SEMIBOLD)).height(fs * 2.6))
+            button(center(text(label_text).size(fs).font(semibold())).height(fs * 2.6))
                 .width(Length::Fill)
                 .padding(0)
                 .on_press_maybe((!f.busy).then_some(Message::SubmitLogin))
@@ -240,7 +243,7 @@ impl App {
         };
         if unread > 0 {
             let danger = t.danger.0;
-            let badge = container(text(unread.min(99).to_string()).size(fs * 0.7).font(BOLD).color(Color::WHITE))
+            let badge = container(text(unread.min(99).to_string()).size(fs * 0.7).font(bold()).color(Color::WHITE))
                 .padding([1, 5])
                 .style(move |_| container::Style {
                     background: Some(danger.into()),
@@ -257,7 +260,7 @@ impl App {
         let server_selected = s.view == View::Server;
         let accent = t.accent.0;
         let server_unread = s.channels.iter().any(|c| c.kind == ChannelKind::Text && s.is_unread(c.id));
-        let label = text(initials).size(fs * 1.1).font(BOLD).color(contrast_text(accent));
+        let label = text(initials).size(fs * 1.1).font(bold()).color(contrast_text(accent));
         let server_pings = s.server_mentions();
         let server_pill: Element<'a, Message> = if server_selected {
             pill(40.0).into()
@@ -317,7 +320,7 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
 
-        let header = container(text(s.community.clone()).size(fs * 1.05).font(BOLD).color(t.header.0))
+        let header = container(text(s.community.clone()).size(fs * 1.05).font(bold()).color(t.header.0))
             .padding([0, 16])
             .height(48)
             .width(Length::Fill)
@@ -330,7 +333,7 @@ impl App {
             let name_color = if unread && !selected { Some(t.header.0) } else { None };
             let mut name = text(ch.name.clone()).size(fs);
             if unread {
-                name = name.font(SEMIBOLD);
+                name = name.font(semibold());
             }
             if let Some(c) = name_color {
                 name = name.color(c);
@@ -476,7 +479,7 @@ impl App {
         };
 
         let mut info = column![
-            row![icons::icon(&icons::SIGNAL, fs, color), text(title).size(fs * 0.9).font(BOLD).color(color)]
+            row![icons::icon(&icons::SIGNAL, fs, color), text(title).size(fs * 0.9).font(bold()).color(color)]
                 .spacing(6)
                 .align_y(Alignment::Center),
             text(if route.is_empty() { channel.to_string() } else { route }).size(fs * 0.75).color(t.muted.0),
@@ -525,7 +528,7 @@ impl App {
         let content = row![
             self.avatar_status(me, 32.0, !self.reconnecting, t.user_panel.0),
             column![
-                text(truncate(me.name(), 11)).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
+                text(truncate(me.name(), 11)).size(fs * 0.9).font(semibold()).color(t.header.0),
                 text(status).size(fs * 0.75).color(t.muted.0),
             ]
             .spacing(1)
@@ -553,7 +556,7 @@ impl App {
         if let Some(ch) = &channel {
             header = header
                 .push(text(if is_direct { "@" } else { "#" }).size(fs * 1.5).color(t.muted.0))
-                .push(text(ch.name.to_owned()).size(fs * 1.05).font(BOLD).color(t.header.0));
+                .push(text(ch.name.to_owned()).size(fs * 1.05).font(bold()).color(t.header.0));
             if !ch.topic.is_empty() {
                 header = header
                     .push(container(space()).width(1).height(24).style(bg(t.hover.0)))
@@ -684,7 +687,7 @@ impl App {
                     container(
                         column![
                             badge,
-                            text(title).size(fs * 2.0).font(BOLD).color(t.header.0),
+                            text(title).size(fs * 2.0).font(bold()).color(t.header.0),
                             text(line).size(fs).color(t.muted.0),
                         ]
                         .spacing(8),
@@ -797,7 +800,7 @@ impl App {
             row![
                 text(short_time(m.created_at)).size(fs * 0.75).color(t.muted.0).width(64),
                 self.with_user_menu(
-                    button(text(name.to_owned()).size(fs).font(SEMIBOLD).color(name_color))
+                    button(text(name.to_owned()).size(fs).font(semibold()).color(name_color))
                         .padding(0)
                         .on_press(Message::ShowProfile(m.author_id))
                         .style(style::link_button(name_color, name_color)),
@@ -841,7 +844,7 @@ impl App {
                 column![
                     row![
                         self.with_user_menu(
-                            button(text(name.to_owned()).size(fs).font(SEMIBOLD).color(name_color))
+                            button(text(name.to_owned()).size(fs).font(semibold()).color(name_color))
                                 .padding(0)
                                 .on_press(Message::ShowProfile(m.author_id))
                                 .style(style::link_button(name_color, name_color)),
@@ -969,12 +972,14 @@ impl App {
                     .on_press(Message::AttachFiles)
                     .style(style::icon_button(t)),
                 input,
-                button(container(text("GIF").size(fs * 0.7).font(style::BOLD).color(t.muted.0)).padding([1, 4]).style(
-                    move |_| container::Style {
-                        border: iced::Border { radius: 4.0.into(), width: 1.5, color: t.muted.0 },
-                        ..Default::default()
-                    }
-                ))
+                button(
+                    container(text("GIF").size(fs * 0.7).font(style::bold()).color(t.muted.0)).padding([1, 4]).style(
+                        move |_| container::Style {
+                            border: iced::Border { radius: 4.0.into(), width: 1.5, color: t.muted.0 },
+                            ..Default::default()
+                        }
+                    )
+                )
                 .padding(8)
                 .on_press(Message::OpenGifPicker)
                 .style(style::icon_button(t)),
@@ -1017,7 +1022,7 @@ impl App {
         if let Some(pending) = self.pending_view() {
             extras = extras.push(pending);
         }
-        column![extras, bar, text(typing_text).size(fs * 0.75).font(SEMIBOLD).color(t.text.0).height(fs * 1.2)]
+        column![extras, bar, text(typing_text).size(fs * 0.75).font(semibold()).color(t.text.0).height(fs * 1.2)]
             .spacing(4)
             .padding(Padding { left: 16.0, right: 16.0, top: 0.0, bottom: 4.0 })
             .into()
@@ -1055,7 +1060,7 @@ impl App {
             for u in group {
                 let color = s.role_color(u.id).unwrap_or(u.profile.accent_color);
                 let name_color = if is_online { rgb(color) } else { t.muted.0 };
-                let mut info = column![text(u.name().to_owned()).size(fs * 0.95).font(SEMIBOLD).color(name_color)];
+                let mut info = column![text(u.name().to_owned()).size(fs * 0.95).font(semibold()).color(name_color)];
                 if !u.profile.status_text.is_empty() {
                     info = info.push(text(truncate(&u.profile.status_text, 24)).size(fs * 0.75).color(t.muted.0));
                 }
@@ -1157,7 +1162,7 @@ impl App {
             space().into()
         };
         let body = column![
-            text("Create channel").size(fs * 1.3).font(BOLD).color(t.header.0),
+            text("Create channel").size(fs * 1.3).font(bold()).color(t.header.0),
             label(t, "Channel type", fs),
             row![kind_button("# Text", ChannelKind::Text), kind_button("Voice", ChannelKind::Voice)].spacing(8),
             label(t, "Channel name", fs),
@@ -1192,7 +1197,7 @@ impl App {
         let fs = self.fs();
         let name = s.channels.iter().find(|c| c.id == id).map(|c| c.name.as_str()).unwrap_or("?");
         let body = column![
-            text("Delete channel").size(fs * 1.3).font(BOLD).color(t.header.0),
+            text("Delete channel").size(fs * 1.3).font(bold()).color(t.header.0),
             text(format!("Are you sure you want to delete #{name}? All of its messages will be gone for good."))
                 .size(fs)
                 .color(t.text.0),
@@ -1266,7 +1271,7 @@ impl App {
         };
 
         let close = column![
-            button(text("X").size(fs * 1.1).font(BOLD))
+            button(text("X").size(fs * 1.1).font(bold()))
                 .padding([6, 12])
                 .on_press(Message::CloseSettings)
                 .style(style::icon_button(t)),
@@ -1393,7 +1398,7 @@ impl App {
         .width(Length::Fill);
 
         column![
-            text("My Profile").size(fs * 1.4).font(BOLD).color(t.header.0),
+            text("My Profile").size(fs * 1.4).font(bold()).color(t.header.0),
             text("Everything here is free. Your friends see changes as soon as you save.")
                 .size(fs * 0.9)
                 .color(t.muted.0),
@@ -1453,7 +1458,7 @@ impl App {
         test_row = test_row.push(text(hint).size(fs * 0.85).color(t.muted.0).width(Length::Fill));
 
         let mut col = column![
-            text("Voice & Audio").size(fs * 1.4).font(BOLD).color(t.header.0),
+            text("Voice & Audio").size(fs * 1.4).font(bold()).color(t.header.0),
             row![
                 column![label(t, "Input device", fs), device_picker(&self.input_devices, &st.input_device, Message::InputDevice)]
                     .spacing(8)
@@ -1604,10 +1609,10 @@ impl App {
             container(
                 column![
                     row![
-                        container(text("↑").size(fs * 1.4).font(BOLD).color(contrast_text(t.accent.0)))
+                        container(text("↑").size(fs * 1.4).font(bold()).color(contrast_text(t.accent.0)))
                             .center(40)
                             .style(card(t.accent.0, 20.0)),
-                        text(title).size(fs * 1.3).font(BOLD).color(t.header.0),
+                        text(title).size(fs * 1.3).font(bold()).color(t.header.0),
                     ]
                     .spacing(12)
                     .align_y(Alignment::Center),
@@ -1690,7 +1695,7 @@ impl App {
             .fold(row![].spacing(12), |r, theme| r.push(theme_tile(t, theme, theme.name == self.theme.name, fs)));
 
         let mut col = column![
-            text("Appearance").size(fs * 1.4).font(BOLD).color(t.header.0),
+            text("Appearance").size(fs * 1.4).font(bold()).color(t.header.0),
             label(t, "Theme", fs),
             tiles.wrap().vertical_spacing(12),
             label(t, "Custom themes", fs),
@@ -1714,6 +1719,7 @@ impl App {
             col = col.push(text(format!("Couldn't load {err}")).size(fs * 0.85).color(t.danger.0));
         }
         col = col.push(label(t, "Theme editor", fs)).push(self.theme_editor_view());
+        col = col.push(label(t, "Font", fs)).push(self.font_settings());
 
         col = col
             .push(label(t, "Text size", fs))
@@ -1747,6 +1753,55 @@ impl App {
             )
             .push(text("Takes effect the next time you open SynCord.").size(fs * 0.8).color(t.muted.0))
             .push(self.updates_section());
+        col.into()
+    }
+}
+
+impl App {
+    fn font_settings(&self) -> Element<'_, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let chosen =
+            if self.settings.ui_font.is_empty() { DEFAULT_FONT.to_string() } else { self.settings.ui_font.clone() };
+        let mut options = vec![DEFAULT_FONT.to_string()];
+        options.extend(self.installed_fonts.iter().cloned());
+        if !options.contains(&chosen) {
+            options.insert(1, chosen.clone()); // an imported font file
+        }
+        let running = match crate::fonts::ui().family {
+            iced::font::Family::Name(n) => n,
+            _ => "Inter",
+        };
+        let wanted = if self.settings.ui_font.is_empty() { "Inter" } else { self.settings.ui_font.as_str() };
+
+        let mut col = column![
+            row![
+                pick_list(options, Some(chosen), Message::PickFont).text_size(fs * 0.9).padding(10).width(320),
+                button(text("Use a font file...").size(fs * 0.9))
+                    .padding([9, 14])
+                    .on_press(Message::ChooseFontFile)
+                    .style(style::icon_button(t)),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(8);
+        if running != wanted {
+            col = col.push(
+                row![
+                    text("The new font is used after SynCord restarts.").size(fs * 0.85).color(t.text.0),
+                    button(text("Restart now").size(fs * 0.9))
+                        .padding([6, 14])
+                        .on_press(Message::RestartApp)
+                        .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            );
+        }
+        if let Some(e) = &self.font_error {
+            col = col.push(text(e.clone()).size(fs * 0.85).color(t.danger.0));
+        }
         col.into()
     }
 }
@@ -1811,7 +1866,7 @@ fn dimmed(
 /// The red count of unread pings.
 pub(crate) fn mention_badge<'a>(t: &AppTheme, count: u32, fs: f32) -> Element<'a, Message> {
     let danger = t.danger.0;
-    container(text(count.min(99).to_string()).size(fs * 0.7).font(BOLD).color(Color::WHITE))
+    container(text(count.min(99).to_string()).size(fs * 0.7).font(bold()).color(Color::WHITE))
         .padding([1, 6])
         .style(move |_| container::Style {
             background: Some(danger.into()),

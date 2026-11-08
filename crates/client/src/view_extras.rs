@@ -12,7 +12,7 @@ use crate::app::{App, Message, PickerTab, PickerTarget, Session, UploadState};
 use crate::emoji;
 use crate::icons::{self, icon};
 use crate::media::{self, format_size};
-use crate::style::{self, BOLD, SEMIBOLD, bg, card, label};
+use crate::style::{self, bg, bold, card, label, semibold};
 use crate::theme::{contrast_text, with_alpha};
 
 const PICTURE_W: f32 = 400.0;
@@ -101,7 +101,7 @@ impl App {
             button(content).padding(0).on_press(Message::OpenViewer(a.clone())).style(|_, _| button::Style::default())
         ];
         if a.animated {
-            let badge = container(text("GIF").size(11).font(BOLD).color(Color::WHITE))
+            let badge = container(text("GIF").size(11).font(bold()).color(Color::WHITE))
                 .padding([1, 5])
                 .style(style::flat(Color::from_rgba(0.0, 0.0, 0.0, 0.6), 4.0));
             let mut corner = row![badge].spacing(4).align_y(Alignment::Center);
@@ -171,7 +171,7 @@ impl App {
             let pill = button(
                 row![
                     style::emoji_text(reaction.emoji.clone(), fs * 1.05),
-                    text(reaction.users.len().to_string()).size(fs * 0.8).font(SEMIBOLD)
+                    text(reaction.users.len().to_string()).size(fs * 0.8).font(semibold())
                 ]
                 .spacing(5)
                 .align_y(Alignment::Center),
@@ -319,7 +319,7 @@ impl App {
                     Some(r) => {
                         let color = r.color.map(crate::theme::rgb).unwrap_or(t.text.0);
                         row![
-                            text(format!("@{}", r.name)).size(fs * 0.95).font(SEMIBOLD).color(color),
+                            text(format!("@{}", r.name)).size(fs * 0.95).font(semibold()).color(color),
                             text("Notify everyone with this role").size(fs * 0.8).color(t.muted.0),
                         ]
                         .spacing(10)
@@ -329,7 +329,7 @@ impl App {
                     None => continue,
                 },
                 Suggestion::Everyone => row![
-                    text("@everyone").size(fs * 0.95).font(SEMIBOLD).color(t.header.0),
+                    text("@everyone").size(fs * 0.95).font(semibold()).color(t.header.0),
                     text("Notify everyone who can see this channel").size(fs * 0.8).color(t.muted.0),
                 ]
                 .spacing(10)
@@ -368,7 +368,7 @@ impl App {
             tabs = tabs.push(tab_button(style::emoji_text(*glyph, fs * 1.1).into(), PickerTab::Emoji(i)));
         }
         if picker.target == PickerTarget::Composer {
-            tabs = tabs.push(tab_button(text("GIF").size(fs * 0.8).font(BOLD).into(), PickerTab::Gifs));
+            tabs = tabs.push(tab_button(text("GIF").size(fs * 0.8).font(bold()).into(), PickerTab::Gifs));
         }
 
         let gifs_tab = picker.tab == PickerTab::Gifs;
@@ -569,7 +569,7 @@ impl App {
         let mut page = column![scrollable(col).spacing(4).height(Length::Fill).style(style::scroll(t))].spacing(4);
         if let Some(provider) = provider {
             page = page.push(
-                container(text(format!("Powered by {provider}")).size(fs * 0.7).font(BOLD).color(t.muted.0))
+                container(text(format!("Powered by {provider}")).size(fs * 0.7).font(bold()).color(t.muted.0))
                     .width(Length::Fill)
                     .align_x(Alignment::End),
             );
@@ -649,7 +649,7 @@ impl App {
                     row![
                         self.avatar_status(u, 32.0, online, t.chat.0),
                         column![
-                            text(u.name().to_owned()).size(fs).font(SEMIBOLD),
+                            text(u.name().to_owned()).size(fs).font(semibold()),
                             text(u.username.clone()).size(fs * 0.75).color(t.muted.0)
                         ],
                     ]
@@ -663,7 +663,7 @@ impl App {
             );
         }
         let body = column![
-            text("Start a conversation").size(fs * 1.3).font(BOLD).color(t.header.0),
+            text("Start a conversation").size(fs * 1.3).font(bold()).color(t.header.0),
             text("Only the two of you can see direct messages.").size(fs * 0.85).color(t.muted.0),
             scrollable(list).height(320).style(style::scroll(t)),
         ]
@@ -676,7 +676,7 @@ impl App {
     pub(crate) fn home_sidebar<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let header = container(text("Direct Messages").size(fs * 1.05).font(BOLD).color(t.header.0))
+        let header = container(text("Direct Messages").size(fs * 1.05).font(bold()).color(t.header.0))
             .padding([0, 16])
             .height(48)
             .width(Length::Fill)
@@ -708,7 +708,7 @@ impl App {
             let unread = s.is_unread(d.id) && !selected;
             let mut name = text(u.name().to_owned()).size(fs * 0.95);
             if unread {
-                name = name.font(BOLD).color(t.header.0);
+                name = name.font(bold()).color(t.header.0);
             }
             let mut line = row![
                 self.with_user_menu(self.avatar_status(u, 32.0, s.online.contains(&u.id), t.sidebar.0), u.id),

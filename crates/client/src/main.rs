@@ -12,6 +12,7 @@ mod app_social;
 mod composer;
 mod crop;
 mod emoji;
+mod fonts;
 mod icons;
 mod media;
 mod net;
@@ -43,12 +44,16 @@ fn main() -> iced::Result {
     // Videos downloaded to watch last time aren't needed any more.
     video::clear_cache();
     // Pick the renderer before iced starts. An explicit ICED_BACKEND wins.
-    if std::env::var_os("ICED_BACKEND").is_none() && settings::Settings::load().low_memory {
+    let saved = settings::Settings::load();
+    if std::env::var_os("ICED_BACKEND").is_none() && saved.low_memory {
         // SAFETY: nothing else is running yet, so no other thread can be reading the environment.
         unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
     }
 
-    iced::application(App::new, App::update, App::view)
+    // The UI font is chosen once per run (see Appearance > Font).
+    let (ui_font, font_file) = fonts::init(&saved);
+
+    let mut app = iced::application(App::new, App::update, App::view)
         .title(App::title)
         .theme(App::iced_theme)
         .subscription(App::subscription)
@@ -75,6 +80,9 @@ fn main() -> iced::Result {
         .font(include_bytes!("../assets/fonts/Inter-Bold.otf").as_slice())
         // The same emoji Discord uses (Twemoji), so they look the same everywhere.
         .font(include_bytes!("../assets/fonts/Twemoji.ttf").as_slice())
-        .default_font(style::INTER)
-        .run()
+        .default_font(ui_font);
+    if let Some(bytes) = font_file {
+        app = app.font(bytes);
+    }
+    app.run()
 }

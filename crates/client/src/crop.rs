@@ -14,7 +14,7 @@ use image::{AnimationDecoder, Delay, Frame, ImageFormat, RgbaImage};
 use syncord_proto::{AVATAR_SIZE, BANNER_SIZE, PROFILE_IMAGE_PATH};
 
 use crate::app::{App, Message};
-use crate::style::{self, BOLD, card};
+use crate::style::{self, bold, card};
 
 /// Most frames kept from an animated picture (GIFs are cut short after this).
 const MAX_FRAMES: usize = 100;
@@ -367,7 +367,7 @@ impl App {
             .interaction(iced::mouse::Interaction::Grab);
         let title = if c.banner { "Edit banner" } else { "Edit profile picture" };
         let mut body = column![
-            text(title).size(fs * 1.3).font(BOLD).color(t.header.0),
+            text(title).size(fs * 1.3).font(bold()).color(t.header.0),
             center(picture).height(ph + 24.0).style(move |_| container::Style {
                 background: Some(Color::from_rgb8(0x10, 0x11, 0x14).into()),
                 border: Border { radius: 8.0.into(), ..Default::default() },

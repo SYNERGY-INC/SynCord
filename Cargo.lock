@@ -5173,6 +5173,7 @@ dependencies = [
  "cpal",
  "dirs",
  "emojis",
+ "fontdb",
  "futures",
  "iced",
  "image",

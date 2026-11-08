@@ -30,6 +30,8 @@ bytes = "1"
 webpki-roots = "1"
 sha2 = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Already used by iced for text; listing installed fonts and reading font files.
+fontdb = "0.23"
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 emojis = "0.9"

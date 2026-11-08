@@ -104,6 +104,11 @@ pub enum Message {
     SaveThemeEditor,
     CloseThemeEditor,
     TextScale(f32),
+    InstalledFonts(Vec<String>),
+    PickFont(String),
+    ChooseFontFile,
+    FontFileChosen(Option<PathBuf>),
+    RestartApp,
     ToggleCompact(bool),
     ToggleLowMemory(bool),
     Logout,
@@ -541,6 +546,9 @@ impl ProfileDraft {
     }
 }
 
+/// Label for the built-in font in the font picker.
+pub const DEFAULT_FONT: &str = "Inter (default)";
+
 /// Label for "use the system's default device" in the device pickers.
 pub const DEFAULT_DEVICE: &str = "Default";
 
@@ -560,6 +568,10 @@ pub struct App {
     pub theme_errors: Vec<String>,
     pub theme: AppTheme,
     pub theme_editor: Option<crate::theme_editor::ThemeEditor>,
+    /// Fonts installed on this computer (loaded when Appearance opens).
+    pub installed_fonts: Vec<String>,
+    /// Problem importing a font file.
+    pub font_error: Option<String>,
 
     generation: u64,
     pub(crate) conn: Option<Connection>,
@@ -668,6 +680,8 @@ impl App {
             theme_errors,
             theme,
             theme_editor: None,
+            installed_fonts: Vec::new(),
+            font_error: None,
             generation: 0,
             conn: None,
             voice_sink: Default::default(),
@@ -1160,7 +1174,44 @@ impl App {
                     self.mic_test = None;
                 }
                 self.settings_tab = Some(tab);
+                if tab == SettingsTab::Appearance && self.installed_fonts.is_empty() {
+                    return Task::perform(crate::fonts::installed(), Message::InstalledFonts);
+                }
             }
+            Message::InstalledFonts(list) => self.installed_fonts = list,
+            Message::PickFont(name) => {
+                self.font_error = None;
+                self.settings.ui_font = if name == DEFAULT_FONT { String::new() } else { name };
+                self.settings.font_file = None;
+                self.settings.save();
+            }
+            Message::ChooseFontFile => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Choose a font")
+                            .add_filter("Fonts", &["ttf", "otf", "ttc"])
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_path_buf())
+                    },
+                    Message::FontFileChosen,
+                );
+            }
+            Message::FontFileChosen(None) => {}
+            Message::FontFileChosen(Some(path)) => match crate::fonts::import(&path) {
+                Ok((family, saved)) => {
+                    self.font_error = None;
+                    self.settings.ui_font = family;
+                    self.settings.font_file = Some(saved);
+                    self.settings.save();
+                }
+                Err(e) => self.font_error = Some(e),
+            },
+            Message::RestartApp => match crate::fonts::relaunch() {
+                Ok(()) => return iced::exit(),
+                Err(e) => self.font_error = Some(e),
+            },
             Message::Draft(field) => {
                 let d = &mut self.draft;
                 match field {

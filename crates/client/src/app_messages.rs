@@ -223,7 +223,7 @@ impl App {
             self.find_message(id).and_then(|m| s.users.get(&m.author_id)).map(|u| u.name()).unwrap_or("a message");
         let bar = iced::widget::row![
             text("Replying to ").size(fs * 0.85).color(t.muted.0),
-            text(name.to_owned()).size(fs * 0.85).font(style::SEMIBOLD).color(t.header.0),
+            text(name.to_owned()).size(fs * 0.85).font(style::semibold()).color(t.header.0),
             iced::widget::space::horizontal(),
             button(crate::icons::icon(&crate::icons::CLOSE, fs * 0.9, t.muted.0))
                 .padding(4)
@@ -249,7 +249,7 @@ impl App {
                 let color =
                     s.role_color(u.id).map(crate::theme::rgb).unwrap_or(crate::theme::rgb(u.profile.accent_color));
                 line = line
-                    .push(text(u.name().to_owned()).size(fs).font(style::SEMIBOLD).color(color))
+                    .push(text(u.name().to_owned()).size(fs).font(style::semibold()).color(color))
                     .push(text(snippet).size(fs).color(t.muted.0));
             }
             None => line = line.push(text("Original message was deleted").size(fs).color(t.muted.0)),
