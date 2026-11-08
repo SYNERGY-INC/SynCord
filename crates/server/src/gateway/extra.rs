@@ -165,6 +165,18 @@ impl Connection {
                     self.broadcast(&ServerMsg::UserUpdated(user));
                 }
             }
+            ClientMsg::Search(query) => {
+                let q = query.clone();
+                let (results, more) = db.call(move |c| db::search(c, me, &q)).await?;
+                self.send(&ServerMsg::SearchResults { query, results, more }).await;
+            }
+            ClientMsg::FetchAround { channel_id, message_id } => {
+                if super::audience(&db, me, channel_id).await?.is_none() {
+                    return Ok(self.error("You can't see that channel").await);
+                }
+                let (messages, reached_start) = db.call(move |c| db::around(c, channel_id, message_id)).await?;
+                self.send(&ServerMsg::Around { channel_id, message_id, messages, reached_start }).await;
+            }
             ClientMsg::SetPresence { status, activity } => {
                 let activity = activity.and_then(syncord_proto::Activity::sanitized);
                 let info = syncord_proto::PresenceInfo { user_id: me, status, activity };

@@ -245,7 +245,9 @@ impl Connection {
                 | ClientMsg::SetUserRoles { .. }
                 | ClientMsg::SetBlocked { .. }
                 | ClientMsg::ClearProfileImage { .. }
-                | ClientMsg::SetPresence { .. }) => return self.handle_extra(me, msg).await,
+                | ClientMsg::SetPresence { .. }
+                | ClientMsg::Search(_)
+                | ClientMsg::FetchAround { .. }) => return self.handle_extra(me, msg).await,
                 ClientMsg::Ping => {
                     self.send(&ServerMsg::Pong).await;
                 }

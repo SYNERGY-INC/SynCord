@@ -231,6 +231,16 @@ pub enum Message {
     /// The window's X button.
     CloseRequested(iced::window::Id),
 
+    // Searching messages
+    OpenSearch,
+    SearchInput(String),
+    SubmitSearch,
+    SearchMore,
+    CloseSearch,
+    OpenSearchResult(ChannelId, MessageId),
+    JumpToPresent,
+    ClearHighlight(MessageId),
+
     // Status and activity
     PresenceTick,
     BackFromIdle,
@@ -394,6 +404,8 @@ pub struct ChannelState {
     pub loaded: bool,
     pub loading: bool,
     pub reached_start: bool,
+    /// Showing older messages (after jumping to a search result), so new ones aren't added.
+    pub detached: bool,
 }
 
 pub struct Session {
@@ -648,6 +660,7 @@ pub struct App {
     pub(crate) sent_presence: Option<(syncord_proto::Status, Option<syncord_proto::Activity>)>,
     /// The activity being typed in the status picker.
     pub activity_draft: (syncord_proto::ActivityKind, String),
+    pub search: crate::app_search::Search,
     /// When the current dialog, picker and call card opened (for their pop-in).
     pub(crate) popped: Instant,
     pub(crate) picker_popped: Instant,
@@ -736,6 +749,7 @@ impl App {
             detected_game: None,
             sent_presence: None,
             activity_draft: (syncord_proto::ActivityKind::Playing, String::new()),
+            search: Default::default(),
             popped: Instant::now(),
             picker_popped: Instant::now(),
             call_popped: Instant::now(),
@@ -1473,6 +1487,14 @@ impl App {
                 return self.on_shortcut(sc);
             }
             Message::SwitcherQuery(_) | Message::SwitcherGo(_) => return self.update_switcher(message),
+            Message::OpenSearch
+            | Message::SearchInput(_)
+            | Message::SubmitSearch
+            | Message::SearchMore
+            | Message::CloseSearch
+            | Message::OpenSearchResult(..)
+            | Message::JumpToPresent
+            | Message::ClearHighlight(_) => return self.update_search(message),
             Message::StartCall(_)
             | Message::ToggleIgnore(_)
             | Message::ToggleBlock(_)
@@ -1528,6 +1550,8 @@ impl App {
                     self.close_overlay();
                 } else if self.editing.is_some() {
                     self.editing = None;
+                } else if self.search.open && self.settings_tab.is_none() {
+                    self.search.open = false;
                 } else if self.theme_editor.is_some() {
                     return self.update_theme_editor(Message::CloseThemeEditor);
                 } else if self.settings_tab.is_some() {
@@ -1801,6 +1825,7 @@ impl App {
         self.settings_tab = None;
         self.overlay = None;
         self.editing = None;
+        self.search = Default::default();
         self.reconnecting = false;
         self.login.busy = false;
         self.login.password.clear();
@@ -1983,6 +2008,16 @@ impl App {
             self.on_people(msg);
             return Task::none();
         }
+        match msg {
+            ServerMsg::SearchResults { query, results, more } => {
+                self.on_search_results(query, results, more);
+                return self.request_avatars();
+            }
+            ServerMsg::Around { channel_id, message_id, messages, reached_start } => {
+                return self.on_around(channel_id, message_id, messages, reached_start);
+            }
+            _ => {}
+        }
         if let ServerMsg::MessageCreated(m) = &msg {
             let ping = self.on_mention(m);
             let rest = self.on_server_inner(msg);
@@ -2000,6 +2035,7 @@ impl App {
 
         match msg {
             ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. } | ServerMsg::Pong => {}
+            ServerMsg::SearchResults { .. } | ServerMsg::Around { .. } => {} // on_server
             ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. } => {} // handled in on_voice
             ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } | ServerMsg::GifResults { .. } => {} // on_social
             ServerMsg::RoleUpdated(_) | ServerMsg::RoleDeleted { .. } | ServerMsg::BlockUpdated { .. } => {} // on_people
@@ -2032,8 +2068,13 @@ impl App {
                     s.directs.insert(0, d);
                 }
                 let st = s.chans.entry(channel).or_default();
-                if st.loaded && !st.messages.iter().any(|x| x.id == m.id) {
+                // Sending while looking at older messages takes you back to the newest.
+                let back_to_present = st.detached && Some(m.author_id) == me && s.current == Some(channel);
+                if st.loaded && !st.detached && !st.messages.iter().any(|x| x.id == m.id) {
                     st.messages.push(m);
+                }
+                if back_to_present {
+                    return self.update_search(Message::JumpToPresent);
                 }
                 if s.current == Some(channel) {
                     self.mark_current_read();
@@ -2114,6 +2155,7 @@ impl App {
                 }
             }
             ServerMsg::Error { message } => {
+                self.search.loading = false;
                 // A failed GIF search shows its error in the picker.
                 if self.gifs.waiting.take().is_some() && message.contains("GIF search") {
                     self.gifs.error = Some(message);

@@ -8,6 +8,7 @@ mod app_avatars;
 mod app_media;
 mod app_messages;
 mod app_people;
+mod app_search;
 mod app_social;
 mod composer;
 mod crop;

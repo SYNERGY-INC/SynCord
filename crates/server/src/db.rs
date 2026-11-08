@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 use syncord_proto::{
     Attachment, Channel, ChannelId, ChannelKind, DirectChannel, EVERYONE_ROLE, Embed, HISTORY_PAGE, MentionCount,
-    Message, MessageId, MessageKind, Profile, Reaction, ReadState, Role, RoleId, User, UserId, parse_mentions, perms,
+    Message, MessageId, MessageKind, Profile, Reaction, ReadState, Role, RoleId, SEARCH_PAGE, SearchHas, SearchQuery,
+    User, UserId, parse_mentions, perms,
 };
 
 #[derive(Clone)]
@@ -778,6 +779,94 @@ pub fn history(conn: &Connection, channel_id: ChannelId, before: Option<MessageI
     msgs.reverse();
     fill_extras(conn, &mut msgs)?;
     Ok(msgs)
+}
+
+// ---- Search
+
+/// Fill in attachments and the rest for messages from several channels.
+fn fill_mixed(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
+    let mut channels: Vec<ChannelId> = msgs.iter().map(|m| m.channel_id).collect();
+    channels.sort();
+    channels.dedup();
+    for ch in channels {
+        let mut group: Vec<Message> = msgs.iter().filter(|m| m.channel_id == ch).cloned().collect();
+        fill_extras(conn, &mut group)?;
+        for g in group {
+            if let Some(slot) = msgs.iter_mut().find(|m| m.id == g.id) {
+                *slot = g;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Messages `user` can see that match, newest first (one page, plus whether there are more).
+pub fn search(conn: &Connection, user: UserId, q: &SearchQuery) -> DbResult<(Vec<Message>, bool)> {
+    let mut sql = String::from(
+        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind FROM messages m
+         WHERE (m.channel_id IN (SELECT id FROM channels WHERE kind = 0)
+                OR m.channel_id IN (SELECT channel_id FROM direct_members WHERE user_id = ?))",
+    );
+    let mut args: Vec<rusqlite::types::Value> = vec![user.into()];
+    for w in q.words.iter().filter(|w| !w.trim().is_empty()).take(8) {
+        // LIKE wildcards in the search are matched literally.
+        let escaped = w.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        sql.push_str(" AND m.content LIKE ? ESCAPE '\\'");
+        args.push(format!("%{escaped}%").into());
+    }
+    if let Some(from) = q.from {
+        sql.push_str(" AND m.author_id = ?");
+        args.push(from.into());
+    }
+    if let Some(ch) = q.channel_id {
+        sql.push_str(" AND m.channel_id = ?");
+        args.push(ch.into());
+    }
+    if let Some(before) = q.before {
+        sql.push_str(" AND m.id < ?");
+        args.push(before.into());
+    }
+    match q.has {
+        Some(SearchHas::Link) => sql.push_str(" AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')"),
+        Some(SearchHas::File) => {
+            sql.push_str(" AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.is_embed = 0)")
+        }
+        Some(SearchHas::Image) => sql.push_str(
+            " AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.is_embed = 0
+              AND a.width IS NOT NULL AND a.video IS NULL)",
+        ),
+        Some(SearchHas::Video) => sql.push_str(
+            " AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.video IS NOT NULL)",
+        ),
+        None => {}
+    }
+    sql.push_str(&format!(" ORDER BY m.id DESC LIMIT {}", SEARCH_PAGE + 1));
+    let mut stmt = conn.prepare(&sql)?;
+    let mut msgs: Vec<Message> =
+        stmt.query_map(rusqlite::params_from_iter(args), row_to_message)?.collect::<DbResult<_>>()?;
+    let more = msgs.len() > SEARCH_PAGE;
+    msgs.truncate(SEARCH_PAGE);
+    fill_mixed(conn, &mut msgs)?;
+    Ok((msgs, more))
+}
+
+/// Up to 40 messages before `id` and 5 after it (so it shows near the bottom), oldest first.
+pub fn around(conn: &Connection, channel_id: ChannelId, id: MessageId) -> DbResult<(Vec<Message>, bool)> {
+    let cols = "id, channel_id, author_id, content, created_at, edited_at, embeds, kind";
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {cols} FROM messages WHERE channel_id = ?1 AND id <= ?2 ORDER BY id DESC LIMIT 41"
+    ))?;
+    let mut older: Vec<Message> = stmt.query_map(params![channel_id, id], row_to_message)?.collect::<DbResult<_>>()?;
+    let reached_start = older.len() < 41;
+    older.truncate(40);
+    older.reverse();
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {cols} FROM messages WHERE channel_id = ?1 AND id > ?2 ORDER BY id ASC LIMIT 5"
+    ))?;
+    let newer: Vec<Message> = stmt.query_map(params![channel_id, id], row_to_message)?.collect::<DbResult<_>>()?;
+    older.extend(newer);
+    fill_extras(conn, &mut older)?;
+    Ok((older, reached_start))
 }
 
 // ---- Roles and permissions

@@ -912,3 +912,83 @@ async fn statuses_and_activities() {
     expect(&mut carol, |m| matches!(m, ServerMsg::Presence { user_id, online: true, .. } if *user_id == alice_id))
         .await;
 }
+
+/// Search finds messages by words, author and channel, but never other people's DMs.
+#[tokio::test]
+async fn searching_messages() {
+    use syncord_proto::{SearchHas, SearchQuery};
+    let url = start_server().await;
+    let (mut alice, r) = register(&url, "alice", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let general = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+    let (mut bob, r) = register(&url, "bob", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let bob_id = ready.me;
+    let (mut carol, r) = register(&url, "carol", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let carol_id = ready.me;
+
+    let say = |ch, text: &str| ClientMsg::SendMessage { channel_id: ch, content: text.into(), attachments: vec![] };
+    for text in ["pizza tonight?", "I love PIZZA", "see https://example.com/menu", "100% sure_thing"] {
+        send(&mut alice, say(general, text)).await;
+        expect(&mut alice, |m| matches!(m, ServerMsg::MessageCreated(x) if x.content == text)).await;
+    }
+    send(&mut bob, say(general, "pizza is overrated")).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::MessageCreated(_))).await;
+    // A secret in a DM between bob and carol.
+    send(&mut bob, ClientMsg::OpenDirect { user_id: carol_id }).await;
+    let ServerMsg::DirectOpened(dm) = expect(&mut bob, |m| matches!(m, ServerMsg::DirectOpened(_))).await else {
+        unreachable!()
+    };
+    send(&mut bob, say(dm.id, "secret pizza plans")).await;
+    expect(&mut bob, |m| matches!(m, ServerMsg::MessageCreated(x) if x.content == "secret pizza plans")).await;
+
+    let search = |q: SearchQuery| ClientMsg::Search(q);
+    let words = |w: &str| SearchQuery { words: vec![w.into()], ..Default::default() };
+    let results = |m: ServerMsg| match m {
+        ServerMsg::SearchResults { results, .. } => results.into_iter().map(|r| r.content).collect::<Vec<_>>(),
+        _ => unreachable!(),
+    };
+
+    // Any case, newest first, and alice can't see bob and carol's DM.
+    send(&mut alice, search(words("pizza"))).await;
+    let r = results(expect(&mut alice, |m| matches!(m, ServerMsg::SearchResults { .. })).await);
+    assert_eq!(r, ["pizza is overrated", "I love PIZZA", "pizza tonight?"]);
+    // Carol can.
+    send(&mut carol, search(words("pizza"))).await;
+    let r = results(expect(&mut carol, |m| matches!(m, ServerMsg::SearchResults { .. })).await);
+    assert!(r.contains(&"secret pizza plans".to_string()));
+    // From someone, links, and wildcards matched literally.
+    send(&mut alice, search(SearchQuery { words: vec!["pizza".into()], from: Some(bob_id), ..Default::default() })).await;
+    let r = results(expect(&mut alice, |m| matches!(m, ServerMsg::SearchResults { .. })).await);
+    assert_eq!(r, ["pizza is overrated"]);
+    send(&mut alice, search(SearchQuery { has: Some(SearchHas::Link), ..Default::default() })).await;
+    let r = results(expect(&mut alice, |m| matches!(m, ServerMsg::SearchResults { .. })).await);
+    assert_eq!(r, ["see https://example.com/menu"]);
+    send(&mut alice, search(words("0%"))).await;
+    let r = results(expect(&mut alice, |m| matches!(m, ServerMsg::SearchResults { .. })).await);
+    assert_eq!(r, ["100% sure_thing"]);
+    send(&mut alice, search(words("s_r"))).await;
+    let r = results(expect(&mut alice, |m| matches!(m, ServerMsg::SearchResults { .. })).await);
+    assert!(r.is_empty(), "_ isn't a wildcard: {r:?}");
+
+    // Jumping to a message loads it with the ones before it.
+    send(&mut alice, search(words("tonight"))).await;
+    let ServerMsg::SearchResults { results, .. } =
+        expect(&mut alice, |m| matches!(m, ServerMsg::SearchResults { .. })).await
+    else {
+        unreachable!()
+    };
+    let target = results[0].id;
+    send(&mut alice, ClientMsg::FetchAround { channel_id: general, message_id: target }).await;
+    let ServerMsg::Around { messages, reached_start, .. } =
+        expect(&mut alice, |m| matches!(m, ServerMsg::Around { .. })).await
+    else {
+        unreachable!()
+    };
+    assert!(messages.iter().any(|m| m.id == target));
+    assert!(reached_start);
+    // But not in a DM you're not part of.
+    send(&mut alice, ClientMsg::FetchAround { channel_id: dm.id, message_id: target }).await;
+    expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
+}

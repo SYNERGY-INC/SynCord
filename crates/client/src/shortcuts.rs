@@ -12,6 +12,7 @@ use crate::style::{self, BOLD, SEMIBOLD, card, label};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shortcut {
     QuickSwitcher,
+    Search,
     /// Previous (-1) or next (1) channel.
     Channel(i32),
     /// Previous or next channel with unread messages.
@@ -32,6 +33,7 @@ pub enum Shortcut {
 /// Shortcuts, their keys and what they do, for the Ctrl+/ list.
 pub const LIST: &[(&str, &str)] = &[
     ("Ctrl + K", "Jump to a channel, conversation or person"),
+    ("Ctrl + F", "Search messages"),
     ("Alt + Up / Down", "Previous or next channel"),
     ("Alt + Shift + Up / Down", "Previous or next unread channel"),
     ("Ctrl + Shift + M", "Mute or unmute your microphone"),
@@ -95,6 +97,8 @@ pub fn from_key(key: &Key, physical: key::Physical, m: Modifiers, switcher: bool
     }
     if letter('k', key::Code::KeyK) {
         Some(Shortcut::QuickSwitcher)
+    } else if letter('f', key::Code::KeyF) {
+        Some(Shortcut::Search)
     } else if letter('e', key::Code::KeyE) {
         Some(Shortcut::Emoji)
     } else if letter('g', key::Code::KeyG) {
@@ -172,6 +176,10 @@ impl App {
                         return self.select_channel(id);
                     }
                 }
+            }
+            Shortcut::Search => {
+                self.close_overlay();
+                return self.update(Message::OpenSearch);
             }
             Shortcut::ToggleMute => return self.update(Message::ToggleMute),
             Shortcut::ToggleDeafen => return self.update(Message::ToggleDeafen),

@@ -445,6 +445,33 @@ pub struct Ready {
     pub presences: Vec<PresenceInfo>,
 }
 
+/// What to search for: every word must appear; the rest narrow it down.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SearchQuery {
+    #[serde(default)]
+    pub words: Vec<String>,
+    #[serde(default)]
+    pub from: Option<UserId>,
+    #[serde(default)]
+    pub channel_id: Option<ChannelId>,
+    #[serde(default)]
+    pub has: Option<SearchHas>,
+    /// For more results: only messages older than this.
+    #[serde(default)]
+    pub before: Option<MessageId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SearchHas {
+    Link,
+    File,
+    Image,
+    Video,
+}
+
+/// Results per search page.
+pub const SEARCH_PAGE: usize = 25;
+
 /// Like Discord's: online, idle (away), do not disturb, or invisible (shown as offline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Status {
@@ -626,6 +653,13 @@ pub enum ClientMsg {
     ClearProfileImage {
         banner: bool,
     },
+    /// Search messages in every channel and direct message you can see (newest first).
+    Search(SearchQuery),
+    /// Load the messages around one (to jump to a search result).
+    FetchAround {
+        channel_id: ChannelId,
+        message_id: MessageId,
+    },
     /// Your status and what you're doing (shown to everyone, unless invisible).
     SetPresence {
         status: Status,
@@ -704,6 +738,20 @@ pub enum ServerMsg {
     },
     Error {
         message: String,
+    },
+    SearchResults {
+        /// The query these answer.
+        query: SearchQuery,
+        results: Vec<Message>,
+        /// More results are older than these.
+        more: bool,
+    },
+    /// Messages around a message, replacing what's loaded for that channel.
+    Around {
+        channel_id: ChannelId,
+        message_id: MessageId,
+        messages: Vec<Message>,
+        reached_start: bool,
     },
     RoleUpdated(Role),
     RoleDeleted {

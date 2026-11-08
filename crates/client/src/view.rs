@@ -196,10 +196,16 @@ impl App {
 
     fn main_view<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         if s.view == View::Home {
-            return row![self.server_rail(s), self.home_sidebar(s), self.chat_area(s)].height(Length::Fill).into();
+            let mut layout = row![self.server_rail(s), self.home_sidebar(s), self.chat_area(s)];
+            if self.search.open {
+                layout = layout.push(self.search_panel(s));
+            }
+            return layout.height(Length::Fill).into();
         }
         let mut layout = row![self.server_rail(s), self.channel_sidebar(s), self.chat_area(s)];
-        if self.settings.show_members {
+        if self.search.open {
+            layout = layout.push(self.search_panel(s));
+        } else if self.settings.show_members {
             layout = layout.push(self.member_list(s));
         }
         layout.height(Length::Fill).into()
@@ -559,12 +565,15 @@ impl App {
             }
         }
         header = header.push(space::horizontal());
+        if channel.is_some() {
+            header = header.push(self.search_box());
+        }
         if let Some(ch) = channel
             .as_ref()
             .filter(|_| s.can(syncord_proto::perms::MANAGE_CHANNELS) && s.channels.len() > 1 && !is_direct)
         {
             header = header.push(
-                button(text("Delete channel").size(fs * 0.8))
+                button(text("Delete channel").size(fs * 0.8).wrapping(iced::widget::text::Wrapping::None))
                     .padding([4, 8])
                     .on_press(Message::AskDeleteChannel(ch.id))
                     .style(style::icon_button(t)),
@@ -582,9 +591,14 @@ impl App {
                 );
             }
         }
-        if !is_direct {
+        // While searching, the results take the members' place.
+        if !is_direct && !self.search.open {
             header = header.push(
-                button(text(if self.settings.show_members { "Hide members" } else { "Members" }).size(fs * 0.8))
+                button(
+                    text(if self.settings.show_members { "Hide members" } else { "Members" })
+                        .size(fs * 0.8)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                )
                     .padding([4, 8])
                     .on_press(Message::ToggleMembers)
                     .style(style::icon_button(t)),
@@ -627,6 +641,9 @@ impl App {
 
         let has_channel = channel.is_some();
         col = col.push(self.message_list(s, channel.as_ref()));
+        if channel.as_ref().and_then(|c| s.chans.get(&c.id)).is_some_and(|st| st.detached) {
+            col = col.push(self.older_bar());
+        }
         if let Some(ch) = channel {
             col = col.push(self.composer(s, ch));
         }
@@ -905,15 +922,24 @@ impl App {
         }
 
         // Messages that ping you get a gold tint and a bar on the left, like Discord.
+        // The message you jumped to from search is tinted for a moment.
         let pinged = s.mentions_me(m);
+        let jumped = self.search.highlight == Some(m.id);
         let gold = Color::from_rgb8(0xF0, 0xB2, 0x32);
-        let hover_bg = match (pinged, hovered) {
-            (true, true) => Some(with_alpha(gold, 0.14)),
-            (true, false) => Some(with_alpha(gold, 0.09)),
-            (false, true) => Some(with_alpha(style::darken(t.chat.0, 0.12), 1.0)),
-            (false, false) => None,
+        let hover_bg = match (jumped, pinged, hovered) {
+            (true, _, _) => Some(with_alpha(t.accent.0, 0.2)),
+            (_, true, true) => Some(with_alpha(gold, 0.14)),
+            (_, true, false) => Some(with_alpha(gold, 0.09)),
+            (_, false, true) => Some(with_alpha(style::darken(t.chat.0, 0.12), 1.0)),
+            (_, false, false) => None,
         };
-        let bar_color = if pinged { gold } else { Color::TRANSPARENT };
+        let bar_color = if jumped {
+            t.accent.0
+        } else if pinged {
+            gold
+        } else {
+            Color::TRANSPARENT
+        };
         let bar = container(space())
             .width(2)
             .height(Length::Fill)
@@ -1851,7 +1877,7 @@ fn short_time(ms: i64) -> String {
     local(ms).map(|d| d.format("%-I:%M %p").to_string()).unwrap_or_default()
 }
 
-fn long_time(ms: i64) -> String {
+pub(crate) fn long_time(ms: i64) -> String {
     let Some(d) = local(ms) else { return String::new() };
     let today = Local::now().date_naive();
     if d.date_naive() == today {
