@@ -778,8 +778,20 @@ impl App {
         }
 
         let mut prev: Option<&ChatMessage> = None;
+        // Red NEW line above the first message from someone else since you last read this channel.
+        let mut new_line_at = self
+            .new_since
+            .filter(|(ch, _)| Some(*ch) == s.current)
+            .and_then(|(_, since)| messages.iter().find(|m| m.id > since && m.author_id != s.me))
+            .map(|m| m.id);
         for m in messages {
+            let new_here = new_line_at == Some(m.id);
+            if new_here {
+                new_line_at = None;
+                list = list.push(new_messages_line(t, fs));
+            }
             let grouped = !self.settings.compact
+                && !new_here
                 && m.reply.is_none()
                 && prev.is_some_and(|p| p.author_id == m.author_id && m.created_at - p.created_at < GROUP_WINDOW_MS);
             if !grouped && prev.is_some() && !self.settings.compact {
@@ -1867,6 +1879,24 @@ impl App {
         }
         col.into()
     }
+}
+
+/// The red line with a NEW tag that marks where unread messages start.
+fn new_messages_line<'a>(t: &AppTheme, fs: f32) -> Element<'a, Message> {
+    let red = t.danger.0;
+    let line = move || container(space()).height(1).width(Length::Fill).style(bg(red));
+    let tag =
+        container(text("NEW").size(fs * 0.68).font(bold()).color(Color::WHITE)).padding([1, 6]).style(move |_| {
+            container::Style {
+                background: Some(red.into()),
+                border: Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            }
+        });
+    row![line(), tag]
+        .align_y(Alignment::Center)
+        .padding(Padding { left: 16.0, right: 16.0, top: 6.0, bottom: 6.0 })
+        .into()
 }
 
 /// A clickable miniature of a theme's layout.

@@ -642,6 +642,9 @@ pub struct App {
     pub voice_drag: Option<crate::voice_moderation::VoiceDrag>,
     /// Person in voice under the pointer (for the hover highlight).
     pub voice_hover: Option<UserId>,
+    /// Channel being viewed and the last message read before opening it: the red NEW line
+    /// goes above the first message after that.
+    pub new_since: Option<(ChannelId, MessageId)>,
     /// Message the next one you send replies to.
     pub replying: Option<MessageId>,
     /// Message whose text is being selected.
@@ -744,6 +747,7 @@ impl App {
             message_menu: None,
             selecting: None,
             replying: None,
+            new_since: None,
             voice_drag: None,
             voice_hover: None,
             overlay: None,
@@ -1898,6 +1902,9 @@ impl App {
     pub(crate) fn select_channel(&mut self, id: ChannelId) -> Task<Message> {
         let Some(current) = self.session.as_ref().map(|s| s.current) else { return Task::none() };
         if current != Some(id) {
+            // Remember where you'd read up to, for the NEW line (before marking it all read).
+            self.new_since =
+                self.session.as_ref().filter(|s| s.is_unread(id)).map(|s| (id, s.read.get(&id).copied().unwrap_or(0)));
             self.stop_video();
             self.set_composer(String::new());
             self.composer_mentions.clear();
