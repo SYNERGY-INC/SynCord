@@ -35,9 +35,14 @@ pub mod perms {
     /// Links in your messages get a preview.
     pub const EMBED_LINKS: u64 = 1 << 8;
     pub const ADD_REACTIONS: u64 = 1 << 9;
+    /// Drag people from one voice channel to another.
+    pub const MOVE_MEMBERS: u64 = 1 << 10;
+    /// Server-mute and server-deafen people in voice.
+    pub const MUTE_MEMBERS: u64 = 1 << 11;
 
-    pub const ALL: u64 = (1 << 10) - 1;
-    /// What the everyone role starts with.
+    pub const ALL: u64 = (1 << 12) - 1;
+    /// What the everyone role starts with. Moving and muting people is for roles the
+    /// owner hands out (or turns on for everyone), like Discord.
     pub const DEFAULT: u64 = SEND_MESSAGES | ATTACH_FILES | CONNECT_VOICE | EMBED_LINKS | ADD_REACTIONS;
 
     /// Every permission with a name and an explanation, in the order the settings show them.
@@ -52,6 +57,8 @@ pub mod perms {
         (EMBED_LINKS, "Embed links", "Links they post show a preview."),
         (ADD_REACTIONS, "Add reactions", "React to messages with emoji."),
         (CONNECT_VOICE, "Join voice", "Join voice channels."),
+        (MOVE_MEMBERS, "Move members", "Drag people in voice to another voice channel."),
+        (MUTE_MEMBERS, "Mute members", "Server-mute and server-deafen people in voice."),
     ];
 }
 
@@ -356,6 +363,15 @@ pub struct VoiceState {
     pub deafened: bool,
     /// Identifies this person's audio packets (see [`voice`]).
     pub ssrc: u32,
+    /// Muted by someone else: the server drops their audio.
+    #[serde(default)]
+    pub server_muted: bool,
+    /// Deafened by someone else: the server sends them no audio.
+    #[serde(default)]
+    pub server_deafened: bool,
+    /// When they arrived in this channel (server clock, Unix milliseconds; 0 from older servers).
+    #[serde(default)]
+    pub joined_at: i64,
     /// Their camera is on (everyone in the call sees it).
     #[serde(default)]
     pub camera: bool,
@@ -409,6 +425,9 @@ pub struct Message {
     /// everyone for @everyone. Mentions are written `<@user id>`, `<@&role id>` and `@everyone`.
     #[serde(default)]
     pub mentions: Vec<UserId>,
+    /// The message this one replies to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<ReplyRef>,
     /// Ordinary messages, or a note the server posts (a call in a direct message).
     #[serde(default, skip_serializing_if = "MessageKind::is_normal")]
     pub kind: MessageKind,
@@ -435,6 +454,19 @@ impl MessageKind {
         *self == MessageKind::Normal
     }
 }
+
+/// A short preview of the message being replied to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyRef {
+    pub message_id: MessageId,
+    /// `None` if the original message has been deleted.
+    pub author_id: Option<UserId>,
+    /// The start of the original message (empty if deleted or only files).
+    pub snippet: String,
+}
+
+/// Longest reply preview, in characters.
+pub const REPLY_SNIPPET_LEN: usize = 120;
 
 /// Snapshot sent right after a successful login.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -470,6 +502,10 @@ pub struct Ready {
     /// Unread mentions of you, per channel.
     #[serde(default)]
     pub mentions: Vec<MentionCount>,
+    /// The server's clock (Unix milliseconds), so times like call lengths can be shown
+    /// correctly even if this computer's clock is off. 0 from older servers.
+    #[serde(default)]
+    pub server_time: i64,
     /// Statuses and activities of the people online (apps older than 0.6 only see `online`).
     #[serde(default)]
     pub presences: Vec<PresenceInfo>,
@@ -597,6 +633,9 @@ pub enum ClientMsg {
         /// Ids of files uploaded beforehand (see [`UPLOAD_PATH`]).
         #[serde(default)]
         attachments: Vec<String>,
+        /// Message in the same channel this one replies to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<MessageId>,
     },
     EditMessage {
         message_id: MessageId,
@@ -675,6 +714,17 @@ pub enum ClientMsg {
     RequestKeyframe {
         user_id: UserId,
         kind: VideoKind,
+    },
+    /// Move someone who's in voice to another voice channel (needs Move members).
+    MoveVoice {
+        user_id: UserId,
+        channel_id: ChannelId,
+    },
+    /// Server-mute or server-deafen someone (needs Mute members; kept if they rejoin).
+    ModerateVoice {
+        user_id: UserId,
+        muted: bool,
+        deafened: bool,
     },
     /// Needs the manage roles permission (and only roles below your own).
     CreateRole {
@@ -882,7 +932,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let msg = ClientMsg::SendMessage { channel_id: 3, content: "hi".into(), attachments: vec![] };
+        let msg = ClientMsg::SendMessage { channel_id: 3, content: "hi".into(), attachments: vec![], reply_to: None };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"op":"SendMessage","d":{"channel_id":3,"content":"hi","attachments":[]}}"#);
         // Older clients that don't send attachments still work.

@@ -8,8 +8,19 @@ use crate::theme::{AppTheme, contrast_text, rgb, with_alpha};
 
 /// The bundled UI font (see `assets/fonts`), so text looks the same on every computer.
 pub const INTER: Font = Font::with_name("Inter");
-pub const BOLD: Font = Font { weight: font::Weight::Bold, ..INTER };
-pub const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..INTER };
+
+/// The UI font chosen in Appearance settings (Inter unless changed), in bold.
+pub fn bold() -> Font {
+    Font { weight: font::Weight::Bold, ..crate::fonts::ui() }
+}
+
+/// The UI font chosen in Appearance settings, semibold. Many installed fonts have no
+/// semibold weight (text would fall back to another font), so those use bold.
+pub fn semibold() -> Font {
+    let ui = crate::fonts::ui();
+    let weight = if ui == INTER { font::Weight::Semibold } else { font::Weight::Bold };
+    Font { weight, ..ui }
+}
 
 pub fn bg(c: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style { background: Some(c.into()), ..Default::default() }
@@ -130,7 +141,7 @@ pub fn darken(c: Color, amount: f32) -> Color {
 
 /// Uppercase section label like "TEXT CHANNELS".
 pub fn label<'a, M: 'a>(t: &AppTheme, s: impl Into<String>, size: f32) -> Element<'a, M> {
-    text(s.into().to_uppercase()).size(size * 0.8).font(BOLD).color(t.muted.0).into()
+    text(s.into().to_uppercase()).size(size * 0.8).font(bold()).color(t.muted.0).into()
 }
 
 /// The circular avatar, including the user's chosen ring decoration.
@@ -144,7 +155,7 @@ pub fn avatar<'a, M: 'a>(name: &str, profile: &Profile, size: f32) -> Element<'a
     };
 
     let core = |inner: f32, border: Border| -> Element<'a, M> {
-        container(text(glyph.clone()).size(inner * 0.44).font(BOLD).color(contrast_text(accent)))
+        container(text(glyph.clone()).size(inner * 0.44).font(bold()).color(contrast_text(accent)))
             .center(inner)
             .style(move |_| container::Style {
                 background: Some(accent.into()),

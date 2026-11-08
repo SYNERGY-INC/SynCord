@@ -16,6 +16,10 @@ pub struct Settings {
     /// Multiplier applied to the theme's font size.
     pub text_scale: f32,
     pub show_members: bool,
+    /// UI font family ("" for the built-in Inter). Applied when SynCord starts.
+    pub ui_font: String,
+    /// Font file imported by the user (kept in the settings folder).
+    pub font_file: Option<PathBuf>,
     pub compact: bool,
     /// Draw the UI on the CPU instead of the GPU. Uses far less memory
     /// (no graphics driver overhead) and is plenty fast for a chat app.
@@ -40,6 +44,8 @@ pub struct Settings {
     pub server_sound: bool,
     /// Play a sound when people join or leave your voice channel.
     pub voice_sounds: bool,
+    /// Flash the taskbar icon for every new message (mentions always flash) while SynCord isn't focused.
+    pub flash_taskbar: bool,
     /// Volume of notification sounds (0.0 to 1.0).
     pub sound_volume: f32,
 
@@ -88,6 +94,8 @@ impl Default for Settings {
             theme: "Classic Dark".into(),
             text_scale: 1.0,
             show_members: true,
+            ui_font: String::new(),
+            font_file: None,
             compact: false,
             low_memory: true,
             input_device: None,
@@ -100,6 +108,7 @@ impl Default for Settings {
             dm_sound: true,
             server_sound: true,
             voice_sounds: true,
+            flash_taskbar: true,
             sound_volume: 0.6,
             autoplay_gifs: true,
             recent_emoji: Vec::new(),

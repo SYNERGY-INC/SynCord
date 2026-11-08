@@ -8,7 +8,7 @@ use syncord_proto::{ChannelId, User, UserId, VideoKind, VoiceState};
 use crate::app::{App, Message, Session};
 use crate::icons;
 use crate::live::ScreenList;
-use crate::style::{self, BOLD, SEMIBOLD, card};
+use crate::style::{self, bold, card, semibold};
 use crate::theme::with_alpha;
 
 /// A tile is a person's camera (or their avatar) or one of their screens.
@@ -102,7 +102,7 @@ impl App {
             container(
                 column![
                     text(format!("{} is sharing their screen", user.name())).size(fs * 0.9).color(Color::WHITE),
-                    button(text("Watch Stream").size(fs * 0.9).font(SEMIBOLD))
+                    button(text("Watch Stream").size(fs * 0.9).font(semibold()))
                         .padding([8, 16])
                         .on_press(Message::WatchScreen(user.id))
                         .style(style::solid_button(t.accent.0, 6.0)),
@@ -134,7 +134,7 @@ impl App {
             VideoKind::Screen if mine => "Your screen".to_string(),
             VideoKind::Screen => format!("{}'s screen", user.name()),
         };
-        tag = tag.push(text(name).size(fs * 0.78).font(SEMIBOLD).color(Color::WHITE));
+        tag = tag.push(text(name).size(fs * 0.78).font(semibold()).color(Color::WHITE));
         let mut corner = row![
             container(tag).padding([3, 7]).style(style::flat(Color::from_rgba(0.0, 0.0, 0.0, 0.6), 4.0)),
             space::horizontal(),
@@ -206,7 +206,7 @@ impl App {
         let header = container(
             row![
                 icons::icon(&icons::SPEAKER, fs * 1.3, t.muted.0),
-                text(name).size(fs * 1.05).font(BOLD).color(t.header.0),
+                text(name).size(fs * 1.05).font(bold()).color(t.header.0),
                 space::horizontal(),
                 button(text("Back to chat").size(fs * 0.8))
                     .padding([4, 8])
@@ -256,7 +256,7 @@ impl App {
     pub(crate) fn screen_picker<'a>(&'a self, list: &'a ScreenList) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let mut col = column![text("Share your screen").size(fs * 1.25).font(BOLD).color(t.header.0)].spacing(12);
+        let mut col = column![text("Share your screen").size(fs * 1.25).font(bold()).color(t.header.0)].spacing(12);
         match list {
             ScreenList::Loading => col = col.push(text("Looking for screens...").size(fs * 0.9).color(t.muted.0)),
             ScreenList::Failed(e) => col = col.push(text(e.clone()).size(fs * 0.9).color(t.danger.0)),
@@ -316,7 +316,7 @@ impl App {
             r = r.push(icons::icon(&icons::CAMERA, fs * 0.9, t.muted.0));
         }
         if v.screen {
-            let pill = container(text("LIVE").size(fs * 0.62).font(BOLD).color(Color::WHITE))
+            let pill = container(text("LIVE").size(fs * 0.62).font(bold()).color(Color::WHITE))
                 .padding([1, 5])
                 .style(style::flat(t.danger.0, 4.0));
             let in_my_call = self.voice.as_ref().is_some_and(|mine| mine.channel_id == v.channel_id);

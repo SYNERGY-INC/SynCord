@@ -52,7 +52,7 @@ pub async fn joined(state: &Arc<AppState>, channel: ChannelId, user: UserId) {
                 let name = db::get_user(c, user)?.map(|u| u.name().to_string()).unwrap_or_default();
                 // What apps older than 0.6 show.
                 let text = format!("📞 {name} started a call.");
-                let Ok(m) = db::insert_message(c, channel, user, &text, &[])? else { return Ok(None) };
+                let Ok(m) = db::insert_message(c, channel, user, &text, &[], None)? else { return Ok(None) };
                 db::set_kind(c, m.id, &MessageKind::Call { participants: vec![user], ended_at: None })?;
                 // The other person gets a ping for it.
                 let others: Vec<UserId> = members.iter().copied().filter(|u| *u != user).collect();

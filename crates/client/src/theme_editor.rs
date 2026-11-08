@@ -5,7 +5,7 @@ use iced::widget::{Id, button, column, container, row, text, text_editor};
 use iced::{Alignment, Element, Font, Length, Task};
 
 use crate::app::{App, Message};
-use crate::style::{self, BOLD, card};
+use crate::style::{self, bold, card};
 use crate::theme::{AppTheme, Hex, builtin, themes_dir};
 
 /// Which text format the editor shows.
@@ -318,7 +318,7 @@ impl App {
         };
 
         let tab = |label: &'static str, format: ThemeFormat| {
-            button(text(label).size(fs * 0.9).font(BOLD))
+            button(text(label).size(fs * 0.9).font(bold()))
                 .padding([6, 14])
                 .on_press(Message::ThemeEditorFormat(format))
                 .style(style::row_button(t, ed.format == format))
@@ -359,7 +359,7 @@ impl App {
         container(
             column![
                 row![
-                    text("Theme editor").size(fs * 1.1).font(BOLD).color(t.header.0).width(Length::Fill),
+                    text("Theme editor").size(fs * 1.1).font(bold()).color(t.header.0).width(Length::Fill),
                     tab("CSS", ThemeFormat::Css),
                     tab("TOML", ThemeFormat::Toml),
                 ]

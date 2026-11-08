@@ -24,6 +24,29 @@ use syncord_proto::{Attachment, DirectChannel};
 use syncord_proto::{ChannelKind, VoiceState};
 
 pub const MESSAGES_ID: &str = "messages";
+
+/// This computer's clock, in Unix milliseconds.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// A call length as "4:07" or "1:02:33".
+pub fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+#[cfg(test)]
+mod duration_tests {
+    #[test]
+    fn formats_call_lengths() {
+        use std::time::Duration;
+        assert_eq!(super::format_duration(Duration::from_secs(7)), "0:07");
+        assert_eq!(super::format_duration(Duration::from_secs(247)), "4:07");
+        assert_eq!(super::format_duration(Duration::from_secs(3753)), "1:02:33");
+    }
+}
 pub const COMPOSER_ID: &str = "composer";
 const TYPING_SHOWN_FOR: Duration = Duration::from_secs(6);
 const TYPING_RESEND_AFTER: Duration = Duration::from_secs(4);
@@ -70,6 +93,9 @@ pub enum Message {
     SelectAction(iced::widget::text_editor::Action),
     StopSelecting,
     MenuReact(MessageId),
+    /// Reply to a message: shows "Replying to" above the message box.
+    StartReply(MessageId),
+    CancelReply,
     MenuEdit(MessageId),
     MenuDelete(MessageId),
     ToggleMembers,
@@ -101,6 +127,18 @@ pub enum Message {
     SaveThemeEditor,
     CloseThemeEditor,
     TextScale(f32),
+    /// Open the colour picker for a colour field (current colour, where to send changes).
+    OpenColorPicker(u32, fn(String) -> Message),
+    CloseColorPicker,
+    ColorPickerPress(crate::color_picker::Area),
+    ColorPickerMove(crate::color_picker::Area, iced::Point),
+    ColorPickerRelease,
+    ColorPickerHex(String),
+    InstalledFonts(Vec<String>),
+    PickFont(String),
+    ChooseFontFile,
+    FontFileChosen(Option<PathBuf>),
+    RestartApp,
     ToggleCompact(bool),
     ToggleLowMemory(bool),
     Logout,
@@ -119,10 +157,24 @@ pub enum Message {
     ToggleNoiseSuppression(bool),
     ToggleMicTest,
     UserVolume(UserId, f32),
+    /// Left mouse button down on someone in voice (a click opens their profile, a drag moves them).
+    VoicePress(UserId),
+    VoiceDragMove(iced::Point),
+    /// The pointer is over this voice channel (or none) while dragging.
+    VoiceDragOver(Option<ChannelId>),
+    VoiceDragRelease,
+    VoiceHover(Option<UserId>),
+    ModerateVoice {
+        user_id: UserId,
+        muted: bool,
+        deafened: bool,
+    },
+    MoveVoice(UserId, ChannelId),
     ToggleDmSound(bool),
     ToggleServerSound(bool),
     ToggleVoiceSounds(bool),
     TogglePingSound(bool),
+    ToggleFlashTaskbar(bool),
     SoundVolume(f32),
     TestSound,
 
@@ -457,6 +509,8 @@ pub struct Session {
     pub gif_provider: Option<String>,
     /// Largest upload the server accepts, in MB (0 if it doesn't say).
     pub max_upload_mb: u64,
+    /// Server clock minus this computer's clock, in milliseconds.
+    pub clock_offset_ms: i64,
 }
 
 impl Session {
@@ -493,6 +547,14 @@ impl Session {
 
     pub fn first_text_channel(&self) -> Option<ChannelId> {
         self.channels.iter().find(|c| c.kind == ChannelKind::Text).map(|c| c.id)
+    }
+
+    /// How long a voice channel's call has been going (since the first person still there arrived).
+    pub fn call_length(&self, channel: ChannelId) -> Option<Duration> {
+        let started =
+            self.voice.values().filter(|v| v.channel_id == channel && v.joined_at > 0).map(|v| v.joined_at).min()?;
+        let now = now_ms() + self.clock_offset_ms;
+        Some(Duration::from_millis((now - started).max(0) as u64))
     }
 
     pub fn is_owner(&self) -> bool {
@@ -575,12 +637,17 @@ impl ProfileDraft {
     }
 }
 
+/// Label for the built-in font in the font picker.
+pub const DEFAULT_FONT: &str = "Inter (default)";
+
 /// Label for "use the system's default device" in the device pickers.
 pub const DEFAULT_DEVICE: &str = "Default";
 
 /// The voice channel we're connected to.
 pub struct ActiveVoice {
     pub channel_id: ChannelId,
+    /// When we connected, for the call timer.
+    pub since: Instant,
     pub ssrc: u32,
     token: Token,
     key: Option<Key>,
@@ -595,6 +662,11 @@ pub struct App {
     pub theme_errors: Vec<String>,
     pub theme: AppTheme,
     pub theme_editor: Option<crate::theme_editor::ThemeEditor>,
+    pub color_picker: Option<crate::color_picker::ColorPicker>,
+    /// Fonts installed on this computer (loaded when Appearance opens).
+    pub installed_fonts: Vec<String>,
+    /// Problem importing a font file.
+    pub font_error: Option<String>,
 
     generation: u64,
     pub(crate) conn: Option<Connection>,
@@ -619,6 +691,16 @@ pub struct App {
     pub editing: Option<(MessageId, String)>,
     /// Message whose right-click menu is open, and where (window coordinates).
     pub message_menu: Option<(MessageId, iced::Point)>,
+    pub voice_drag: Option<crate::voice_moderation::VoiceDrag>,
+    /// Person in voice under the pointer (for the hover highlight).
+    pub voice_hover: Option<UserId>,
+    /// Channel being viewed and the last message read before opening it: the red NEW line
+    /// goes above the first message after that.
+    pub new_since: Option<(ChannelId, MessageId)>,
+    /// The taskbar icon was flashed and hasn't been cleared yet.
+    pub(crate) wants_attention: bool,
+    /// Message the next one you send replies to.
+    pub replying: Option<MessageId>,
     /// Message whose text is being selected.
     pub selecting: Option<crate::app_messages::Selecting>,
     pub overlay: Option<Overlay>,
@@ -709,6 +791,9 @@ impl App {
             theme_errors,
             theme,
             theme_editor: None,
+            color_picker: None,
+            installed_fonts: Vec::new(),
+            font_error: None,
             generation: 0,
             conn: None,
             voice_sink: Default::default(),
@@ -726,6 +811,11 @@ impl App {
             editing: None,
             message_menu: None,
             selecting: None,
+            replying: None,
+            wants_attention: false,
+            new_since: None,
+            voice_drag: None,
+            voice_hover: None,
             overlay: None,
             settings_tab: None,
             draft: ProfileDraft::default(),
@@ -830,7 +920,8 @@ impl App {
             iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FilesChosen(vec![path])),
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(true)),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowFocused(false)),
-            // Remembered for placing the message menu; not a message, so moving the mouse costs nothing.
+            // Remembered for placing menus and dragging people in voice; not a message, so moving
+            // the mouse costs nothing.
             iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                 crate::app_messages::remember_cursor(position);
                 crate::presence::input().then_some(Message::BackFromIdle)
@@ -868,8 +959,30 @@ impl App {
             subs.push(iced::time::every(crate::presence::CHECK_EVERY).map(|_| Message::PresenceTick));
         }
         subs.push(Subscription::run(crate::tray::events).map(Message::Wake));
+        if self.color_picker.as_ref().is_some_and(|p| p.dragging.is_some()) {
+            // Letting go outside the picker still ends the drag.
+            subs.push(iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::ColorPickerRelease)
+                }
+                _ => None,
+            }));
+        }
+        if self.voice_drag.is_some() {
+            subs.push(iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::VoiceDragMove(position))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::VoiceDragRelease)
+                }
+                _ => None,
+            }));
+        }
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
-        if someone_typing {
+        // Call timers tick once a second while anyone is in voice.
+        let calls_running = self.session.as_ref().is_some_and(|s| !s.voice.is_empty());
+        if someone_typing || calls_running {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
         }
         if self.voice.is_some() || self.mic_test.is_some() {
@@ -1094,7 +1207,8 @@ impl App {
                         self.notice = Some("Not connected right now; your message wasn't sent.".into());
                         return Task::none();
                     }
-                    self.send(ClientMsg::SendMessage { channel_id, content, attachments });
+                    let reply_to = self.replying.take();
+                    self.send(ClientMsg::SendMessage { channel_id, content, attachments, reply_to });
                     self.set_composer(String::new());
                     self.composer_mentions.clear();
                     self.pending.clear();
@@ -1200,6 +1314,7 @@ impl App {
                 self.overlay = None;
             }
             Message::CloseSettings => {
+                self.color_picker = None;
                 // Leaving settings abandons unsaved theme edits.
                 if let Some(ed) = self.theme_editor.take() {
                     self.theme = ed.original;
@@ -1216,7 +1331,44 @@ impl App {
                     self.mic_test = None;
                 }
                 self.settings_tab = Some(tab);
+                if tab == SettingsTab::Appearance && self.installed_fonts.is_empty() {
+                    return Task::perform(crate::fonts::installed(), Message::InstalledFonts);
+                }
             }
+            Message::InstalledFonts(list) => self.installed_fonts = list,
+            Message::PickFont(name) => {
+                self.font_error = None;
+                self.settings.ui_font = if name == DEFAULT_FONT { String::new() } else { name };
+                self.settings.font_file = None;
+                self.settings.save();
+            }
+            Message::ChooseFontFile => {
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Choose a font")
+                            .add_filter("Fonts", &["ttf", "otf", "ttc"])
+                            .pick_file()
+                            .await
+                            .map(|f| f.path().to_path_buf())
+                    },
+                    Message::FontFileChosen,
+                );
+            }
+            Message::FontFileChosen(None) => {}
+            Message::FontFileChosen(Some(path)) => match crate::fonts::import(&path) {
+                Ok((family, saved)) => {
+                    self.font_error = None;
+                    self.settings.ui_font = family;
+                    self.settings.font_file = Some(saved);
+                    self.settings.save();
+                }
+                Err(e) => self.font_error = Some(e),
+            },
+            Message::RestartApp => match crate::fonts::relaunch() {
+                Ok(()) => return iced::exit(),
+                Err(e) => self.font_error = Some(e),
+            },
             Message::Draft(field) => {
                 let d = &mut self.draft;
                 match field {
@@ -1372,6 +1524,10 @@ impl App {
                 self.settings.voice_sounds = v;
                 self.settings.save();
             }
+            Message::ToggleFlashTaskbar(v) => {
+                self.settings.flash_taskbar = v;
+                self.settings.save();
+            }
             Message::TogglePingSound(v) => {
                 self.settings.ping_sound = v;
                 self.settings.save();
@@ -1436,6 +1592,19 @@ impl App {
             | Message::OpenDirect(_)
             | Message::NewDirect => return self.update_social(message),
 
+            Message::OpenColorPicker(..)
+            | Message::CloseColorPicker
+            | Message::ColorPickerPress(_)
+            | Message::ColorPickerMove(..)
+            | Message::ColorPickerRelease
+            | Message::ColorPickerHex(_) => return self.update_color_picker(message),
+            Message::VoicePress(_)
+            | Message::VoiceDragMove(_)
+            | Message::VoiceDragOver(_)
+            | Message::VoiceDragRelease
+            | Message::VoiceHover(_)
+            | Message::ModerateVoice { .. }
+            | Message::MoveVoice(..) => return self.update_voice_moderation(message),
             Message::OpenMessageMenu(_)
             | Message::CloseMessageMenu
             | Message::CopyMessageText(_)
@@ -1444,7 +1613,9 @@ impl App {
             | Message::StopSelecting
             | Message::MenuReact(_)
             | Message::MenuEdit(_)
-            | Message::MenuDelete(_) => return self.update_messages(message),
+            | Message::MenuDelete(_)
+            | Message::StartReply(_)
+            | Message::CancelReply => return self.update_messages(message),
             Message::OpenThemeEditor
             | Message::ThemeEditorAction(_)
             | Message::ThemeEditorFormat(_)
@@ -1575,6 +1746,10 @@ impl App {
                 self.focused = focused;
                 if focused {
                     self.mark_current_read();
+                    if std::mem::take(&mut self.wants_attention) {
+                        // Linux keeps the "urgent" mark until the app clears it.
+                        return iced::window::latest().and_then(|id| iced::window::request_user_attention(id, None));
+                    }
                 }
             }
             Message::Tick => {
@@ -1585,10 +1760,16 @@ impl App {
                 }
             }
             Message::Escape => {
-                if self.message_menu.is_some() {
+                if self.color_picker.is_some() {
+                    self.color_picker = None;
+                } else if self.voice_drag.is_some() {
+                    self.voice_drag = None;
+                } else if self.message_menu.is_some() {
                     self.message_menu = None;
                 } else if self.selecting.is_some() {
                     self.selecting = None;
+                } else if self.replying.is_some() {
+                    self.replying = None;
                 } else if self.emoji_picker.is_some() {
                     self.emoji_picker = None;
                 } else if self.overlay.is_some() {
@@ -1714,6 +1895,7 @@ impl App {
         key: Option<Key>,
         udp_port: u16,
         counters: Arc<voice::Counters>,
+        since: Instant,
         engine: VoiceEngine,
     ) {
         crate::live::set_key(key);
@@ -1726,7 +1908,7 @@ impl App {
         if let Some(problem) = engine.status().problem {
             self.notice = Some(problem);
         }
-        self.voice = Some(ActiveVoice { channel_id, ssrc, token, key, udp_port, counters, engine });
+        self.voice = Some(ActiveVoice { channel_id, since, ssrc, token, key, udp_port, counters, engine });
     }
 
     fn apply_mute_state(&self) {
@@ -1755,10 +1937,10 @@ impl App {
         }
         if let Some(v) = self.voice.take() {
             let (channel_id, ssrc, token, key, udp_port) = (v.channel_id, v.ssrc, v.token, v.key, v.udp_port);
-            let counters = v.counters.clone();
+            let (counters, since) = (v.counters.clone(), v.since);
             drop(v); // release the old devices first
             match self.start_engine(token, key, udp_port, counters.clone()) {
-                Ok(engine) => self.install_engine(channel_id, ssrc, token, key, udp_port, counters, engine),
+                Ok(engine) => self.install_engine(channel_id, ssrc, token, key, udp_port, counters, since, engine),
                 Err(e) => {
                     self.notice = Some(format!("Couldn't switch audio device: {e}"));
                     self.send(ClientMsg::LeaveVoice);
@@ -1788,7 +1970,7 @@ impl App {
                 let counters = Arc::<voice::Counters>::default();
                 match self.start_engine(token, key, udp_port, counters.clone()) {
                     Ok(engine) => {
-                        self.install_engine(channel_id, ssrc, token, key, udp_port, counters, engine);
+                        self.install_engine(channel_id, ssrc, token, key, udp_port, counters, Instant::now(), engine);
                         if self.settings.voice_sounds && !self.deafened {
                             self.settings.play(crate::sounds::Sound::Join);
                         }
@@ -1831,6 +2013,15 @@ impl App {
                         (Some(st), Some(ssrc)) if st.ssrc != ssrc && self.voice_joining.is_none() => {
                             self.stop_voice();
                             self.notice = Some("You joined voice from another device.".into());
+                        }
+                        // Someone moved us: the server already sends our audio to the new channel.
+                        (Some(st), Some(_)) if self.voice.as_ref().is_some_and(|v| v.channel_id != st.channel_id) => {
+                            if let Some(v) = &mut self.voice {
+                                v.channel_id = st.channel_id;
+                            }
+                            if self.settings.voice_sounds && !self.deafened {
+                                self.settings.play(crate::sounds::Sound::Join);
+                            }
                         }
                         _ => {}
                     }
@@ -1892,12 +2083,16 @@ impl App {
     pub(crate) fn select_channel(&mut self, id: ChannelId) -> Task<Message> {
         let Some(current) = self.session.as_ref().map(|s| s.current) else { return Task::none() };
         if current != Some(id) {
+            // Remember where you'd read up to, for the NEW line (before marking it all read).
+            self.new_since =
+                self.session.as_ref().filter(|s| s.is_unread(id)).map(|s| (id, s.read.get(&id).copied().unwrap_or(0)));
             self.stop_video();
             self.set_composer(String::new());
             self.composer_mentions.clear();
             self.editing = None;
             self.message_menu = None;
             self.selecting = None;
+            self.replying = None;
             self.last_typing_sent = None;
             self.emoji_picker = None;
             self.pending.clear();
@@ -2027,6 +2222,7 @@ impl App {
             blocked: ready.blocked.into_iter().collect(),
             mention_counts: ready.mentions.into_iter().map(|m| (m.channel_id, m.count)).collect(),
             presences: ready.presences.into_iter().map(|p| (p.user_id, (p.status, p.activity))).collect(),
+            clock_offset_ms: if ready.server_time > 0 { ready.server_time - now_ms() } else { 0 },
         });
         // Tell the (maybe restarted) server our status again.
         self.sent_presence = None;
@@ -2118,6 +2314,8 @@ impl App {
                         self.settings.play(crate::sounds::Sound::Message);
                     }
                 }
+                // Flash the taskbar icon while SynCord isn't focused (pings flash in on_mention).
+                let flash = Some(m.author_id) != me && !quiet && self.settings.flash_taskbar && !self.focused;
                 let latest = s.latest.entry(channel).or_insert(m.id);
                 *latest = (*latest).max(m.id);
                 if Some(m.author_id) == me {
@@ -2135,13 +2333,15 @@ impl App {
                 if st.loaded && !st.detached && !st.messages.iter().any(|x| x.id == m.id) {
                     st.messages.push(m);
                 }
+                let attention = if flash { self.request_attention() } else { Task::none() };
                 if back_to_present {
-                    return self.update_search(Message::JumpToPresent);
+                    return Task::batch([attention, self.update_search(Message::JumpToPresent)]);
                 }
-                if s.current == Some(channel) {
+                if self.session.as_ref().is_some_and(|s| s.current == Some(channel)) {
                     self.mark_current_read();
-                    return self.request_pictures();
+                    return Task::batch([attention, self.request_pictures()]);
                 }
+                return attention;
             }
             ServerMsg::MessageUpdated(m) => {
                 if let Some(st) = s.chans.get_mut(&m.channel_id)

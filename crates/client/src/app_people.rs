@@ -204,6 +204,13 @@ impl App {
         if self.settings.ping_sound && !self.deafened {
             crate::sound::ping(self.settings.output_device.clone(), self.settings.sound_volume);
         }
+        self.request_attention()
+    }
+
+    /// Flash the taskbar button (Windows), bounce the dock icon (macOS) or mark the window
+    /// urgent (Linux) until SynCord is looked at.
+    pub(crate) fn request_attention(&mut self) -> iced::Task<crate::app::Message> {
+        self.wants_attention = true;
         iced::window::latest()
             .and_then(|id| iced::window::request_user_attention(id, Some(iced::window::UserAttention::Informational)))
     }

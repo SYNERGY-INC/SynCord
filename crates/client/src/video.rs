@@ -15,7 +15,7 @@ use syncord_video::Player;
 use crate::app::{App, Message};
 use crate::icons::{self, icon};
 use crate::media::{self, format_size};
-use crate::style::{self, BOLD, card};
+use crate::style::{self, bold, card};
 
 const VIDEO_W: f32 = 400.0;
 const VIDEO_H: f32 = 300.0;
@@ -191,7 +191,7 @@ impl App {
             let label: Element<'a, Message> = match self.video_loading.get(&a.id) {
                 Some((done, total)) => {
                     let pct = (done.load(Ordering::Relaxed) * 100).checked_div(*total).unwrap_or(0).min(100);
-                    text(format!("{pct}%")).size(fs * 0.9).font(BOLD).color(Color::WHITE).into()
+                    text(format!("{pct}%")).size(fs * 0.9).font(bold()).color(Color::WHITE).into()
                 }
                 None => icon(&icons::PLAY, 30.0, Color::WHITE),
             };

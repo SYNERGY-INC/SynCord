@@ -260,7 +260,7 @@ impl Connection {
                     }
                     return Ok(Flow::Close);
                 }
-                ClientMsg::SendMessage { channel_id, content, attachments } => {
+                ClientMsg::SendMessage { channel_id, content, attachments, reply_to } => {
                     let content = content.trim().to_owned();
                     if content.is_empty() && attachments.is_empty() {
                         return Ok(Flow::Continue);
@@ -308,7 +308,7 @@ impl Connection {
                     }
                     let sent = db
                         .call(move |c| {
-                            let sent = db::insert_message(c, channel_id, me, &content, &attachments)?;
+                            let sent = db::insert_message(c, channel_id, me, &content, &attachments, reply_to)?;
                             if let Ok(m) = &sent {
                                 db::mark_read(c, me, channel_id, m.id)?;
                                 let pinged = db::resolve_mentions(c, me, channel_id, &m.content)?;
@@ -512,7 +512,7 @@ impl Connection {
                     let ids = vec![attachment.id];
                     let sent = db
                         .call(move |c| {
-                            let sent = db::insert_message(c, channel_id, me, "", &ids)?;
+                            let sent = db::insert_message(c, channel_id, me, "", &ids, None)?;
                             if let Ok(m) = &sent {
                                 db::mark_read(c, me, channel_id, m.id)?;
                             }
@@ -620,7 +620,7 @@ impl Connection {
                         return Ok(self.error(why).await);
                     }
                     let previous = self.state.voice.channel_of(me);
-                    let joined = self.state.voice.join(
+                    let mut joined = self.state.voice.join(
                         me,
                         channel_id,
                         self.conn_id,
@@ -629,6 +629,11 @@ impl Connection {
                         false,
                         encrypted,
                     );
+                    if voice_audience(&db, channel_id).await?.is_some()
+                        && let Some(state) = self.state.voice.exempt(me)
+                    {
+                        joined.state = state;
+                    }
                     let udp_port = self.state.udp_port.load(Ordering::Relaxed);
                     self.send(&ServerMsg::VoiceReady {
                         channel_id,
@@ -687,6 +692,59 @@ impl Connection {
                 ClientMsg::RequestKeyframe { user_id, kind } => {
                     if self.state.voice.may_request_keyframe(me, user_id, kind) {
                         self.broadcast_to(&ServerMsg::KeyframeRequest { kind }, Some(Arc::from([user_id])));
+                    }
+                }
+                ClientMsg::MoveVoice { user_id, channel_id } => {
+                    // Only between server voice channels (not into or out of private calls).
+                    let from = self.state.voice.channel_of(user_id);
+                    let refusal = db
+                        .call(move |c| {
+                            let voice =
+                                |ch| Ok::<_, rusqlite::Error>(db::channel_kind(c, ch)? == Some(ChannelKind::Voice));
+                            Ok(if !db::access(c, me)?.can(perms::MOVE_MEMBERS) {
+                                Some("You don't have permission to move people")
+                            } else if !db::outranks(c, me, user_id)? {
+                                Some("You can't move someone ranked above you")
+                            } else if !voice(channel_id)? || !from.map(voice).transpose()?.unwrap_or(false) {
+                                Some("People can only be moved between voice channels")
+                            } else {
+                                None
+                            })
+                        })
+                        .await?;
+                    if let Some(why) = refusal {
+                        return Ok(self.error(why).await);
+                    }
+                    if let Some(state) = self.state.voice.move_member(user_id, channel_id) {
+                        info!("user {me} moved user {user_id} to voice channel {channel_id}");
+                        self.broadcast(&ServerMsg::VoiceStateUpdate { user_id, state: Some(state) });
+                    }
+                }
+                ClientMsg::ModerateVoice { user_id, muted, deafened } => {
+                    // Only in server voice channels: private calls are nobody else's business.
+                    let in_channel = self.state.voice.channel_of(user_id);
+                    let refusal = db
+                        .call(move |c| {
+                            Ok(if !db::access(c, me)?.can(perms::MUTE_MEMBERS) {
+                                Some("You don't have permission to mute people")
+                            } else if !db::outranks(c, me, user_id)? {
+                                Some("You can't mute someone ranked above you")
+                            } else if let Some(ch) = in_channel
+                                && db::channel_kind(c, ch)? != Some(ChannelKind::Voice)
+                            {
+                                Some("People can only be server-muted in voice channels")
+                            } else {
+                                None
+                            })
+                        })
+                        .await?;
+                    if let Some(why) = refusal {
+                        return Ok(self.error(why).await);
+                    }
+                    info!("user {me} set server mute={muted} deafen={deafened} on user {user_id}");
+                    if let Some(state) = self.state.voice.moderate(user_id, muted, deafened) {
+                        let to = voice_audience(&db, state.channel_id).await?;
+                        self.broadcast_to(&ServerMsg::VoiceStateUpdate { user_id, state: Some(state) }, to);
                     }
                 }
             }
@@ -864,6 +922,7 @@ impl Connection {
             blocked,
             mentions,
             presences,
+            server_time: db::now_ms(),
         };
         if self.send(&ServerMsg::Ready(ready)).await { Flow::Continue } else { Flow::Close }
     }

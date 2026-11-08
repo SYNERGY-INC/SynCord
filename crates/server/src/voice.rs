@@ -54,6 +54,8 @@ struct Member {
 #[derive(Default)]
 pub struct Voice {
     members: Mutex<HashMap<UserId, Member>>,
+    /// Server mute/deafen per person, remembered across leaving and rejoining.
+    moderation: Mutex<HashMap<UserId, (bool, bool)>>,
     next_ssrc: AtomicU32,
     udp: Mutex<Option<Arc<UdpSocket>>>,
 }
@@ -99,7 +101,21 @@ impl Voice {
         let token: Token = rand::rng().random();
         let key: Option<Key> = encrypted.then(|| rand::rng().random());
         let ssrc = self.next_ssrc.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-        let state = VoiceState { user_id, channel_id, muted, deafened, ssrc, camera: false, screen: false };
+        let (server_muted, server_deafened) =
+            self.moderation.lock().unwrap_or_else(|e| e.into_inner()).get(&user_id).copied().unwrap_or_default();
+        let joined_at = crate::db::now_ms();
+        let state = VoiceState {
+            user_id,
+            channel_id,
+            muted,
+            deafened,
+            ssrc,
+            server_muted,
+            server_deafened,
+            joined_at,
+            camera: false,
+            screen: false,
+        };
         let member = Member {
             state: state.clone(),
             token,
@@ -118,6 +134,44 @@ impl Voice {
         };
         let previous = self.lock().insert(user_id, member);
         Joined { state, token, key, replaced_conn: previous.map(|m| m.conn_id).filter(|c| *c != conn_id) }
+    }
+
+    /// Move someone already in voice to another channel. Their audio follows straight away
+    /// (each listener's audio is sealed with that listener's own key).
+    pub fn move_member(&self, user_id: UserId, channel_id: ChannelId) -> Option<VoiceState> {
+        let mut members = self.lock();
+        let m = members.get_mut(&user_id).filter(|m| m.state.channel_id != channel_id)?;
+        m.state.channel_id = channel_id;
+        // joined_at is when they arrived in this channel (it drives the channel's call timer).
+        m.state.joined_at = crate::db::now_ms();
+        Some(m.state.clone())
+    }
+
+    /// Set someone's server mute/deafen. Returns their new state if they're in voice now.
+    pub fn moderate(&self, user_id: UserId, muted: bool, deafened: bool) -> Option<VoiceState> {
+        {
+            let mut moderation = self.moderation.lock().unwrap_or_else(|e| e.into_inner());
+            if muted || deafened {
+                moderation.insert(user_id, (muted, deafened));
+            } else {
+                moderation.remove(&user_id);
+            }
+        }
+        let mut members = self.lock();
+        let m = members.get_mut(&user_id)?;
+        m.state.server_muted = muted;
+        m.state.server_deafened = deafened;
+        Some(m.state.clone())
+    }
+
+    /// Server mute and deafen don't apply in private calls: lift them (without
+    /// forgetting them) for someone who just joined one.
+    pub fn exempt(&self, user_id: UserId) -> Option<VoiceState> {
+        let mut members = self.lock();
+        let m = members.get_mut(&user_id)?;
+        m.state.server_muted = false;
+        m.state.server_deafened = false;
+        Some(m.state.clone())
     }
 
     /// Remove the user if `conn_id` owns their voice session. Returns true if they left.
@@ -247,7 +301,8 @@ impl Voice {
             sender.window_count = 0;
         }
         sender.window_count += 1;
-        if sender.window_count > MAX_PACKETS_PER_SEC || sender.state.muted || sender.state.deafened {
+        let silenced = sender.state.muted || sender.state.deafened || sender.state.server_muted;
+        if sender.window_count > MAX_PACKETS_PER_SEC || silenced {
             return;
         }
 
@@ -255,7 +310,8 @@ impl Voice {
         let plain = Bytes::from(Packet::AudioDown { ssrc, seq, opus }.encode());
 
         for m in members.values_mut() {
-            if m.state.user_id == sender_id || m.state.channel_id != channel_id || m.state.deafened {
+            let not_listening = m.state.deafened || m.state.server_deafened;
+            if m.state.user_id == sender_id || m.state.channel_id != channel_id || not_listening {
                 continue;
             }
             // Each listener gets the audio sealed with their own key (or plain, for old apps).
@@ -371,6 +427,35 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let j = v.join(user, channel, user as u64, tx, false, false, false);
         (j.token, rx)
+    }
+
+    #[test]
+    fn moving_and_server_moderation() {
+        let v = Voice::default();
+        let (alice, _a) = join(&v, 1, 10);
+        let (_bob, mut bob_rx) = join(&v, 2, 20);
+        let speak = |seq| v.handle_packet(&Packet::AudioUp { token: alice, seq, opus: &[7] }.encode(), None);
+
+        speak(1);
+        assert!(bob_rx.try_recv().is_err(), "different channels");
+        assert_eq!(v.move_member(2, 10).unwrap().channel_id, 10);
+        assert!(v.move_member(2, 10).is_none(), "already there");
+        speak(2);
+        assert!(bob_rx.try_recv().is_ok(), "bob hears alice after being moved");
+
+        assert!(v.moderate(1, true, false).unwrap().server_muted);
+        speak(3);
+        assert!(bob_rx.try_recv().is_err(), "server-muted alice is silent");
+        v.moderate(1, false, false);
+        v.moderate(2, false, true);
+        speak(4);
+        assert!(bob_rx.try_recv().is_err(), "server-deafened bob hears nothing");
+
+        // Server deafen sticks when bob leaves and rejoins.
+        assert!(v.leave(2, 2));
+        let (_bob, _rx) = join(&v, 2, 10);
+        assert!(v.states().iter().find(|s| s.user_id == 2).unwrap().server_deafened);
+        assert!(v.moderate(3, true, true).is_none(), "not in voice, but remembered");
     }
 
     #[test]

@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 use syncord_proto::{
     Attachment, Channel, ChannelId, ChannelKind, DirectChannel, EVERYONE_ROLE, Embed, HISTORY_PAGE, MentionCount,
-    Message, MessageId, MessageKind, Profile, Reaction, ReadState, Role, RoleId, SEARCH_PAGE, SearchHas, SearchQuery,
-    User, UserId, parse_mentions, perms,
+    Message, MessageId, MessageKind, Profile, REPLY_SNIPPET_LEN, Reaction, ReadState, ReplyRef, Role, RoleId,
+    SEARCH_PAGE, SearchHas, SearchQuery, User, UserId, parse_mentions, perms,
 };
 
 #[derive(Clone)]
@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS messages (
     author_id  INTEGER NOT NULL REFERENCES users(id),
     content    TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    edited_at  INTEGER
+    edited_at  INTEGER,
+    reply_to   INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS messages_by_channel ON messages(channel_id, id);
@@ -202,12 +203,14 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     if !has_kind {
         conn.execute_batch("ALTER TABLE channels ADD COLUMN kind INTEGER NOT NULL DEFAULT 0")?;
     }
-    // 0.5: link previews, videos, and pictures that belong to a link preview.
+    // 0.5: link previews, videos, pictures that belong to a link preview, and replies
+    // (no foreign key, so a reply survives its original being deleted).
     for (table, column, ddl) in [
         ("messages", "embeds", "ALTER TABLE messages ADD COLUMN embeds TEXT NOT NULL DEFAULT '[]'"),
         ("attachments", "video", "ALTER TABLE attachments ADD COLUMN video TEXT"),
         ("attachments", "is_embed", "ALTER TABLE attachments ADD COLUMN is_embed INTEGER NOT NULL DEFAULT 0"),
         ("messages", "kind", "ALTER TABLE messages ADD COLUMN kind TEXT"),
+        ("messages", "reply_to", "ALTER TABLE messages ADD COLUMN reply_to INTEGER"),
     ] {
         if conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 0")).is_err() {
             conn.execute_batch(ddl)?;
@@ -645,6 +648,9 @@ fn fill_extras(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
         m.attachments = by_message.remove(&m.id).unwrap_or_default();
         m.reactions = reactions.remove(&m.id).unwrap_or_default();
         m.mentions = mentions.remove(&m.id).unwrap_or_default();
+        if let Some(r) = &m.reply {
+            m.reply = Some(reply_ref(conn, r.message_id)?);
+        }
     }
     Ok(())
 }
@@ -662,6 +668,28 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         embeds: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
         mentions: Vec::new(),
         kind: r.get::<_, Option<String>>(7)?.and_then(|k| serde_json::from_str(&k).ok()).unwrap_or_default(),
+        // Filled in by `fill_extras`; the id is stashed here until then.
+        reply: r.get::<_, Option<MessageId>>(8)?.map(|id| ReplyRef {
+            message_id: id,
+            author_id: None,
+            snippet: String::new(),
+        }),
+    })
+}
+
+/// Preview of a message for a reply (author `None` if it's gone).
+fn reply_ref(conn: &Connection, id: MessageId) -> DbResult<ReplyRef> {
+    let found = conn
+        .prepare_cached("SELECT author_id, content FROM messages WHERE id = ?1")?
+        .query_row(params![id], |r| Ok((r.get::<_, UserId>(0)?, r.get::<_, String>(1)?)))
+        .optional()?;
+    Ok(match found {
+        Some((author, content)) => ReplyRef {
+            message_id: id,
+            author_id: Some(author),
+            snippet: content.chars().take(REPLY_SNIPPET_LEN).collect(),
+        },
+        None => ReplyRef { message_id: id, author_id: None, snippet: String::new() },
     })
 }
 
@@ -700,12 +728,22 @@ pub fn insert_message(
     author_id: UserId,
     content: &str,
     attachment_ids: &[String],
+    reply_to: Option<MessageId>,
 ) -> DbResult<Result<Message, SendError>> {
     let tx = conn.unchecked_transaction()?;
     let created_at = now_ms();
+    // Only reply to messages in the same channel; otherwise send it as a normal message.
+    let reply_to = match reply_to {
+        Some(id) => tx
+            .query_row("SELECT id FROM messages WHERE id = ?1 AND channel_id = ?2", params![id, channel_id], |r| {
+                r.get::<_, MessageId>(0)
+            })
+            .optional()?,
+        None => None,
+    };
     tx.execute(
-        "INSERT INTO messages (channel_id, author_id, content, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![channel_id, author_id, content, created_at],
+        "INSERT INTO messages (channel_id, author_id, content, created_at, reply_to) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![channel_id, author_id, content, created_at, reply_to],
     )?;
     let id = tx.last_insert_rowid();
     let mut attachments = Vec::new();
@@ -722,6 +760,7 @@ pub fn insert_message(
             attachments.push(a.attachment);
         }
     }
+    let reply = reply_to.map(|id| reply_ref(&tx, id)).transpose()?;
     tx.commit()?;
     Ok(Ok(Message {
         id,
@@ -735,13 +774,14 @@ pub fn insert_message(
         embeds: Vec::new(),
         mentions: Vec::new(),
         kind: MessageKind::Normal,
+        reply,
     }))
 }
 
 pub fn get_message(conn: &Connection, id: MessageId) -> DbResult<Option<Message>> {
     let msg = conn
         .query_row(
-            "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind FROM messages WHERE id = ?1",
+            "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to FROM messages WHERE id = ?1",
             params![id],
             row_to_message,
         )
@@ -770,7 +810,7 @@ pub fn delete_message(conn: &Connection, id: MessageId) -> DbResult<Vec<String>>
 /// Returns up to [`HISTORY_PAGE`] messages older than `before`, oldest first.
 pub fn history(conn: &Connection, channel_id: ChannelId, before: Option<MessageId>) -> DbResult<Vec<Message>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind FROM messages
+        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to FROM messages
          WHERE channel_id = ?1 AND (?2 IS NULL OR id < ?2)
          ORDER BY id DESC LIMIT ?3",
     )?;
@@ -803,7 +843,7 @@ fn fill_mixed(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
 /// Messages `user` can see that match, newest first (one page, plus whether there are more).
 pub fn search(conn: &Connection, user: UserId, q: &SearchQuery) -> DbResult<(Vec<Message>, bool)> {
     let mut sql = String::from(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind FROM messages m
+        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to FROM messages m
          WHERE (m.channel_id IN (SELECT id FROM channels WHERE kind = 0)
                 OR m.channel_id IN (SELECT channel_id FROM direct_members WHERE user_id = ?))",
     );
@@ -852,7 +892,7 @@ pub fn search(conn: &Connection, user: UserId, q: &SearchQuery) -> DbResult<(Vec
 
 /// Up to 40 messages before `id` and 5 after it (so it shows near the bottom), oldest first.
 pub fn around(conn: &Connection, channel_id: ChannelId, id: MessageId) -> DbResult<(Vec<Message>, bool)> {
-    let cols = "id, channel_id, author_id, content, created_at, edited_at, embeds, kind";
+    let cols = "id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to";
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {cols} FROM messages WHERE channel_id = ?1 AND id <= ?2 ORDER BY id DESC LIMIT 41"
     ))?;
@@ -991,6 +1031,17 @@ impl Access {
     }
 }
 
+/// Whether `actor` may move or server-mute `target`: the owner may do it to anyone,
+/// and others only to people whose highest role isn't above theirs (never the owner).
+pub fn outranks(conn: &Connection, actor: UserId, target: UserId) -> DbResult<bool> {
+    let a = access(conn, actor)?;
+    if a.is_owner || actor == target {
+        return Ok(true);
+    }
+    let t = access(conn, target)?;
+    Ok(!t.is_owner && t.top <= a.top)
+}
+
 // ---- Blocking
 
 pub fn set_blocked(conn: &Connection, user: UserId, other: UserId, blocked: bool) -> DbResult<()> {
@@ -1109,6 +1160,40 @@ pub fn delete_profile_image(conn: &Connection, id: &str) -> DbResult<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn voice_moderation_is_off_by_default() {
+        const { assert!(perms::DEFAULT & (perms::MOVE_MEMBERS | perms::MUTE_MEMBERS) == 0) };
+        const { assert!(perms::ALL & perms::MOVE_MEMBERS != 0 && perms::ALL & perms::MUTE_MEMBERS != 0) };
+    }
+
+    #[tokio::test]
+    async fn replies_show_a_preview_and_survive_deletion() {
+        let db = Db::open_in_memory().unwrap();
+        db.call(|c| {
+            let u = create_user(c, "alice", "x", true)?;
+            let chans = all_channels(c)?;
+            let ch = chans.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+            let original = insert_message(c, ch, u.id, &"long ".repeat(100), &[], None)?.unwrap();
+            let reply = insert_message(c, ch, u.id, "agreed", &[], Some(original.id))?.unwrap();
+            let r = reply.reply.clone().unwrap();
+            assert_eq!((r.message_id, r.author_id), (original.id, Some(u.id)));
+            assert_eq!(r.snippet.chars().count(), REPLY_SNIPPET_LEN);
+            // Replying to a message in another channel is sent as a plain message.
+            let other = create_channel(c, "other", "", ChannelKind::Text)?;
+            let stray = insert_message(c, other.id, u.id, "hm", &[], Some(original.id))?.unwrap();
+            assert!(stray.reply.is_none());
+            // The original goes away: the reply stays and says so.
+            delete_message(c, original.id)?;
+            let page = history(c, ch, None)?;
+            let r = page.iter().find(|m| m.id == reply.id).unwrap().reply.clone().unwrap();
+            assert_eq!(r.author_id, None);
+            assert!(get_message(c, reply.id)?.unwrap().reply.is_some());
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn history_pages() {
         let db = Db::open_in_memory().unwrap();
@@ -1118,7 +1203,7 @@ mod tests {
                 let ch = all_channels(c)?.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
                 let mut ids = vec![];
                 for i in 0..(HISTORY_PAGE + 5) {
-                    ids.push(insert_message(c, ch, u.id, &format!("m{i}"), &[])?.unwrap().id);
+                    ids.push(insert_message(c, ch, u.id, &format!("m{i}"), &[], None)?.unwrap().id);
                 }
                 Ok((ch, ids))
             })
@@ -1183,12 +1268,12 @@ mod tests {
 
         // Attachments: only the uploader can attach, only once, only in the right channel.
         insert_attachment(&c, &att("f1"), a, dm, false).unwrap();
-        assert_eq!(insert_message(&c, dm, b, "", &["f1".into()]).unwrap(), Err(SendError::BadAttachment));
+        assert_eq!(insert_message(&c, dm, b, "", &["f1".into()], None).unwrap(), Err(SendError::BadAttachment));
         let general = all_channels(&c).unwrap()[0].id;
-        assert_eq!(insert_message(&c, general, a, "", &["f1".into()]).unwrap(), Err(SendError::BadAttachment));
-        let msg = insert_message(&c, dm, a, "look", &["f1".into()]).unwrap().unwrap();
+        assert_eq!(insert_message(&c, general, a, "", &["f1".into()], None).unwrap(), Err(SendError::BadAttachment));
+        let msg = insert_message(&c, dm, a, "look", &["f1".into()], None).unwrap().unwrap();
         assert_eq!(msg.attachments.len(), 1);
-        assert_eq!(insert_message(&c, dm, a, "again", &["f1".into()]).unwrap(), Err(SendError::BadAttachment));
+        assert_eq!(insert_message(&c, dm, a, "again", &["f1".into()], None).unwrap(), Err(SendError::BadAttachment));
         // A failed send doesn't leave a half-written message behind.
         assert_eq!(history(&c, dm, None).unwrap().len(), 1);
 

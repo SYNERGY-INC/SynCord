@@ -5,7 +5,7 @@ use iced::{Alignment, Border, Element, Length, Task};
 use syncord_proto::{ClientMsg, EVERYONE_ROLE, Role, perms};
 
 use crate::app::{App, Message, RoleDraft, Session};
-use crate::style::{self, BOLD, SEMIBOLD, card, label};
+use crate::style::{self, bold, label, semibold};
 use crate::theme::{Hex, rgb, to_u32};
 
 impl App {
@@ -97,7 +97,7 @@ impl App {
         };
 
         let mut list = column![
-            text("Roles").size(fs * 1.4).font(BOLD).color(t.header.0),
+            text("Roles").size(fs * 1.4).font(bold()).color(t.header.0),
             text("Roles give people a colour and permissions. Higher roles win, and you can only change roles below your own.")
                 .size(fs * 0.85)
                 .color(t.muted.0),
@@ -146,7 +146,7 @@ impl App {
         let mut col = column![].spacing(16).width(Length::Fill);
 
         if everyone {
-            col = col.push(text("@everyone").size(fs * 1.2).font(BOLD).color(t.header.0));
+            col = col.push(text("@everyone").size(fs * 1.2).font(bold()).color(t.header.0));
             col = col
                 .push(text("What everyone can do, whatever other roles they have.").size(fs * 0.85).color(t.muted.0));
         } else {
@@ -157,7 +157,7 @@ impl App {
             col = col.push(column![label(t, "Role name", fs), name].spacing(8));
             let current = Hex::parse(&d.color).map(to_u32);
             let swatch = row![
-                container(space()).width(36).height(36).style(card(current.map(rgb).unwrap_or(t.muted.0), 8.0)),
+                self.color_swatch_button(current.unwrap_or(0x99AAB5), 8.0, Message::RoleColor),
                 text_input("#RRGGBB (empty: no colour)", &d.color)
                     .on_input(Message::RoleColor)
                     .padding(10)
@@ -199,7 +199,7 @@ impl App {
             list = list.push(
                 row![
                     column![
-                        text(*name).size(fs * 0.95).font(SEMIBOLD).color(t.header.0),
+                        text(*name).size(fs * 0.95).font(semibold()).color(t.header.0),
                         text(*about).size(fs * 0.8).color(t.muted.0)
                     ]
                     .spacing(2)

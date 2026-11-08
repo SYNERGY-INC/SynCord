@@ -8,7 +8,7 @@ use iced::{Alignment, Color, Element, Length, Padding, Task};
 use syncord_proto::{ChannelId, ChannelKind, ClientMsg, Message as ChatMessage, MessageId, SearchHas, SearchQuery};
 
 use crate::app::{App, Message, Session};
-use crate::style::{self, BOLD, SEMIBOLD, card};
+use crate::style::{self, bold, card, semibold};
 use crate::theme::with_alpha;
 
 pub const SEARCH_ID: &str = "search";
@@ -267,7 +267,7 @@ impl App {
             }
         };
         let header = row![
-            text(title).size(fs * 0.95).font(BOLD).color(t.header.0).width(Length::Fill),
+            text(title).size(fs * 0.95).font(bold()).color(t.header.0).width(Length::Fill),
             button(crate::icons::icon(&crate::icons::CLOSE, fs, t.muted.0))
                 .padding(4)
                 .on_press(Message::CloseSearch)
@@ -285,11 +285,11 @@ impl App {
                 ("in:", "a channel, like in:general"),
                 ("has:", "link, file, image or video"),
             ];
-            let mut col = column![text("Narrow it down").size(fs * 0.75).font(BOLD).color(t.muted.0)].spacing(6);
+            let mut col = column![text("Narrow it down").size(fs * 0.75).font(bold()).color(t.muted.0)].spacing(6);
             for (k, v) in tips {
                 col = col.push(
                     row![
-                        text(k).size(fs * 0.85).font(SEMIBOLD).color(t.header.0),
+                        text(k).size(fs * 0.85).font(semibold()).color(t.header.0),
                         text(v).size(fs * 0.85).color(t.muted.0)
                     ]
                     .spacing(6),
@@ -314,12 +314,12 @@ impl App {
                 None => space().width(32).into(),
             };
             let card_body = column![
-                text(Self::place(s, m.channel_id)).size(fs * 0.75).font(SEMIBOLD).color(t.muted.0),
+                text(Self::place(s, m.channel_id)).size(fs * 0.75).font(semibold()).color(t.muted.0),
                 row![
                     avatar,
                     column![
                         row![
-                            text(name.to_string()).size(fs * 0.9).font(SEMIBOLD).color(t.header.0),
+                            text(name.to_string()).size(fs * 0.9).font(semibold()).color(t.header.0),
                             text(crate::view::long_time(m.created_at)).size(fs * 0.7).color(t.muted.0),
                         ]
                         .spacing(6)
@@ -383,7 +383,7 @@ impl App {
         container(
             row![
                 text("You're viewing older messages").size(fs * 0.85).color(Color::WHITE).width(Length::Fill),
-                button(text("Jump to present").size(fs * 0.85).font(SEMIBOLD))
+                button(text("Jump to present").size(fs * 0.85).font(semibold()))
                     .padding([3, 10])
                     .on_press(Message::JumpToPresent)
                     .style(style::solid_button(style::darken(accent, 0.25), 6.0)),

@@ -5,7 +5,7 @@ use iced::{Alignment, Border, Element, Length, Padding};
 use syncord_proto::User;
 
 use crate::app::{App, Message, Session};
-use crate::style::{self, BOLD, card, divider, label};
+use crate::style::{self, bold, card, divider, label};
 use crate::theme::{contrast_text, rgb};
 
 const BANNER_HEIGHT: f32 = 128.0;
@@ -50,7 +50,7 @@ impl App {
             Status::DoNotDisturb => "No sounds or pop-ups for messages and calls",
             Status::Invisible => "You'll look offline, but can use SynCord as usual",
         };
-        let mut list = column![text("Set your status").size(fs * 1.25).font(BOLD).color(t.header.0)].spacing(4);
+        let mut list = column![text("Set your status").size(fs * 1.25).font(bold()).color(t.header.0)].spacing(4);
         for st in Status::ALL {
             let dot = status_color(t, Some(st));
             let line = row![
@@ -177,7 +177,7 @@ impl App {
         let u = s.users.get(&caller.user_id)?;
         let card_body = column![
             self.avatar(u, 72.0),
-            text(u.name().to_owned()).size(fs * 1.15).font(BOLD).color(t.header.0),
+            text(u.name().to_owned()).size(fs * 1.15).font(bold()).color(t.header.0),
             text("Incoming call...").size(fs * 0.85).color(t.muted.0),
             row![
                 iced::widget::button(text("Dismiss").size(fs * 0.9))
@@ -237,7 +237,7 @@ impl App {
 
         let mut body = column![
             column![
-                text(u.name().to_owned()).size(fs * 1.35).font(BOLD).color(t.header.0),
+                text(u.name().to_owned()).size(fs * 1.35).font(bold()).color(t.header.0),
                 text(if u.profile.pronouns.is_empty() {
                     u.username.clone()
                 } else {
@@ -252,7 +252,7 @@ impl App {
 
         if u.is_owner {
             body = body.push(
-                container(text("Server Owner").size(fs * 0.75).font(BOLD).color(contrast_text(t.accent.0)))
+                container(text("Server Owner").size(fs * 0.75).font(bold()).color(contrast_text(t.accent.0)))
                     .padding([2, 8])
                     .style(card(t.accent.0, 10.0)),
             );
@@ -261,7 +261,7 @@ impl App {
             body = body.push(
                 column![
                     label(t, a.kind.verb(), fs),
-                    text(a.name).size(fs * 0.95).font(style::SEMIBOLD).color(t.header.0)
+                    text(a.name).size(fs * 0.95).font(style::semibold()).color(t.header.0)
                 ]
                 .spacing(4),
             );

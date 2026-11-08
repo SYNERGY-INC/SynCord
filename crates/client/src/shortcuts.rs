@@ -7,7 +7,7 @@ use iced::{Alignment, Element, Length, Task};
 use syncord_proto::{ChannelId, ChannelKind, UserId};
 
 use crate::app::{App, Message, Overlay, PickerTarget, Session};
-use crate::style::{self, BOLD, SEMIBOLD, card, label};
+use crate::style::{self, bold, card, label, semibold};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shortcut {
@@ -280,11 +280,11 @@ impl App {
     pub(crate) fn shortcuts_dialog(&self) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let mut list = column![text("Keyboard shortcuts").size(fs * 1.3).font(BOLD).color(t.header.0)].spacing(8);
+        let mut list = column![text("Keyboard shortcuts").size(fs * 1.3).font(bold()).color(t.header.0)].spacing(8);
         for (keys, what) in LIST {
             list = list.push(
                 row![
-                    container(text(*keys).size(fs * 0.85).font(SEMIBOLD).color(t.header.0))
+                    container(text(*keys).size(fs * 0.85).font(semibold()).color(t.header.0))
                         .padding([3, 8])
                         .width(220)
                         .style(card(t.floating.0, 6.0)),
