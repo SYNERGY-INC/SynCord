@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.6.0
+
+**New: cameras and screen sharing, statuses, message search, and closing to the tray.**
+
+- **Turn on your camera or share your screen** in any call (voice channels and DM calls): the
+  Camera and Screen buttons are under *Voice Connected*. Pick a screen and choose sharp text
+  (1080p, 15 fps) or smooth motion (720p, 30 fps). Cameras show for everyone in the call; a shared
+  screen shows a red **LIVE** badge and people click **Watch Stream** to see it. Click any video to
+  make it big. Video is encrypted like voice. Pick your camera in Voice & Audio settings.
+- **Call view**: click the voice channel you're in to see everyone's video; *Back to chat* returns.
+- **Statuses**: click your name at the bottom left for Online, Idle, Do Not Disturb or Invisible,
+  and set what you're doing ("Playing ...", "Watching ...", "Listening to ..."). SynCord goes idle
+  after 10 minutes away and can show the game you're playing (games from Steam, Epic, GOG, Riot
+  and Xbox). Do Not Disturb silences sounds and pings.
+- **Search messages**: the search box at the top (or **Ctrl+F**). Narrow it with `from:alice`,
+  `in:general` and `has:link`, `has:file`, `has:image` or `has:video`. Click a result to jump to it.
+- **Calls leave a note** in the DM: who started it, how long it lasted, or that it was missed.
+- A **speaker on a server's icon** shows when people are in its voice channels.
+- **The X button keeps SynCord running in the tray** (Windows and Mac), so you still get messages
+  and calls. Turn it off in Appearance → *Closing the window*. Opening SynCord again brings back
+  the running one instead of starting a second copy.
+- **Ctrl+Backspace** deletes a word (Ctrl+Delete the next one).
+- Fixed: after switching microphone or speakers during a call, others stopped hearing you.
+- The Mac app now needs macOS 12.3 or newer (for screen sharing).
+
 ## v0.5.0
 
 **New: roles, @mentions, right-click menus, profile pictures and banners, link previews, and encryption.**

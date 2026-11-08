@@ -5,7 +5,7 @@
 | Your computer | Download |
 |---|---|
 | Windows 10 / 11 | `SynCord-Setup-@VERSION@.exe` |
-| Mac (Intel or Apple Silicon, macOS 11+) | `SynCord-@VERSION@-macOS.dmg` |
+| Mac (Intel or Apple Silicon, macOS 12.3+) | `SynCord-@VERSION@-macOS.dmg` |
 | Ubuntu, Debian, Mint, Pop!_OS | `syncord_@VERSION@_amd64.deb` |
 | Other Linux | `syncord-@VERSION@-linux-x86_64.tar.gz` |
 
@@ -29,7 +29,9 @@ can't check the app for malware (it isn't notarized by Apple):
   down and click **Open Anyway**.
 - macOS 14 and older: **right-click** SynCord in Applications and choose **Open**, then **Open** again.
 
-macOS will also ask for microphone access the first time you join a voice channel: click **Allow**.
+macOS will also ask for microphone access the first time you join a voice channel, and camera
+access the first time you turn on your camera: click **Allow**. To share your screen, allow
+SynCord in **System Settings → Privacy & Security → Screen Recording**, then reopen SynCord.
 
 **Ubuntu / Debian:** double-click the `.deb`, or run `sudo apt install ./syncord_@VERSION@_amd64.deb`.
 

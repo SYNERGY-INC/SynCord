@@ -30,7 +30,14 @@ off in **Settings → Appearance** for GPU rendering.
 - **@mentions** of people, roles and @everyone, with highlighted messages, red badges and a ping sound
 - **Links** are clickable and get preview cards (title, description, picture), fetched by the
   server so your friends' addresses aren't shared with every website
-- Online/offline presence, clickable profile cards
+- **Statuses**: Online, Idle (automatic after 10 minutes away), Do Not Disturb (no sounds or
+  pings) and Invisible, plus "Playing ..." / "Watching ..." / "Listening to ..." that you type or
+  that SynCord fills in from the game you're running (Steam, Epic, GOG, Riot and Xbox games)
+- **Message search** (Ctrl+F) with `from:`, `in:` and `has:link|file|image|video`; click a result
+  to jump to it in the conversation
+- Clickable profile cards
+- **Closes to the tray** on Windows and Mac (optional), so messages and calls still reach you;
+  starting SynCord again brings back the running copy
 - **Right-click anyone** for Profile, Message, Start a Call, Roles, Ignore, Block, Copy Username/ID
 - **Profile customization**: display name, pronouns, custom status, bio, name/avatar colour,
   **profile picture and banner** (pictures or animated GIFs, cropped Discord-style), banner colour,
@@ -77,7 +84,8 @@ off in **Settings → Appearance** for GPU rendering.
 
 - The **Home** button (top-left) holds your private conversations, with an unread badge
 - Start one with **Message** on anyone's profile card, or the **+** next to *Conversations*
-- **Calls**: the phone button in a conversation (or right-click → Start a Call) rings the other person
+- **Calls**: the phone button in a conversation (or right-click → Start a Call) rings the other
+  person, and leaves a note in the chat (how long it lasted, or that it was missed)
 - Only the two people in a conversation can see it or its files. (Connections are encrypted,
   but messages aren't end-to-end encrypted: whoever hosts the server could read the database file.)
 
@@ -94,6 +102,18 @@ off in **Settings → Appearance** for GPU rendering.
 - Uses **UDP** for the lowest delay and switches automatically to the normal connection if UDP is
   blocked, so voice still works through strict networks and HTTPS proxies
 - A jitter buffer smooths out network hiccups
+
+### Video and screen sharing
+
+- **Camera** and **Screen** buttons in every call (voice channels and DM calls)
+- Share a whole screen (or a window, on a Mac) as **sharp text** (1080p, 15 fps) or **smooth
+  motion** (720p, 30 fps); the server only sends it to people who click **Watch Stream**
+- Cameras show for everyone in the call; click a video to make it big
+- H.264 (OpenH264) with the operating system's own camera and screen capture, no extra installs.
+  Encrypted like voice, over UDP with the same fallback
+- Lightweight: a 640×360 camera is about 700 kbit/s; a screen share 1–2.5 Mbit/s while it changes
+  and very little while it doesn't
+- Linux: screen sharing needs an X11 session (Wayland isn't supported yet); cameras work anywhere
 
 | Profile settings | Themes | Voice settings |
 |---|---|---|
@@ -396,7 +416,7 @@ Themes are plain files, so you can send them to friends.
    the background)
 2. Markdown formatting, replies and desktop notifications
 3. Custom server emoji and group DMs
-4. Screen sharing
+4. Screen sharing on Wayland, and sharing your computer's sound with a stream
 
 ## Credits
 
@@ -414,6 +434,10 @@ crates/
   client/  iced desktop app
     src/voice/  audio engine: cpal devices, noise suppression, voice gate,
                 Opus, jitter buffer, mixer
+    src/live.rs cameras and screen shares in calls
+  video/   playing videos sent in chat (MP4/MOV)
+  stream/  live video: camera and screen capture, H.264, packets that survive loss
+  update/  signed automatic updates
 ```
 
 Run the tests with:
