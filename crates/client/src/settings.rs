@@ -32,6 +32,20 @@ pub struct Settings {
     pub noise_suppression: bool,
     /// Volume for each person, keyed by user id.
     pub user_volumes: HashMap<String, f32>,
+
+    // Pictures and emoji
+    /// Play GIFs all the time (otherwise only while the mouse is over them).
+    pub autoplay_gifs: bool,
+    /// Most recently used emoji, newest first.
+    pub recent_emoji: Vec<String>,
+    pub favorite_gifs: Vec<FavoriteGif>,
+}
+
+/// A GIF starred for quick re-sending (remembered per server).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FavoriteGif {
+    pub server: String,
+    pub attachment: syncord_proto::Attachment,
 }
 
 impl Default for Settings {
@@ -52,6 +66,9 @@ impl Default for Settings {
             input_sensitivity: -50.0,
             noise_suppression: true,
             user_volumes: HashMap::new(),
+            autoplay_gifs: true,
+            recent_emoji: Vec::new(),
+            favorite_gifs: Vec::new(),
         }
     }
 }
@@ -70,6 +87,16 @@ impl Settings {
             sensitivity_db: self.input_sensitivity,
             noise_suppression: self.noise_suppression,
         }
+    }
+
+    pub fn remember_emoji(&mut self, emoji: &str) {
+        self.recent_emoji.retain(|e| e != emoji);
+        self.recent_emoji.insert(0, emoji.to_string());
+        self.recent_emoji.truncate(24);
+    }
+
+    pub fn favorites_here(&self) -> impl Iterator<Item = &FavoriteGif> {
+        self.favorite_gifs.iter().filter(|f| f.server == self.server)
     }
 
     pub fn user_volume(&self, user: syncord_proto::UserId) -> f32 {

@@ -15,13 +15,20 @@ serde_json.workspace = true
 tokio.workspace = true
 futures.workspace = true
 toml.workspace = true
-iced = { version = "0.14", features = ["tokio", "svg"] }
+iced = { version = "0.14", features = ["tokio", "svg", "image"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 dirs = "6"
 cpal = "0.18"
 opus = "0.4"
 nnnoiseless = { version = "0.5", default-features = false }
+# Images, GIFs, uploads, emoji
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+emojis = "0.9"
 
 [dev-dependencies]
 syncord-server = { path = "../server" }

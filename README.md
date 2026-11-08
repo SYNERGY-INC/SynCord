@@ -11,8 +11,8 @@ feature is free.
 
 | | SynCord | Typical Electron chat app |
 |---|---|---|
-| Client memory (idle, one server) | **~29 MB** (low memory mode) | 300 MB to 1 GB+ |
-| Client memory (in a voice call) | **~31 MB** | higher still |
+| Client memory (one server, pictures on screen) | **~30–45 MB** (low memory mode) | 300 MB to 1 GB+ |
+| Client memory (in a voice call) | **+2 MB** | higher still |
 | Client download | ~6 MB installer | 100 MB+ installer |
 | Server memory | under 50 MB | n/a (someone else's cloud) |
 | Themes, profile colours, avatar rings | free | paid |
@@ -35,6 +35,34 @@ off in **Settings → Appearance** for GPU rendering.
 - Invite-code sign-up so strangers can't join; the first account becomes the server owner
 - Owner can create and delete channels and remove any message
 - Auto-reconnect if the connection drops (and rejoins your voice call); stays logged in between launches
+- Unread markers that are remembered between launches
+
+### Pictures, GIFs and files
+
+- Send pictures and files with the **+** button, by **dragging** them into the window, or by
+  **pasting** a picture (Ctrl+V / Cmd+V)
+- Pictures show in the chat; click one to see it full size or save it
+- **GIFs** play right in the chat (or only when you point at them, if you prefer), and you can
+  **star** GIFs to keep them in your favourites for quick re-sending
+- Other files (documents, zips, ...) show as a card with a download button
+- The server makes small previews, so the app only ever downloads and keeps small pictures in
+  memory (with a cap, so a channel full of GIFs can't eat your RAM)
+
+### Emoji and reactions
+
+- Emoji picker with search, categories and recently used
+- Type `:fire:`-style codes; suggestions pop up as you type (Enter picks the top one)
+- **Reactions**: hover a message and click the smiley, or click an existing reaction to add yours.
+  Hover a reaction to see who reacted
+- Messages that are only emoji show big
+- Emoji are drawn in colour with your system's emoji font
+
+### Direct messages
+
+- The **Home** button (top-left) holds your private conversations, with an unread badge
+- Start one with **Message** on anyone's profile card, or the **+** next to *Conversations*
+- Only the two people in a conversation can see it or its files. (They aren't end-to-end
+  encrypted: whoever hosts the server could read the database file.)
 
 ### Voice chat
 
@@ -104,6 +132,7 @@ Put `syncord-server` (`syncord-server.exe` on Windows) in its own folder, for ex
 
 - `syncord-server.toml`: the settings
 - `syncord.db`: the database that holds all accounts, channels and messages
+- `uploads/`: pictures and files people send
 
 The console prints the **invite code** your friends need to sign up. Open
 `syncord-server.toml` to change it or to rename the server:
@@ -113,6 +142,8 @@ bind = "0.0.0.0:7878"          # listen on port 7878 on every network card
 community_name = "The Hangout" # shown at the top of the channel list
 invite_code = "pick-something" # needed to create an account; "" lets anyone sign up
 database = "syncord.db"
+uploads = "uploads"            # folder for pictures and files people send
+max_upload_mb = 25             # biggest file people can send
 ```
 
 Restart the server after editing. To check it's running, open <http://localhost:7878> on that
@@ -232,8 +263,9 @@ register first. Only the owner can create and delete channels.
 
 ### Backups
 
-Everything lives in `syncord.db`. Stop the server and copy `syncord.db` (plus any
-`syncord.db-wal` / `syncord.db-shm` files next to it) somewhere safe.
+Everything lives in `syncord.db` and the `uploads` folder. Stop the server and copy both (plus
+any `syncord.db-wal` / `syncord.db-shm` files) somewhere safe. On Windows they're in
+`C:\ProgramData\SynCord Server`.
 
 ---
 
@@ -283,9 +315,9 @@ Themes are plain files, so you can send them to friends.
 
 1. Echo cancellation and push-to-talk (needs a global hotkey that works while the app is in
    the background)
-2. Image and file uploads, link previews
-3. Markdown formatting, emoji picker, replies, @mentions and desktop notifications
-4. Custom server emoji, animated avatars, uploadable avatar and banner images
+2. GIF search (needs a free Tenor or Giphy API key on the server), link previews
+3. Markdown formatting, replies, @mentions and desktop notifications
+4. Custom server emoji, group DMs, animated avatars, uploadable avatar and banner images
 5. Screen sharing
 
 ## Project layout

@@ -10,11 +10,16 @@ use syncord_proto::{
     UserId,
 };
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::media::{self, ImageCache, Picture};
 use crate::net::{self, Connection};
 use crate::settings::Settings;
 use crate::theme::{self, AppTheme, Hex, to_u32};
 use crate::voice::{self, Link, VoiceEngine};
 use syncord_proto::voice::{Token, token_from_hex};
+use syncord_proto::{Attachment, DirectChannel};
 use syncord_proto::{ChannelKind, VoiceState};
 
 pub const MESSAGES_ID: &str = "messages";
@@ -91,8 +96,88 @@ pub enum Message {
     ToggleMicTest,
     UserVolume(UserId, f32),
 
+    // Pictures and files
+    AttachFiles,
+    FilesChosen(Vec<PathBuf>),
+    PasteShortcut,
+    Pasted(Option<Vec<u8>>),
+    Uploaded(u64, Result<Attachment, String>),
+    RemovePending(u64),
+    PictureLoaded(String, Result<Arc<Picture>, String>),
+    OpenViewer(Attachment),
+    SaveAttachment(Attachment),
+    Saved(Result<Option<String>, String>),
+    ToggleFavoriteGif(Attachment),
+    SendFavorite(Attachment),
+    AnimationTick,
+    ToggleAutoplayGifs(bool),
+
+    // Emoji and reactions
+    OpenEmojiPicker(PickerTarget),
+    EmojiSearch(String),
+    PickerTab(PickerTab),
+    PickEmoji(String),
+    PickEmojiSuggestion(String),
+    ToggleReaction(MessageId, String),
+
+    // Direct messages
+    ShowHome,
+    ShowServer,
+    OpenDirect(UserId),
+    NewDirect,
+
     Tick,
     Escape,
+}
+
+/// What a picked emoji is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerTarget {
+    Composer,
+    Reaction(MessageId),
+}
+
+/// Which page of the emoji/GIF picker is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerTab {
+    /// One of [`crate::emoji::GROUPS`]; `usize::MAX` is "recently used".
+    Emoji(usize),
+    Gifs,
+}
+
+pub struct EmojiPicker {
+    pub target: PickerTarget,
+    pub search: String,
+    pub tab: PickerTab,
+}
+
+/// A file being uploaded for the next message.
+pub struct PendingUpload {
+    pub id: u64,
+    pub filename: String,
+    pub state: UploadState,
+}
+
+pub enum UploadState {
+    Uploading,
+    Ready(Attachment),
+    Failed(String),
+}
+
+/// Server channels or the direct-message home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Server,
+    Home,
+}
+
+/// What the chat area is showing.
+pub struct ChannelInfo<'a> {
+    pub id: ChannelId,
+    pub name: &'a str,
+    pub topic: &'a str,
+    /// For direct messages: the other person.
+    pub direct_with: Option<&'a User>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +204,8 @@ pub enum Overlay {
     Profile(UserId),
     NewChannel { name: String, topic: String, kind: ChannelKind },
     ConfirmDelete(ChannelId),
+    Image(Attachment),
+    NewDirect,
 }
 
 #[derive(Default)]
@@ -148,10 +235,18 @@ pub struct Session {
     pub channels: Vec<Channel>,
     pub current: Option<ChannelId>,
     pub chans: HashMap<ChannelId, ChannelState>,
-    pub unread: HashSet<ChannelId>,
     pub typing: HashMap<ChannelId, HashMap<UserId, Instant>>,
     /// Everyone currently in a voice channel.
     pub voice: HashMap<UserId, VoiceState>,
+    pub view: View,
+    /// Your direct conversations, most recently active first.
+    pub directs: Vec<DirectChannel>,
+    /// Newest message read, per channel.
+    pub read: HashMap<ChannelId, MessageId>,
+    /// Newest message known, per channel.
+    pub latest: HashMap<ChannelId, MessageId>,
+    /// Server channel to go back to when leaving the DM home.
+    pub last_server_channel: Option<ChannelId>,
 }
 
 impl Session {
@@ -159,8 +254,31 @@ impl Session {
         self.users.get(&self.me)
     }
 
-    pub fn current_channel(&self) -> Option<&Channel> {
-        self.current.and_then(|id| self.channels.iter().find(|c| c.id == id))
+    pub fn direct(&self, id: ChannelId) -> Option<&DirectChannel> {
+        self.directs.iter().find(|d| d.id == id)
+    }
+
+    /// Name and topic of the channel being shown, for server channels and DMs alike.
+    pub fn current_info(&self) -> Option<ChannelInfo<'_>> {
+        let id = self.current?;
+        if let Some(c) = self.channels.iter().find(|c| c.id == id) {
+            return Some(ChannelInfo { id, name: &c.name, topic: &c.topic, direct_with: None });
+        }
+        let d = self.direct(id)?;
+        let user = self.users.get(&d.user_id)?;
+        Some(ChannelInfo { id, name: user.name(), topic: &user.profile.status_text, direct_with: Some(user) })
+    }
+
+    pub fn is_unread(&self, channel: ChannelId) -> bool {
+        match (self.latest.get(&channel), self.read.get(&channel)) {
+            (Some(latest), Some(read)) => latest > read,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    pub fn unread_directs(&self) -> usize {
+        self.directs.iter().filter(|d| self.is_unread(d.id)).count()
     }
 
     pub fn first_text_channel(&self) -> Option<ChannelId> {
@@ -235,7 +353,7 @@ pub struct App {
     pub theme: AppTheme,
 
     generation: u64,
-    conn: Option<Connection>,
+    pub(crate) conn: Option<Connection>,
     voice_sink: crate::voice::VoiceSink,
     pending_auth: Option<ClientMsg>,
     reconnect_attempts: u32,
@@ -264,6 +382,17 @@ pub struct App {
     pub mic_test: Option<VoiceEngine>,
     pub input_devices: Vec<String>,
     pub output_devices: Vec<String>,
+
+    pub http: reqwest::Client,
+    pub images: ImageCache,
+    /// Start of the GIF animation clock, and the latest tick.
+    pub anim_epoch: Instant,
+    pub now: Instant,
+    pub pending: Vec<PendingUpload>,
+    pub(crate) pending_channel: Option<ChannelId>,
+    pub(crate) next_upload_id: u64,
+    pub emoji_picker: Option<EmojiPicker>,
+    pub(crate) pending_direct: Option<UserId>,
 }
 
 impl App {
@@ -307,6 +436,15 @@ impl App {
             mic_test: None,
             input_devices: Vec::new(),
             output_devices: Vec::new(),
+            http: media::client(),
+            images: ImageCache::default(),
+            anim_epoch: Instant::now(),
+            now: Instant::now(),
+            pending: Vec::new(),
+            pending_channel: None,
+            next_upload_id: 1,
+            emoji_picker: None,
+            pending_direct: None,
         };
 
         // Log straight back in if we have a saved session.
@@ -322,7 +460,8 @@ impl App {
     }
 
     pub fn title(&self) -> String {
-        match self.session.as_ref().and_then(|s| s.current_channel()) {
+        match self.session.as_ref().and_then(|s| s.current_info()) {
+            Some(c) if c.direct_with.is_some() => format!("@{} - SynCord", c.name),
             Some(c) => format!("#{} - SynCord", c.name),
             None => "SynCord".into(),
         }
@@ -338,13 +477,18 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let keys = keyboard::listen().filter_map(|event| match event {
-            keyboard::Event::KeyPressed { key: keyboard::Key::Named(keyboard::key::Named::Escape), .. } => {
-                Some(Message::Escape)
-            }
+        // Escape (even while typing), files dropped on the window, and Ctrl/Cmd+V for pasting pictures.
+        let mut subs = vec![iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            }) => Some(Message::Escape),
+            iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(Message::FilesChosen(vec![path])),
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(c), modifiers, ..
+            }) if modifiers.command() && c.as_str() == "v" => Some(Message::PasteShortcut),
             _ => None,
-        });
-        let mut subs = vec![keys];
+        })];
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
         if someone_typing {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
@@ -352,6 +496,9 @@ impl App {
         if self.voice.is_some() || self.mic_test.is_some() {
             // Refresh speaking indicators and the mic meter.
             subs.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::VoiceTick));
+        }
+        if self.wants_animation() {
+            subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
         }
         Subscription::batch(subs)
     }
@@ -365,14 +512,16 @@ impl App {
         Task::run(net::connect(url, self.voice_sink.clone()), move |event| Message::Net(generation, event))
     }
 
-    fn send(&self, msg: ClientMsg) {
+    pub(crate) fn send(&self, msg: ClientMsg) {
         if let Some(conn) = &self.conn {
             conn.send(msg);
         }
     }
 
+    /// Scroll the messages to the newest one. The list is anchored to the bottom,
+    /// so offsets count from the bottom and "start" is the newest message.
     fn snap_to_end() -> Task<Message> {
-        operation::snap_to_end(Id::new(MESSAGES_ID))
+        operation::snap_to(Id::new(MESSAGES_ID), operation::RelativeOffset::START)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -439,8 +588,26 @@ impl App {
                 }
             }
             Message::SendMessage => {
-                let content = self.composer.trim().to_string();
-                if content.is_empty() {
+                // Enter while an emoji suggestion is showing picks it instead of sending.
+                if let Some((emoji, _)) = self.emoji_suggestions().first() {
+                    let emoji = emoji.as_str().to_string();
+                    self.accept_suggestion(&emoji);
+                    return Task::none();
+                }
+                let content = crate::emoji::replace_shortcodes(self.composer.trim());
+                if self.pending.iter().any(|p| matches!(p.state, UploadState::Uploading)) {
+                    self.notice = Some("Still uploading. Press Enter again when the files are ready.".into());
+                    return Task::none();
+                }
+                let attachments: Vec<String> = self
+                    .pending
+                    .iter()
+                    .filter_map(|p| match &p.state {
+                        UploadState::Ready(a) => Some(a.id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if content.is_empty() && attachments.is_empty() {
                     return Task::none();
                 }
                 if let Some(channel_id) = self.session.as_ref().and_then(|s| s.current) {
@@ -448,8 +615,10 @@ impl App {
                         self.notice = Some("Not connected right now; your message wasn't sent.".into());
                         return Task::none();
                     }
-                    self.send(ClientMsg::SendMessage { channel_id, content });
+                    self.send(ClientMsg::SendMessage { channel_id, content, attachments });
                     self.composer.clear();
+                    self.pending.clear();
+                    self.emoji_picker = None;
                     self.last_typing_sent = None;
                     return Self::snap_to_end();
                 }
@@ -531,7 +700,7 @@ impl App {
                 self.overlay = None;
                 self.send(ClientMsg::DeleteChannel { channel_id });
             }
-            Message::CloseOverlay => self.overlay = None,
+            Message::CloseOverlay => self.close_overlay(),
 
             Message::OpenSettings => {
                 if let Some(me) = self.session.as_ref().and_then(|s| s.me()) {
@@ -707,6 +876,31 @@ impl App {
                 }
             }
 
+            Message::AttachFiles
+            | Message::FilesChosen(_)
+            | Message::PasteShortcut
+            | Message::Pasted(_)
+            | Message::Uploaded(..)
+            | Message::RemovePending(_)
+            | Message::PictureLoaded(..)
+            | Message::OpenViewer(_)
+            | Message::SaveAttachment(_)
+            | Message::Saved(_)
+            | Message::ToggleFavoriteGif(_)
+            | Message::SendFavorite(_)
+            | Message::AnimationTick
+            | Message::ToggleAutoplayGifs(_) => return self.update_media(message),
+            Message::OpenEmojiPicker(_)
+            | Message::EmojiSearch(_)
+            | Message::PickerTab(_)
+            | Message::PickEmoji(_)
+            | Message::PickEmojiSuggestion(_)
+            | Message::ToggleReaction(..)
+            | Message::ShowHome
+            | Message::ShowServer
+            | Message::OpenDirect(_)
+            | Message::NewDirect => return self.update_social(message),
+
             Message::Tick => {
                 if let Some(s) = &mut self.session {
                     for users in s.typing.values_mut() {
@@ -715,8 +909,10 @@ impl App {
                 }
             }
             Message::Escape => {
-                if self.overlay.is_some() {
-                    self.overlay = None;
+                if self.emoji_picker.is_some() {
+                    self.emoji_picker = None;
+                } else if self.overlay.is_some() {
+                    self.close_overlay();
                 } else if self.editing.is_some() {
                     self.editing = None;
                 } else if self.settings_tab.is_some() {
@@ -851,6 +1047,9 @@ impl App {
     /// Drop back to the login screen.
     fn end_session(&mut self, error: Option<String>) {
         self.stop_voice();
+        self.pending.clear();
+        self.emoji_picker = None;
+        self.images = ImageCache::default();
         self.mic_test = None;
         self.voice_joining = None;
         self.rejoin_voice = None;
@@ -868,15 +1067,23 @@ impl App {
         self.login.error = error;
     }
 
-    fn select_channel(&mut self, id: ChannelId) -> Task<Message> {
+    pub(crate) fn select_channel(&mut self, id: ChannelId) -> Task<Message> {
         let Some(s) = &mut self.session else { return Task::none() };
         if s.current != Some(id) {
             self.composer.clear();
             self.editing = None;
             self.last_typing_sent = None;
+            self.emoji_picker = None;
+            self.pending.clear();
         }
         s.current = Some(id);
-        s.unread.remove(&id);
+        if s.channels.iter().any(|c| c.id == id) {
+            s.view = View::Server;
+            s.last_server_channel = Some(id);
+        } else {
+            s.view = View::Home;
+        }
+        self.pending_channel = Some(id);
         let st = s.chans.entry(id).or_default();
         if !st.loaded && !st.loading {
             st.loading = true;
@@ -884,7 +1091,8 @@ impl App {
                 conn.send(ClientMsg::FetchHistory { channel_id: id, before: None });
             }
         }
-        Task::batch([Self::snap_to_end(), operation::focus(Id::new(COMPOSER_ID))])
+        self.mark_current_read();
+        Task::batch([Self::snap_to_end(), operation::focus(Id::new(COMPOSER_ID)), self.request_pictures()])
     }
 
     fn on_net(&mut self, event: net::Event) -> Task<Message> {
@@ -930,8 +1138,19 @@ impl App {
         // On a reconnect, stay in the same channel but refetch everything.
         let previous = self.session.as_ref().and_then(|s| s.current);
         let current = previous
-            .filter(|id| ready.channels.iter().any(|c| c.id == *id))
+            .filter(|id| ready.channels.iter().any(|c| c.id == *id) || ready.directs.iter().any(|d| d.id == *id))
             .or_else(|| ready.channels.iter().find(|c| c.kind == ChannelKind::Text).map(|c| c.id));
+        let mut latest: HashMap<ChannelId, MessageId> = HashMap::new();
+        for c in &ready.channels {
+            if let Some(m) = c.last_message_id {
+                latest.insert(c.id, m);
+            }
+        }
+        for d in &ready.directs {
+            if let Some(m) = d.last_message_id {
+                latest.insert(d.id, m);
+            }
+        }
 
         self.session = Some(Session {
             me: ready.me,
@@ -942,9 +1161,13 @@ impl App {
             // Keeping the previous channel means select_channel won't wipe a half-typed message.
             current: previous,
             chans: HashMap::new(),
-            unread: HashSet::new(),
             typing: HashMap::new(),
             voice: ready.voice.into_iter().map(|v| (v.user_id, v)).collect(),
+            view: View::Server,
+            directs: ready.directs,
+            read: ready.read_states.into_iter().map(|r| (r.channel_id, r.last_read)).collect(),
+            latest,
+            last_server_channel: None,
         });
         if let Some(channel_id) = self.rejoin_voice.take()
             && self.session.as_ref().is_some_and(|s| s.channels.iter().any(|c| c.id == channel_id))
@@ -970,22 +1193,39 @@ impl App {
             self.on_voice(msg);
             return Task::none();
         }
+        if matches!(msg, ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. }) {
+            return self.on_social(msg);
+        }
         let me = self.session.as_ref().map(|s| s.me);
         let Some(s) = &mut self.session else { return Task::none() };
 
         match msg {
             ServerMsg::Ready(_) | ServerMsg::AuthFailed { .. } | ServerMsg::Pong => {}
             ServerMsg::VoiceReady { .. } | ServerMsg::VoiceStateUpdate { .. } => {} // handled in on_voice
+            ServerMsg::DirectOpened(_) | ServerMsg::ReactionUpdate { .. } => {}     // handled in on_social
             ServerMsg::MessageCreated(m) => {
                 if let Some(t) = s.typing.get_mut(&m.channel_id) {
                     t.remove(&m.author_id);
                 }
-                if s.current != Some(m.channel_id) && Some(m.author_id) != me {
-                    s.unread.insert(m.channel_id);
+                let channel = m.channel_id;
+                let latest = s.latest.entry(channel).or_insert(m.id);
+                *latest = (*latest).max(m.id);
+                if Some(m.author_id) == me {
+                    s.read.insert(channel, m.id);
                 }
-                let st = s.chans.entry(m.channel_id).or_default();
+                // Most recent conversation first.
+                if let Some(pos) = s.directs.iter().position(|d| d.id == channel) {
+                    let mut d = s.directs.remove(pos);
+                    d.last_message_id = Some(m.id);
+                    s.directs.insert(0, d);
+                }
+                let st = s.chans.entry(channel).or_default();
                 if st.loaded && !st.messages.iter().any(|x| x.id == m.id) {
                     st.messages.push(m);
+                }
+                if s.current == Some(channel) {
+                    self.mark_current_read();
+                    return self.request_pictures();
                 }
             }
             ServerMsg::MessageUpdated(m) => {
@@ -1016,8 +1256,10 @@ impl App {
                 st.loaded = true;
                 st.loading = false;
                 st.reached_start = reached_start;
-                if initial && s.current == Some(channel_id) {
-                    return Self::snap_to_end();
+                if s.current == Some(channel_id) {
+                    self.mark_current_read();
+                    let pictures = self.request_pictures();
+                    return if initial { Task::batch([Self::snap_to_end(), pictures]) } else { pictures };
                 }
             }
             ServerMsg::Typing { channel_id, user_id } => {
@@ -1047,7 +1289,6 @@ impl App {
             ServerMsg::ChannelDeleted { channel_id } => {
                 s.channels.retain(|c| c.id != channel_id);
                 s.chans.remove(&channel_id);
-                s.unread.remove(&channel_id);
                 if s.current == Some(channel_id) {
                     s.current = None;
                     if let Some(first) = s.first_text_channel() {

@@ -263,3 +263,78 @@ pub fn swatches<'a, M: Clone + 'a>(selected: u32, on_pick: impl Fn(String) -> M)
     }
     r.wrap().into()
 }
+
+/// The system's colour emoji font. Asking for it by name stops the text engine
+/// from borrowing black-and-white emoji from some other installed font.
+pub const EMOJI_FONT: Font = Font::with_name(if cfg!(windows) {
+    "Segoe UI Emoji"
+} else if cfg!(target_os = "macos") {
+    "Apple Color Emoji"
+} else {
+    "Noto Color Emoji"
+});
+
+fn is_emoji_char(c: char) -> bool {
+    matches!(c as u32,
+        0x1F000..=0x1FAFF // pictographs, faces, flags, symbols
+        | 0x2600..=0x27BF // misc symbols and dingbats
+        | 0x2B00..=0x2BFF // stars, arrows used as emoji
+        | 0x231A..=0x231B | 0x23E9..=0x23FA // watch, hourglass, media keys
+        | 0xFE0F | 0x200D | 0x20E3 // emoji presentation, joiner, keycap
+        | 0xE0020..=0xE007F // tag sequences (subdivision flags)
+        | 0x3030 | 0x303D | 0x3297 | 0x3299)
+}
+
+/// Split text into runs of plain text and emoji.
+pub fn split_emoji(s: &str) -> Vec<(bool, &str)> {
+    let mut out: Vec<(bool, &str)> = Vec::new();
+    let mut start = 0;
+    let mut current: Option<bool> = None;
+    for (i, c) in s.char_indices() {
+        let e = is_emoji_char(c);
+        if current.is_some_and(|cur| cur != e) {
+            out.push((current.unwrap(), &s[start..i]));
+            start = i;
+        }
+        current = Some(e);
+    }
+    if let Some(cur) = current {
+        out.push((cur, &s[start..]));
+    }
+    out
+}
+
+/// An emoji (or a few) drawn with the colour emoji font.
+pub fn emoji_text<'a>(e: impl text::IntoFragment<'a>, size: f32) -> iced::widget::Text<'a> {
+    text(e).font(EMOJI_FONT).size(size)
+}
+
+/// Message text where any emoji are drawn in colour.
+pub fn rich_message<'a, M: 'a>(content: &'a str, size: f32, color: Color) -> Element<'a, M> {
+    let parts = split_emoji(content);
+    if !parts.iter().any(|(e, _)| *e) {
+        return text(content).size(size).color(color).into();
+    }
+    let spans: Vec<iced::widget::text::Span<'a, (), Font>> = parts
+        .into_iter()
+        .map(|(e, s)| {
+            let span = iced::widget::span(s);
+            if e { span.font(EMOJI_FONT) } else { span }
+        })
+        .collect();
+    iced::widget::rich_text(spans).size(size).color(color).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_emoji;
+
+    #[test]
+    fn splits_emoji_runs() {
+        assert_eq!(split_emoji("hi 👋 there"), vec![(false, "hi "), (true, "👋"), (false, " there")]);
+        assert_eq!(split_emoji("🔥🔥"), vec![(true, "🔥🔥")]);
+        assert_eq!(split_emoji("❤️ ok"), vec![(true, "❤️"), (false, " ok")]);
+        assert_eq!(split_emoji("👨‍👩‍👧"), vec![(true, "👨‍👩‍👧")]);
+        assert_eq!(split_emoji(""), vec![]);
+    }
+}

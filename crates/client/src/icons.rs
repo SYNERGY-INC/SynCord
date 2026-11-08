@@ -70,6 +70,52 @@ icon!(
     )
 );
 
+icon!(
+    ATTACH,
+    concat!(
+        r#"<circle cx="12" cy="12" r="9.5" fill="none" stroke="black" stroke-width="2.2"/>"#,
+        r#"<path d="M12 7.5v9M7.5 12h9" stroke="black" stroke-width="2.4" stroke-linecap="round"/>"#
+    )
+);
+icon!(
+    SMILE,
+    concat!(
+        r#"<circle cx="12" cy="12" r="9.5" fill="none" stroke="black" stroke-width="2"/>"#,
+        r#"<circle cx="8.8" cy="10" r="1.4" fill="black"/><circle cx="15.2" cy="10" r="1.4" fill="black"/>"#,
+        r#"<path d="M7.8 14.2a5 5 0 0 0 8.4 0" stroke="black" stroke-width="2" fill="none" stroke-linecap="round"/>"#
+    )
+);
+icon!(
+    DIRECT,
+    concat!(
+        r#"<path d="M4 4.5h11a2.5 2.5 0 0 1 2.5 2.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4 3v-3H4A2.5 2.5 0 0 1 1.5 13V7A2.5 2.5 0 0 1 4 4.5z" fill="black"/>"#,
+        r#"<path d="M19.5 9h.5a2.5 2.5 0 0 1 2.5 2.5v5a2.5 2.5 0 0 1-2.5 2.5h-1v2.5l-3.4-2.5H11" stroke="black" stroke-width="1.8" fill="none" stroke-linejoin="round"/>"#
+    )
+);
+icon!(
+    STAR,
+    r#"<path d="M12 2.8l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.2l-5.7 3.1 1.2-6.4-4.7-4.4 6.4-.8z" fill="black"/>"#
+);
+icon!(
+    STAR_OUTLINE,
+    r#"<path d="M12 3.8l2.5 5.2 5.7.7-4.2 3.9 1.1 5.7L12 16.5l-5.1 2.8 1.1-5.7-4.2-3.9 5.7-.7z" fill="none" stroke="black" stroke-width="1.8" stroke-linejoin="round"/>"#
+);
+icon!(
+    DOWNLOAD,
+    concat!(
+        r#"<path d="M12 3.5v11M7 10l5 5 5-5" stroke="black" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#,
+        r#"<path d="M4 17v2.5h16V17" stroke="black" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#
+    )
+);
+icon!(
+    FILE,
+    concat!(
+        r#"<path d="M6 2.5h8l5 5v14H6z" fill="none" stroke="black" stroke-width="1.8" stroke-linejoin="round"/>"#,
+        r#"<path d="M14 2.5v5h5M8.5 12.5h8M8.5 16h8" stroke="black" stroke-width="1.8" fill="none"/>"#
+    )
+);
+icon!(CLOSE, r#"<path d="M6 6l12 12M18 6L6 18" stroke="black" stroke-width="2.4" stroke-linecap="round"/>"#);
+
 pub fn icon<'a, M: 'a>(handle: &LazyLock<Handle>, size: f32, color: Color) -> Element<'a, M> {
     iced::widget::svg((**handle).clone())
         .width(size)

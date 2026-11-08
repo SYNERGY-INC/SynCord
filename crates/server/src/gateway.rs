@@ -14,15 +14,15 @@ use axum::response::Response;
 use rand::Rng;
 use syncord_proto::voice::token_to_hex;
 use syncord_proto::{
-    ChannelKind, ClientMsg, HISTORY_PAGE, MAX_MESSAGE_LEN, Ready, ServerMsg, User, UserId, clean_voice_channel_name,
-    normalize_channel_name,
+    ChannelId, ChannelKind, ClientMsg, DirectChannel, HISTORY_PAGE, MAX_ATTACHMENTS, MAX_MESSAGE_LEN, MAX_REACTIONS,
+    Ready, ServerMsg, User, UserId, clean_voice_channel_name, normalize_channel_name, valid_reaction,
 };
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::AppState;
 use crate::db;
+use crate::{AppState, Event};
 
 /// Close idle connections that haven't sent anything (not even a ping) for this long.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -90,6 +90,23 @@ struct Connection {
     voice_tx: mpsc::Sender<Bytes>,
 }
 
+/// If `me` can see `channel`: its kind and who should get its events
+/// (`None` = everyone; a direct message's two members otherwise).
+async fn audience(
+    db: &db::Db,
+    me: UserId,
+    channel: ChannelId,
+) -> Result<Option<(ChannelKind, Option<Arc<[UserId]>>)>, rusqlite::Error> {
+    db.call(move |c| {
+        Ok(match db::accessible_kind(c, me, channel)? {
+            None => None,
+            Some(ChannelKind::Direct) => Some((ChannelKind::Direct, Some(Arc::from(db::direct_members(c, channel)?)))),
+            Some(kind) => Some((kind, None)),
+        })
+    })
+    .await
+}
+
 /// What the main loop should do after handling a frame.
 enum Flow {
     Continue,
@@ -135,8 +152,10 @@ impl Connection {
                 }
                 event = events.recv(), if self.user.is_some() => {
                     match event {
-                        Ok(json) => {
-                            if self.socket.send(WsMessage::Text(json.as_ref().into())).await.is_err() {
+                        Ok(event) => {
+                            if self.user.is_some_and(|me| event.is_for(me))
+                                && self.socket.send(WsMessage::Text(event.json.as_ref().into())).await.is_err()
+                            {
                                 break;
                             }
                         }
@@ -165,9 +184,14 @@ impl Connection {
     }
 
     fn broadcast(&self, msg: &ServerMsg) {
+        self.broadcast_to(msg, None);
+    }
+
+    /// Send to everyone (`None`) or only to the listed people.
+    fn broadcast_to(&self, msg: &ServerMsg, to: Option<Arc<[UserId]>>) {
         let json: Arc<str> = serde_json::to_string(msg).expect("serialize").into();
         // Err only means nobody is listening right now.
-        let _ = self.state.events.send(json);
+        let _ = self.state.events.send(Event { json, to });
     }
 
     async fn error(&mut self, message: impl Into<String>) -> Flow {
@@ -181,7 +205,8 @@ impl Connection {
     }
 
     async fn handle(&mut self, msg: ClientMsg) -> Flow {
-        if !self.rate.allow() {
+        // Read markers are cheap and sent automatically, so they don't count towards the limit.
+        if !matches!(msg, ClientMsg::MarkRead { .. }) && !self.rate.allow() {
             return self.error("You're doing that too fast. Slow down a little.").await;
         }
 
@@ -213,35 +238,50 @@ impl Connection {
                     }
                     return Ok(Flow::Close);
                 }
-                ClientMsg::SendMessage { channel_id, content } => {
+                ClientMsg::SendMessage { channel_id, content, attachments } => {
                     let content = content.trim().to_owned();
-                    if content.is_empty() {
+                    if content.is_empty() && attachments.is_empty() {
                         return Ok(Flow::Continue);
                     }
                     if content.chars().count() > MAX_MESSAGE_LEN {
                         return Ok(self.error(format!("Messages can be at most {MAX_MESSAGE_LEN} characters")).await);
                     }
-                    let msg = db
+                    if attachments.len() > MAX_ATTACHMENTS {
+                        return Ok(self.error(format!("You can attach at most {MAX_ATTACHMENTS} files")).await);
+                    }
+                    let Some((kind, to)) = audience(&db, me, channel_id).await? else {
+                        return Ok(self.error("That channel no longer exists").await);
+                    };
+                    if !matches!(kind, ChannelKind::Text | ChannelKind::Direct) {
+                        return Ok(self.error("You can't send messages there").await);
+                    }
+                    let sent = db
                         .call(move |c| {
-                            if db::channel_kind(c, channel_id)? != Some(ChannelKind::Text) {
-                                return Ok(None);
+                            let sent = db::insert_message(c, channel_id, me, &content, &attachments)?;
+                            if let Ok(m) = &sent {
+                                db::mark_read(c, me, channel_id, m.id)?;
                             }
-                            db::insert_message(c, channel_id, me, &content).map(Some)
+                            Ok(sent)
                         })
                         .await?;
-                    match msg {
-                        Some(msg) => self.broadcast(&ServerMsg::MessageCreated(msg)),
-                        None => return Ok(self.error("That channel no longer exists").await),
+                    match sent {
+                        Ok(msg) => self.broadcast_to(&ServerMsg::MessageCreated(msg), to),
+                        Err(db::SendError::BadAttachment) => {
+                            return Ok(self
+                                .error("One of the files couldn't be attached. Try uploading it again.")
+                                .await);
+                        }
                     }
                 }
                 ClientMsg::EditMessage { message_id, content } => {
                     let content = content.trim().to_owned();
-                    if content.is_empty() || content.chars().count() > MAX_MESSAGE_LEN {
+                    if content.chars().count() > MAX_MESSAGE_LEN {
                         return Ok(self.error("Invalid message").await);
                     }
                     let updated = db
                         .call(move |c| match db::get_message(c, message_id)? {
-                            Some(m) if m.author_id == me => {
+                            // A message needs text unless it has files.
+                            Some(m) if m.author_id == me && (!content.is_empty() || !m.attachments.is_empty()) => {
                                 db::edit_message(c, message_id, &content)?;
                                 db::get_message(c, message_id)
                             }
@@ -249,7 +289,10 @@ impl Connection {
                         })
                         .await?;
                     match updated {
-                        Some(m) => self.broadcast(&ServerMsg::MessageUpdated(m)),
+                        Some(m) => {
+                            let to = audience(&db, me, m.channel_id).await?.and_then(|(_, to)| to);
+                            self.broadcast_to(&ServerMsg::MessageUpdated(m), to);
+                        }
                         None => return Ok(self.error("You can only edit your own messages").await),
                     }
                 }
@@ -257,27 +300,104 @@ impl Connection {
                     let deleted = db
                         .call(move |c| {
                             let is_owner = db::get_user(c, me)?.is_some_and(|u| u.is_owner);
-                            match db::get_message(c, message_id)? {
-                                Some(m) if m.author_id == me || is_owner => {
-                                    db::delete_message(c, message_id)?;
-                                    Ok(Some(m.channel_id))
-                                }
-                                _ => Ok(None),
+                            let Some(m) = db::get_message(c, message_id)? else { return Ok(None) };
+                            // The owner can tidy up server channels, but never read or touch DMs.
+                            let kind = db::accessible_kind(c, me, m.channel_id)?;
+                            let allowed = m.author_id == me || (is_owner && kind == Some(ChannelKind::Text));
+                            if !allowed || kind.is_none() {
+                                return Ok(None);
                             }
+                            let files = db::delete_message(c, message_id)?;
+                            Ok(Some((m.channel_id, files)))
                         })
                         .await?;
                     match deleted {
-                        Some(channel_id) => self.broadcast(&ServerMsg::MessageDeleted { channel_id, message_id }),
+                        Some((channel_id, files)) => {
+                            crate::http::remove_files(&self.state.config.uploads, &files).await;
+                            let to = audience(&db, me, channel_id).await?.and_then(|(_, to)| to);
+                            self.broadcast_to(&ServerMsg::MessageDeleted { channel_id, message_id }, to);
+                        }
                         None => return Ok(self.error("You can't delete that message").await),
                     }
                 }
                 ClientMsg::FetchHistory { channel_id, before } => {
+                    if audience(&db, me, channel_id).await?.is_none() {
+                        return Ok(self.error("You can't see that channel").await);
+                    }
                     let messages = db.call(move |c| db::history(c, channel_id, before)).await?;
                     let reached_start = messages.len() < HISTORY_PAGE;
                     self.send(&ServerMsg::History { channel_id, messages, reached_start }).await;
                 }
                 ClientMsg::Typing { channel_id } => {
-                    self.broadcast(&ServerMsg::Typing { channel_id, user_id: me });
+                    if let Some((_, to)) = audience(&db, me, channel_id).await? {
+                        self.broadcast_to(&ServerMsg::Typing { channel_id, user_id: me }, to);
+                    }
+                }
+                ClientMsg::AddReaction { message_id, emoji } | ClientMsg::RemoveReaction { message_id, emoji }
+                    if !valid_reaction(&emoji) =>
+                {
+                    let _ = (message_id, emoji);
+                    return Ok(self.error("That isn't a valid reaction").await);
+                }
+                ClientMsg::AddReaction { message_id, emoji } => {
+                    let e = emoji.clone();
+                    let channel = db
+                        .call(move |c| {
+                            let Some(m) = db::get_message(c, message_id)? else { return Ok(None) };
+                            if db::accessible_kind(c, me, m.channel_id)?.is_none() {
+                                return Ok(None);
+                            }
+                            Ok(db::add_reaction(c, message_id, me, &e, MAX_REACTIONS)?.then_some(m.channel_id))
+                        })
+                        .await?;
+                    if let Some(channel_id) = channel {
+                        let to = audience(&db, me, channel_id).await?.and_then(|(_, to)| to);
+                        let update =
+                            ServerMsg::ReactionUpdate { channel_id, message_id, emoji, user_id: me, added: true };
+                        self.broadcast_to(&update, to);
+                    }
+                }
+                ClientMsg::RemoveReaction { message_id, emoji } => {
+                    let e = emoji.clone();
+                    let channel = db
+                        .call(move |c| {
+                            let Some(m) = db::get_message(c, message_id)? else { return Ok(None) };
+                            Ok(db::remove_reaction(c, message_id, me, &e)?.then_some(m.channel_id))
+                        })
+                        .await?;
+                    if let Some(channel_id) = channel {
+                        let to = audience(&db, me, channel_id).await?.and_then(|(_, to)| to);
+                        let update =
+                            ServerMsg::ReactionUpdate { channel_id, message_id, emoji, user_id: me, added: false };
+                        self.broadcast_to(&update, to);
+                    }
+                }
+                ClientMsg::OpenDirect { user_id } => {
+                    if user_id == me {
+                        return Ok(self.error("You can't message yourself").await);
+                    }
+                    let opened = db
+                        .call(move |c| {
+                            if db::get_user(c, user_id)?.is_none() {
+                                return Ok(None);
+                            }
+                            let (id, created) = db::open_direct(c, me, user_id)?;
+                            Ok(Some((id, created, db::last_message_id(c, id)?)))
+                        })
+                        .await?;
+                    let Some((id, created, last_message_id)) = opened else {
+                        return Ok(self.error("That person doesn't exist").await);
+                    };
+                    self.send(&ServerMsg::DirectOpened(DirectChannel { id, user_id, last_message_id })).await;
+                    if created {
+                        let theirs = ServerMsg::DirectOpened(DirectChannel { id, user_id: me, last_message_id });
+                        self.broadcast_to(&theirs, Some(Arc::from([user_id])));
+                    }
+                }
+                ClientMsg::MarkRead { channel_id, message_id } => {
+                    if audience(&db, me, channel_id).await?.is_some() {
+                        db.call(move |c| db::mark_read(c, me, channel_id, message_id)).await?;
+                    }
                 }
                 ClientMsg::UpdateProfile { profile } => {
                     let profile = profile.sanitized();
@@ -295,6 +415,7 @@ impl Connection {
                     let name = match kind {
                         ChannelKind::Text => normalize_channel_name(&name),
                         ChannelKind::Voice => clean_voice_channel_name(&name),
+                        ChannelKind::Direct => return Ok(self.error("Use direct messages for that").await),
                     };
                     let topic: String = topic.trim().chars().take(120).collect();
                     if name.is_empty() {
@@ -320,14 +441,18 @@ impl Connection {
                                 return Ok(Err("Only the server owner can delete channels"));
                             }
                             let kind = db::channel_kind(c, channel_id)?;
+                            if kind == Some(ChannelKind::Direct) {
+                                return Ok(Err("Direct messages can't be deleted"));
+                            }
                             if kind == Some(ChannelKind::Text) && db::text_channel_count(c)? <= 1 {
                                 return Ok(Err("You can't delete the last text channel"));
                             }
-                            Ok(if db::delete_channel(c, channel_id)? { Ok(()) } else { Err("No such channel") })
+                            Ok(db::delete_channel(c, channel_id)?.ok_or("No such channel"))
                         })
                         .await?;
                     match outcome {
-                        Ok(()) => {
+                        Ok(files) => {
+                            crate::http::remove_files(&self.state.config.uploads, &files).await;
                             for user_id in self.state.voice.clear_channel(channel_id) {
                                 self.broadcast(&ServerMsg::VoiceStateUpdate { user_id, state: None });
                             }
@@ -465,8 +590,14 @@ impl Connection {
 
     /// Mark the user online and send them the initial state.
     async fn enter(&mut self, id: UserId) -> Flow {
-        let snapshot = self.state.db.call(|c| Ok((db::all_users(c)?, db::all_channels(c)?))).await;
-        let (users, channels): (Vec<User>, _) = match snapshot {
+        let snapshot = self
+            .state
+            .db
+            .call(move |c| {
+                Ok((db::all_users(c)?, db::all_channels(c)?, db::directs_for(c, id)?, db::read_states(c, id)?))
+            })
+            .await;
+        let (users, channels, directs, read_states): (Vec<User>, _, _, _) = match snapshot {
             Ok(s) => s,
             Err(e) => {
                 warn!("snapshot failed: {e}");
@@ -494,6 +625,8 @@ impl Connection {
             online,
             channels,
             voice: self.state.voice.states(),
+            directs,
+            read_states,
         };
         if self.send(&ServerMsg::Ready(ready)).await { Flow::Continue } else { Flow::Close }
     }

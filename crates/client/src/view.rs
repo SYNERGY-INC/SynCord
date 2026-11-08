@@ -7,9 +7,12 @@ use iced::widget::{
     text_input, toggler,
 };
 use iced::{Alignment, Border, Color, Element, Length, Padding};
-use syncord_proto::{AvatarRing, Channel, ChannelKind, Message as ChatMessage, User, VoiceState};
+use syncord_proto::{AvatarRing, ChannelKind, Message as ChatMessage, User, VoiceState};
 
-use crate::app::{App, COMPOSER_ID, DEFAULT_DEVICE, DraftField, MESSAGES_ID, Message, Overlay, Session, SettingsTab};
+use crate::app::{
+    App, COMPOSER_ID, ChannelInfo, DEFAULT_DEVICE, DraftField, MESSAGES_ID, Message, Overlay, PickerTarget, Session,
+    SettingsTab, View,
+};
 use crate::icons;
 use crate::style::{self, BOLD, SEMIBOLD, avatar, avatar_with_status, bg, card, divider, label};
 use crate::theme::{AppTheme, contrast_text, rgb, themes_dir, with_alpha};
@@ -36,10 +39,13 @@ impl App {
                     },
                     Overlay::NewChannel { name, topic, kind } => self.new_channel_dialog(name, topic, *kind),
                     Overlay::ConfirmDelete(id) => self.confirm_delete_dialog(session, *id),
+                    Overlay::Image(a) => self.image_viewer(a),
+                    Overlay::NewDirect => self.new_direct_dialog(session),
                 };
+                let dim = if matches!(overlay, Overlay::Image(_)) { 0.88 } else { 0.6 };
                 let backdrop = mouse_area(
                     center(opaque(content))
-                        .style(bg(Color::from_rgba(0.0, 0.0, 0.0, 0.6)))
+                        .style(bg(Color::from_rgba(0.0, 0.0, 0.0, dim)))
                         .width(Length::Fill)
                         .height(Length::Fill),
                 )
@@ -131,6 +137,9 @@ impl App {
     // ------------------------------------------------------------------ main
 
     fn main_view<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
+        if s.view == View::Home {
+            return row![self.server_rail(s), self.home_sidebar(s), self.chat_area(s)].height(Length::Fill).into();
+        }
         let mut layout = row![self.server_rail(s), self.channel_sidebar(s), self.chat_area(s)];
         if self.settings.show_members {
             layout = layout.push(self.member_list(s));
@@ -140,29 +149,73 @@ impl App {
 
     fn server_rail<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
+        let fs = self.fs();
+        let header = t.header.0;
+        // White "pill" on the left edge marks what's selected (taller) or has unread messages (a dot).
+        let pill = move |height: f32| {
+            container(space()).width(4).height(height).style(move |_| container::Style {
+                background: Some(header.into()),
+                border: Border { radius: iced::border::right(4.0), ..Default::default() },
+                ..Default::default()
+            })
+        };
+        let tile = |content: Element<'a, Message>, color: Color, selected: bool, msg: Message| {
+            button(container(content).center(48).style(move |_| container::Style {
+                background: Some(color.into()),
+                border: Border { radius: if selected { 16.0 } else { 24.0 }.into(), ..Default::default() },
+                ..Default::default()
+            }))
+            .padding(0)
+            .on_press(msg)
+            .style(|_, _| button::Style::default())
+        };
+
+        // Direct messages.
+        let home_selected = s.view == View::Home;
+        let home_color = if home_selected { t.accent.0 } else { t.sidebar.0 };
+        let home_icon =
+            icons::icon(&icons::DIRECT, 26.0, if home_selected { contrast_text(t.accent.0) } else { t.text.0 });
+        let mut home = stack![tile(home_icon, home_color, home_selected, Message::ShowHome)];
+        let unread = s.unread_directs();
+        if unread > 0 {
+            let danger = t.danger.0;
+            let badge = container(text(unread.min(99).to_string()).size(fs * 0.7).font(BOLD).color(Color::WHITE))
+                .padding([1, 5])
+                .style(move |_| container::Style {
+                    background: Some(danger.into()),
+                    border: Border { radius: 9.0.into(), width: 3.0, color: Color::TRANSPARENT },
+                    ..Default::default()
+                });
+            home = home.push(container(badge).width(48).height(48).align_x(Alignment::End).align_y(Alignment::End));
+        }
+        let home_pill: Element<'a, Message> = if home_selected { pill(40.0).into() } else { space().width(4).into() };
+
+        // The community.
         let initials: String =
             s.community.split_whitespace().filter_map(|w| w.chars().next()).take(3).collect::<String>().to_uppercase();
+        let server_selected = s.view == View::Server;
         let accent = t.accent.0;
-        let icon = container(text(initials).size(self.fs() * 1.1).font(BOLD).color(contrast_text(accent)))
-            .center(48)
-            .style(move |_| container::Style {
-                background: Some(accent.into()),
-                border: Border { radius: 16.0.into(), ..Default::default() },
-                ..Default::default()
-            });
-        // White "pill" on the left edge marks the selected server.
-        let header = t.header.0;
-        let pill = container(space()).width(4).height(40).style(move |_| container::Style {
-            background: Some(header.into()),
-            border: Border { radius: iced::border::right(4.0), ..Default::default() },
-            ..Default::default()
-        });
-        let entry = row![pill, space().width(8), icon].align_y(Alignment::Center);
+        let server_unread = s.channels.iter().any(|c| c.kind == ChannelKind::Text && s.is_unread(c.id));
+        let label = text(initials).size(fs * 1.1).font(BOLD).color(contrast_text(accent));
+        let server_pill: Element<'a, Message> = if server_selected {
+            pill(40.0).into()
+        } else if server_unread {
+            pill(8.0).into()
+        } else {
+            space().width(4).into()
+        };
 
+        let entry = |p: Element<'a, Message>, content: Element<'a, Message>| {
+            row![p, space().width(8), content].align_y(Alignment::Center)
+        };
         container(
-            column![entry, container(divider(t.hover.0)).width(32).padding([0, 0])]
-                .spacing(10)
-                .align_x(Alignment::Center),
+            column![
+                entry(home_pill, home.into()),
+                container(divider(t.hover.0)).width(32),
+                entry(server_pill, tile(label.into(), accent, server_selected, Message::ShowServer).into()),
+            ]
+            .spacing(10)
+            .align_x(Alignment::Center),
         )
         .padding([12, 0])
         .width(72)
@@ -199,7 +252,7 @@ impl App {
         let mut list = column![self.category(s, "Text channels", ChannelKind::Text)].spacing(2);
         for ch in s.channels.iter().filter(|c| c.kind == ChannelKind::Text) {
             let selected = s.current == Some(ch.id);
-            let unread = s.unread.contains(&ch.id);
+            let unread = s.is_unread(ch.id) && !selected;
             let name_color = if unread && !selected { Some(t.header.0) } else { None };
             let mut name = text(ch.name.clone()).size(fs);
             if unread {
@@ -284,7 +337,7 @@ impl App {
     }
 
     /// "Voice Connected" box above the user panel while in a call.
-    fn voice_panel<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
+    pub(crate) fn voice_panel<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let (channel_id, connected) = match (&self.voice, self.voice_joining) {
@@ -332,7 +385,7 @@ impl App {
         .into()
     }
 
-    fn user_panel<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
+    pub(crate) fn user_panel<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let Some(me) = s.me() else { return space().into() };
@@ -372,22 +425,23 @@ impl App {
     fn chat_area<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let channel = s.current_channel();
+        let channel = s.current_info();
+        let is_direct = channel.as_ref().is_some_and(|c| c.direct_with.is_some());
 
         // Header: "# name | topic" ............ [Members]
         let mut header = row![].spacing(10).align_y(Alignment::Center);
-        if let Some(ch) = channel {
+        if let Some(ch) = &channel {
             header = header
-                .push(text("#").size(fs * 1.5).color(t.muted.0))
-                .push(text(ch.name.clone()).size(fs * 1.05).font(BOLD).color(t.header.0));
+                .push(text(if is_direct { "@" } else { "#" }).size(fs * 1.5).color(t.muted.0))
+                .push(text(ch.name.to_owned()).size(fs * 1.05).font(BOLD).color(t.header.0));
             if !ch.topic.is_empty() {
                 header = header
                     .push(container(space()).width(1).height(24).style(bg(t.hover.0)))
-                    .push(text(ch.topic.clone()).size(fs * 0.9).color(t.muted.0));
+                    .push(text(ch.topic.to_owned()).size(fs * 0.9).color(t.muted.0));
             }
         }
         header = header.push(space::horizontal());
-        if let Some(ch) = channel.filter(|_| s.is_owner() && s.channels.len() > 1) {
+        if let Some(ch) = channel.as_ref().filter(|_| s.is_owner() && s.channels.len() > 1 && !is_direct) {
             header = header.push(
                 button(text("Delete channel").size(fs * 0.8))
                     .padding([4, 8])
@@ -395,12 +449,14 @@ impl App {
                     .style(style::icon_button(t)),
             );
         }
-        header = header.push(
-            button(text(if self.settings.show_members { "Hide members" } else { "Members" }).size(fs * 0.8))
-                .padding([4, 8])
-                .on_press(Message::ToggleMembers)
-                .style(style::icon_button(t)),
-        );
+        if !is_direct {
+            header = header.push(
+                button(text(if self.settings.show_members { "Hide members" } else { "Members" }).size(fs * 0.8))
+                    .padding([4, 8])
+                    .on_press(Message::ToggleMembers)
+                    .style(style::icon_button(t)),
+            );
+        }
         let header = container(header).padding([0, 16]).height(48).width(Length::Fill).align_y(Alignment::Center);
 
         let mut col = column![header, divider(style::darken(t.chat.0, 0.25))];
@@ -431,18 +487,36 @@ impl App {
             );
         }
 
-        col = col.push(self.message_list(s, channel));
+        let has_channel = channel.is_some();
+        col = col.push(self.message_list(s, channel.as_ref()));
         if let Some(ch) = channel {
             col = col.push(self.composer(s, ch));
         }
-        container(col).width(Length::Fill).height(Length::Fill).style(bg(t.chat.0)).into()
+        let chat = container(col).width(Length::Fill).height(Length::Fill).style(bg(t.chat.0));
+        // Always a stack, so opening the picker doesn't reset the chat's scroll position or focus.
+        let picker: Element<'a, Message> = match self.emoji_picker_view().filter(|_| has_channel) {
+            Some(picker) => container(opaque(picker))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::End)
+                .padding(Padding { right: 16.0, bottom: 76.0, top: 56.0, left: 16.0 })
+                .into(),
+            None => space().into(),
+        };
+        stack![chat, picker].into()
     }
 
-    fn message_list<'a>(&'a self, s: &'a Session, channel: Option<&'a Channel>) -> Element<'a, Message> {
+    fn message_list<'a>(&'a self, s: &'a Session, channel: Option<&ChannelInfo<'a>>) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let Some(channel) = channel else {
-            return center(text("No channels yet.").color(t.muted.0)).into();
+            let hint = if s.view == View::Home {
+                "Pick a conversation, or click + to message someone."
+            } else {
+                "No channels yet."
+            };
+            return center(text(hint).color(t.muted.0)).into();
         };
         let state = s.chans.get(&channel.id);
         let messages: &[ChatMessage] = state.map(|st| st.messages.as_slice()).unwrap_or(&[]);
@@ -451,16 +525,27 @@ impl App {
 
         match state {
             Some(st) if st.loaded && st.reached_start => {
+                let (badge, title, line): (Element<'a, Message>, String, String) = match channel.direct_with {
+                    Some(u) => (
+                        avatar(u.name(), &u.profile, 68.0),
+                        u.name().to_owned(),
+                        format!("This is the beginning of your direct messages with {}.", u.name()),
+                    ),
+                    None => (
+                        container(text("#").size(fs * 2.4).color(t.header.0))
+                            .center(68)
+                            .style(card(t.floating.0, 34.0))
+                            .into(),
+                        format!("Welcome to #{}!", channel.name),
+                        format!("This is the start of the #{} channel.", channel.name),
+                    ),
+                };
                 list = list.push(
                     container(
                         column![
-                            container(text("#").size(fs * 2.4).color(t.header.0))
-                                .center(68)
-                                .style(card(t.floating.0, 34.0)),
-                            text(format!("Welcome to #{}!", channel.name)).size(fs * 2.0).font(BOLD).color(t.header.0),
-                            text(format!("This is the start of the #{} channel.", channel.name))
-                                .size(fs)
-                                .color(t.muted.0),
+                            badge,
+                            text(title).size(fs * 2.0).font(BOLD).color(t.header.0),
+                            text(line).size(fs).color(t.muted.0),
                         ]
                         .spacing(8),
                     )
@@ -512,10 +597,8 @@ impl App {
         let hovered = self.hovered == Some(m.id);
         let editing = self.editing.as_ref().filter(|(id, _)| *id == m.id);
 
-        let mut body_text = text(m.content.clone()).size(fs).color(t.text.0);
-        if m.content.len() < 80 {
-            body_text = body_text.width(Length::Shrink);
-        }
+        let jumbo = crate::emoji::is_jumbo(&m.content);
+        let body_text = style::rich_message(&m.content, if jumbo { fs * 2.6 } else { fs }, t.text.0);
         let body: Element<'a, Message> = match editing {
             Some((_, value)) => column![
                 text_input("", value)
@@ -537,11 +620,21 @@ impl App {
             .spacing(4)
             .into(),
             None => {
-                let mut r = row![body_text].spacing(6).align_y(Alignment::End);
-                if m.edited_at.is_some() {
-                    r = r.push(text("(edited)").size(fs * 0.7).color(t.muted.0));
+                let mut col = column![].spacing(6);
+                if !m.content.is_empty() {
+                    let mut r = row![body_text].spacing(6).align_y(Alignment::End);
+                    if m.edited_at.is_some() {
+                        r = r.push(text("(edited)").size(fs * 0.7).color(t.muted.0));
+                    }
+                    col = col.push(r.wrap());
                 }
-                r.wrap().into()
+                if let Some(files) = self.attachments_view(m) {
+                    col = col.push(files);
+                }
+                if let Some(reactions) = self.reactions_view(s, m) {
+                    col = col.push(reactions);
+                }
+                col.into()
             }
         };
 
@@ -601,11 +694,19 @@ impl App {
             .into()
         };
 
-        // Hover toolbar for your own messages (the owner can also delete anything).
+        // Hover toolbar: react for everyone; edit/delete your own (the owner can delete in server channels).
         let mine = Some(m.author_id) == Some(s.me);
+        let in_server = s.channels.iter().any(|c| c.id == m.channel_id);
         let mut line = row![container(content).width(Length::Fill)].align_y(Alignment::Start);
-        if hovered && editing.is_none() && (mine || s.is_owner()) {
-            let mut tools = row![].spacing(2);
+        if hovered && editing.is_none() {
+            let mut tools = row![
+                button(icons::icon(&icons::SMILE, fs * 1.1, t.muted.0))
+                    .padding([3, 6])
+                    .on_press(Message::OpenEmojiPicker(PickerTarget::Reaction(m.id)))
+                    .style(style::icon_button(t))
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center);
             if mine {
                 tools = tools.push(
                     button(text("Edit").size(fs * 0.8))
@@ -615,12 +716,14 @@ impl App {
                 );
             }
             let danger = t.danger.0;
-            tools = tools.push(
-                button(text("Delete").size(fs * 0.8))
-                    .padding([2, 8])
-                    .on_press(Message::DeleteMessage(m.id))
-                    .style(style::link_button(danger, style::darken(danger, 0.2))),
-            );
+            if mine || (s.is_owner() && in_server) {
+                tools = tools.push(
+                    button(text("Delete").size(fs * 0.8))
+                        .padding([2, 8])
+                        .on_press(Message::DeleteMessage(m.id))
+                        .style(style::link_button(danger, style::darken(danger, 0.2))),
+                );
+            }
             line = line.push(container(tools).padding(2).style(card(t.floating.0, t.radius * 0.6)));
         }
 
@@ -636,16 +739,47 @@ impl App {
         .into()
     }
 
-    fn composer<'a>(&'a self, s: &'a Session, ch: &'a Channel) -> Element<'a, Message> {
+    fn composer<'a>(&'a self, s: &'a Session, ch: ChannelInfo<'a>) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let input = text_input(&format!("Message #{}", ch.name), &self.composer)
+        let placeholder =
+            if ch.direct_with.is_some() { format!("Message @{}", ch.name) } else { format!("Message #{}", ch.name) };
+        let input = text_input(&placeholder, &self.composer)
             .id(Id::new(COMPOSER_ID))
             .on_input(Message::ComposerChanged)
             .on_submit(Message::SendMessage)
-            .padding(14)
+            .padding(Padding { top: 14.0, bottom: 14.0, left: 4.0, right: 4.0 })
             .size(fs)
-            .style(style::input(t, t.floating.0));
+            .style(move |theme, status| {
+                let mut st = style::input(t, t.floating.0)(theme, status);
+                // The surrounding box draws the background and focus border.
+                st.background = Color::TRANSPARENT.into();
+                st.border.width = 0.0;
+                st
+            });
+        let floating = t.floating.0;
+        let radius = t.radius;
+        let bar = container(
+            row![
+                button(icons::icon(&icons::ATTACH, fs * 1.4, t.muted.0))
+                    .padding(8)
+                    .on_press(Message::AttachFiles)
+                    .style(style::icon_button(t)),
+                input,
+                button(icons::icon(&icons::SMILE, fs * 1.4, t.muted.0))
+                    .padding(8)
+                    .on_press(Message::OpenEmojiPicker(PickerTarget::Composer))
+                    .style(style::icon_button(t)),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center),
+        )
+        .padding([0, 6])
+        .style(move |_| container::Style {
+            background: Some(floating.into()),
+            border: Border { radius: radius.into(), ..Default::default() },
+            ..Default::default()
+        });
 
         let typers: Vec<&str> = s
             .typing
@@ -659,8 +793,17 @@ impl App {
             _ => "Several people are typing...".into(),
         };
 
-        column![input, text(typing_text).size(fs * 0.75).font(SEMIBOLD).color(t.text.0).height(fs * 1.2)]
-            .spacing(2)
+        // The extras live in their own column that's always there, so the message box keeps
+        // its place in the widget tree (and its keyboard focus) when they appear.
+        let mut extras = column![].spacing(6);
+        if let Some(suggestions) = self.suggestions_view() {
+            extras = extras.push(suggestions);
+        }
+        if let Some(pending) = self.pending_view() {
+            extras = extras.push(pending);
+        }
+        column![extras, bar, text(typing_text).size(fs * 0.75).font(SEMIBOLD).color(t.text.0).height(fs * 1.2)]
+            .spacing(4)
             .padding(Padding { left: 16.0, right: 16.0, top: 0.0, bottom: 4.0 })
             .into()
     }
@@ -712,11 +855,23 @@ impl App {
     fn profile_popup<'a>(&'a self, s: &'a Session, u: &'a User) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let profile = style::profile_card(t, &u.username, &u.profile, u.is_owner, s.online.contains(&u.id), fs);
+        let mut profile =
+            column![style::profile_card(t, &u.username, &u.profile, u.is_owner, s.online.contains(&u.id), fs)]
+                .spacing(8)
+                .width(320);
+        if u.id != s.me {
+            profile = profile.push(
+                button(center(text(format!("Message {}", u.name())).size(fs * 0.95)).height(fs * 2.4))
+                    .width(Length::Fill)
+                    .padding(0)
+                    .on_press(Message::OpenDirect(u.id))
+                    .style(style::solid_button(t.accent.0, t.radius * 0.6)),
+            );
+        }
         let in_my_call =
             self.voice.as_ref().is_some_and(|v| s.voice.get(&u.id).is_some_and(|st| st.channel_id == v.channel_id));
         if u.id == s.me || !in_my_call {
-            return profile;
+            return profile.into();
         }
         let volume = self.settings.user_volume(u.id);
         let id = u.id;
@@ -735,7 +890,7 @@ impl App {
         .padding([12, 16])
         .width(320)
         .style(card(t.floating.0, t.radius * 1.5));
-        column![profile, control].spacing(8).into()
+        profile.push(control).into()
     }
 
     fn new_channel_dialog<'a>(&'a self, name: &'a str, topic: &'a str, kind: ChannelKind) -> Element<'a, Message> {
@@ -743,7 +898,7 @@ impl App {
         let fs = self.fs();
         let preview = match kind {
             ChannelKind::Text => syncord_proto::normalize_channel_name(name),
-            ChannelKind::Voice => syncord_proto::clean_voice_channel_name(name),
+            ChannelKind::Voice | ChannelKind::Direct => syncord_proto::clean_voice_channel_name(name),
         };
         let kind_button = |label_text: &'static str, k: ChannelKind| {
             let selected = k == kind;
@@ -755,7 +910,7 @@ impl App {
         let hint = match (kind, preview.is_empty()) {
             (_, true) => String::new(),
             (ChannelKind::Text, false) => format!("Will appear as #{preview}"),
-            (ChannelKind::Voice, false) => format!("Will appear as {preview}"),
+            (ChannelKind::Voice | ChannelKind::Direct, false) => format!("Will appear as {preview}"),
         };
         let topic_field: Element<'a, Message> = if kind == ChannelKind::Text {
             column![
@@ -1146,6 +1301,12 @@ impl App {
                     .on_toggle(Message::ToggleCompact)
                     .text_size(fs),
             )
+            .push(
+                toggler(self.settings.autoplay_gifs)
+                    .label("Play GIFs automatically (otherwise when you point at them)")
+                    .on_toggle(Message::ToggleAutoplayGifs)
+                    .text_size(fs),
+            )
             .push(label(t, "Performance", fs))
             .push(
                 toggler(self.settings.low_memory)
@@ -1215,7 +1376,7 @@ fn dimmed(
 }
 
 /// Shorten to `max` characters with an ellipsis so sidebars stay on one line.
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {

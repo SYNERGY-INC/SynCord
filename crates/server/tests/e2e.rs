@@ -18,13 +18,20 @@ async fn start_server() -> String {
 
 /// Returns the WebSocket URL and the UDP voice port.
 async fn start_server_with_udp() -> (String, u16) {
-    let config = Config { invite_code: "letmein".into(), community_name: "Test Crew".into(), ..Config::default() };
+    let uploads = std::env::temp_dir().join(format!("syncord-test-{}", rand_suffix()));
+    let config =
+        Config { invite_code: "letmein".into(), community_name: "Test Crew".into(), uploads, ..Config::default() };
     let state = AppState::new(config, Db::open_in_memory().unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let udp_port = start_udp(&state, "127.0.0.1:0".parse().unwrap()).await.unwrap();
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
     (format!("ws://{addr}/ws"), udp_port)
+}
+
+fn rand_suffix() -> u64 {
+    use std::hash::{BuildHasher, RandomState};
+    RandomState::new().hash_one(std::time::SystemTime::now())
 }
 
 async fn send(ws: &mut Socket, msg: ClientMsg) {
@@ -90,7 +97,11 @@ async fn full_flow() {
     assert!(matches!(reply, ServerMsg::AuthFailed { .. }));
 
     // Bob sends a message; both see it.
-    send(&mut bob, ClientMsg::SendMessage { channel_id: general, content: "  hello alice  ".into() }).await;
+    send(
+        &mut bob,
+        ClientMsg::SendMessage { channel_id: general, content: "  hello alice  ".into(), attachments: vec![] },
+    )
+    .await;
     let created = expect(&mut alice, |m| matches!(m, ServerMsg::MessageCreated(_))).await;
     let ServerMsg::MessageCreated(msg) = created else { unreachable!() };
     assert_eq!(msg.content, "hello alice");
@@ -157,7 +168,8 @@ async fn full_flow() {
     expect(&mut after, |m| matches!(m, ServerMsg::AuthFailed { .. })).await;
 
     // Requests before logging in are refused.
-    send(&mut after, ClientMsg::SendMessage { channel_id: general, content: "sneaky".into() }).await;
+    send(&mut after, ClientMsg::SendMessage { channel_id: general, content: "sneaky".into(), attachments: vec![] })
+        .await;
     expect(&mut after, |m| matches!(m, ServerMsg::AuthFailed { .. })).await;
 }
 
@@ -184,7 +196,7 @@ async fn voice_relay_udp_and_websocket() {
     let (mut bob, _) = register(&url, "bob", "letmein").await;
 
     // Text messages can't go to a voice channel, and you can't "join" a text channel.
-    send(&mut alice, ClientMsg::SendMessage { channel_id: voice, content: "hi".into() }).await;
+    send(&mut alice, ClientMsg::SendMessage { channel_id: voice, content: "hi".into(), attachments: vec![] }).await;
     expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
     send(&mut alice, ClientMsg::JoinVoice { channel_id: text }).await;
     expect(&mut alice, |m| matches!(m, ServerMsg::Error { .. })).await;
@@ -246,4 +258,152 @@ async fn voice_relay_udp_and_websocket() {
     let ServerMsg::Ready(ready) = ready else { panic!() };
     assert_eq!(ready.voice.len(), 1);
     assert_eq!(ready.voice[0].user_id, alice_id);
+}
+
+fn http_base(ws_url: &str) -> String {
+    ws_url.replace("ws://", "http://").trim_end_matches("/ws").to_string()
+}
+
+fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(w, h, image::Rgba([200, 100, 50, 255]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// Read events until one matches, failing if any event matches `forbidden` first.
+async fn expect_not_before(
+    ws: &mut Socket,
+    forbidden: impl Fn(&ServerMsg) -> bool,
+    pred: impl Fn(&ServerMsg) -> bool,
+) -> ServerMsg {
+    let msg = expect(ws, |m| forbidden(m) || pred(m)).await;
+    assert!(!forbidden(&msg), "received something private: {msg:?}");
+    msg
+}
+
+#[tokio::test]
+async fn direct_messages_files_and_reactions() {
+    let url = start_server().await;
+    let base = http_base(&url);
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let http = reqwest::Client::new();
+
+    let (mut alice, r) = register(&url, "alice", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let (alice_id, alice_token) = (ready.me, ready.token.clone());
+    let general = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
+    let voice = ready.channels.iter().find(|c| c.kind == ChannelKind::Voice).unwrap().id;
+    let (mut bob, r) = register(&url, "bob", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let (bob_id, bob_token) = (ready.me, ready.token.clone());
+    let (mut eve, r) = register(&url, "eve", "letmein").await;
+    let ServerMsg::Ready(ready) = r else { panic!() };
+    let eve_token = ready.token.clone();
+
+    // Alice opens a DM with Bob: both learn about it, from their own point of view.
+    send(&mut alice, ClientMsg::OpenDirect { user_id: bob_id }).await;
+    let ServerMsg::DirectOpened(dm) = expect(&mut alice, |m| matches!(m, ServerMsg::DirectOpened(_))).await else {
+        unreachable!()
+    };
+    assert_eq!(dm.user_id, bob_id);
+    let ServerMsg::DirectOpened(theirs) = expect(&mut bob, |m| matches!(m, ServerMsg::DirectOpened(_))).await else {
+        unreachable!()
+    };
+    assert_eq!((theirs.id, theirs.user_id), (dm.id, alice_id));
+
+    // Eve can't read it.
+    send(&mut eve, ClientMsg::FetchHistory { channel_id: dm.id, before: None }).await;
+    expect(&mut eve, |m| matches!(m, ServerMsg::Error { .. })).await;
+
+    // Upload rules.
+    let upload = |token: &str, channel: i64, name: &str, body: Vec<u8>| {
+        http.post(format!("{base}{}?channel_id={channel}&filename={name}", syncord_proto::UPLOAD_PATH))
+            .header("Authorization", format!("Bearer {token}"))
+            .body(body)
+            .send()
+    };
+    let r = http
+        .post(format!("{base}{}?channel_id={}&filename=x.png", syncord_proto::UPLOAD_PATH, dm.id))
+        .body(png_bytes(4, 4))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401, "no token");
+    assert_eq!(upload(&eve_token, dm.id, "x.png", png_bytes(4, 4)).await.unwrap().status(), 403, "not a member");
+    assert_eq!(upload(&alice_token, voice, "x.png", png_bytes(4, 4)).await.unwrap().status(), 403, "voice channel");
+
+    let r = upload(&alice_token, dm.id, "../../cat.png", png_bytes(1200, 900)).await.unwrap();
+    assert_eq!(r.status(), 200);
+    let att: syncord_proto::Attachment = serde_json::from_slice(&r.bytes().await.unwrap()).unwrap();
+    assert_eq!(att.filename, "cat.png");
+    assert_eq!((att.width, att.height), (Some(1200), Some(900)));
+
+    let download = |token: &str, id: &str, thumb: bool| {
+        http.get(format!("{base}{}/{id}{}", syncord_proto::FILES_PATH, if thumb { "?thumb=1" } else { "" }))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+    };
+    assert_eq!(download(&bob_token, &att.id, false).await.unwrap().status(), 404, "not sent yet");
+    assert_eq!(download(&alice_token, &att.id, false).await.unwrap().status(), 200);
+    assert_eq!(download(&alice_token, "../../etc/passwd", false).await.unwrap().status(), 404);
+
+    // Alice sends it in the DM. Bob gets it; Eve never sees it.
+    let msg = ClientMsg::SendMessage { channel_id: dm.id, content: "look".into(), attachments: vec![att.id.clone()] };
+    send(&mut alice, msg).await;
+    let ServerMsg::MessageCreated(m) = expect(&mut bob, |m| matches!(m, ServerMsg::MessageCreated(_))).await else {
+        unreachable!()
+    };
+    assert_eq!(m.attachments.len(), 1);
+    send(&mut alice, ClientMsg::SendMessage { channel_id: general, content: "public".into(), attachments: vec![] })
+        .await;
+    let is_private = |x: &ServerMsg| matches!(x, ServerMsg::MessageCreated(m) if m.channel_id == dm.id);
+    expect_not_before(&mut eve, is_private, |x| matches!(x, ServerMsg::MessageCreated(m) if m.content == "public"))
+        .await;
+
+    // Files: members can download (preview is a small image), others can't.
+    let r = download(&bob_token, &att.id, true).await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "image/jpeg");
+    let thumb = image::load_from_memory(&r.bytes().await.unwrap()).unwrap();
+    assert_eq!((thumb.width(), thumb.height()), (480, 360));
+    assert_eq!(download(&eve_token, &att.id, false).await.unwrap().status(), 404);
+
+    // Reactions reach the members only.
+    send(&mut bob, ClientMsg::AddReaction { message_id: m.id, emoji: "👍".into() }).await;
+    expect(&mut alice, |x| matches!(x, ServerMsg::ReactionUpdate { added: true, .. })).await;
+    send(&mut alice, ClientMsg::SendMessage { channel_id: general, content: "public2".into(), attachments: vec![] })
+        .await;
+    let private_reaction = |x: &ServerMsg| matches!(x, ServerMsg::ReactionUpdate { .. });
+    expect_not_before(
+        &mut eve,
+        private_reaction,
+        |x| matches!(x, ServerMsg::MessageCreated(m) if m.content == "public2"),
+    )
+    .await;
+    send(&mut alice, ClientMsg::AddReaction { message_id: m.id, emoji: "not valid".into() }).await;
+    expect(&mut alice, |x| matches!(x, ServerMsg::Error { .. })).await;
+
+    // Eve can't react to or delete DM messages; the server owner (Alice) can't delete Bob's DM messages either.
+    send(&mut eve, ClientMsg::AddReaction { message_id: m.id, emoji: "😈".into() }).await;
+    send(&mut eve, ClientMsg::DeleteMessage { message_id: m.id }).await;
+    expect(&mut eve, |x| matches!(x, ServerMsg::Error { .. })).await;
+
+    // Read markers come back after reconnecting, with the DM list.
+    send(&mut bob, ClientMsg::MarkRead { channel_id: dm.id, message_id: m.id }).await;
+    send(&mut bob, ClientMsg::Ping).await;
+    expect(&mut bob, |x| matches!(x, ServerMsg::Pong)).await;
+    let (mut again, _) = connect_async(&url).await.unwrap();
+    send(&mut again, ClientMsg::Resume { token: bob_token.clone() }).await;
+    let ServerMsg::Ready(r) = expect(&mut again, |x| matches!(x, ServerMsg::Ready(_))).await else { unreachable!() };
+    assert_eq!(r.directs.len(), 1);
+    assert_eq!(r.directs[0].user_id, alice_id);
+    assert_eq!(r.directs[0].last_message_id, Some(m.id));
+    assert!(r.read_states.iter().any(|s| s.channel_id == dm.id && s.last_read == m.id));
+    assert!(r.channels.iter().all(|c| c.id != dm.id), "DMs aren't listed as server channels");
+
+    // Deleting the message removes the file.
+    send(&mut alice, ClientMsg::DeleteMessage { message_id: m.id }).await;
+    expect(&mut bob, |x| matches!(x, ServerMsg::MessageDeleted { .. })).await;
+    assert_eq!(download(&alice_token, &att.id, false).await.unwrap().status(), 404);
 }

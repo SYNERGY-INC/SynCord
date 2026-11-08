@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use syncord_server::{AppState, Config, db, router, start_udp};
+use syncord_server::{AppState, Config, db, router, start_cleanup, start_udp};
 use tracing::{error, info, warn};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
@@ -67,10 +67,15 @@ fn load_config(path: &Path) -> Config {
             cfg
         }
     };
-    if cfg.database.is_relative()
-        && let Some(dir) = path.parent()
-    {
-        cfg.database = dir.join(&cfg.database);
+    if let Some(dir) = path.parent() {
+        for p in [&mut cfg.database, &mut cfg.uploads] {
+            if p.is_relative() {
+                *p = dir.join(&*p);
+            }
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(&cfg.uploads) {
+        warn!("could not create the uploads folder {}: {e}", cfg.uploads.display());
     }
     cfg
 }
@@ -113,6 +118,7 @@ async fn main() {
 
     let state = AppState::new(config, db);
     let app = router(state.clone());
+    start_cleanup(state.clone());
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,

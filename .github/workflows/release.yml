@@ -177,7 +177,12 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Write release notes
-        run: sed "s/@VERSION@/${{ needs.version.outputs.version }}/g" packaging/RELEASE_NOTES.md > notes.md
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          # This version's section of the changelog, then the install instructions.
+          awk -v h="## v$v" '$0 == h {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          echo >> notes.md
+          sed "s/@VERSION@/$v/g" packaging/RELEASE_NOTES.md >> notes.md
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}

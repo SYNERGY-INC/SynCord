@@ -15,6 +15,18 @@ pub type MessageId = i64;
 pub const MAX_MESSAGE_LEN: usize = 4000;
 /// Number of messages returned per history page.
 pub const HISTORY_PAGE: usize = 50;
+/// Most files that can be attached to one message.
+pub const MAX_ATTACHMENTS: usize = 10;
+/// Most different emoji reactions on one message.
+pub const MAX_REACTIONS: usize = 20;
+
+/// HTTP endpoint for uploading a file: `POST /api/upload?channel_id=N&filename=NAME`
+/// with the raw file as the body and `Authorization: Bearer <session token>`.
+/// Answers with an [`Attachment`] as JSON.
+pub const UPLOAD_PATH: &str = "/api/upload";
+/// HTTP endpoint for downloading: `GET /api/files/<attachment id>` (add `?thumb=1`
+/// for the small preview of an image), with the same `Authorization` header.
+pub const FILES_PATH: &str = "/api/files";
 
 /// A user's public profile, including all the cosmetic customization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,6 +124,8 @@ pub enum ChannelKind {
     #[default]
     Text,
     Voice,
+    /// A private conversation between two people.
+    Direct,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -122,6 +136,57 @@ pub struct Channel {
     pub position: i64,
     #[serde(default)]
     pub kind: ChannelKind,
+    /// Newest message in the channel, used to show unread markers.
+    #[serde(default)]
+    pub last_message_id: Option<MessageId>,
+}
+
+/// A direct-message conversation, as seen by one of its two members.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DirectChannel {
+    pub id: ChannelId,
+    /// The other person.
+    pub user_id: UserId,
+    #[serde(default)]
+    pub last_message_id: Option<MessageId>,
+}
+
+/// The newest message someone has seen in a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadState {
+    pub channel_id: ChannelId,
+    pub last_read: MessageId,
+}
+
+/// A file attached to a message. Images have a size and a small preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// Random hex id, also used in the download URL.
+    pub id: String,
+    pub filename: String,
+    pub size: u64,
+    pub mime: String,
+    /// Set for images (pixel size of the original).
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// True for animated GIFs.
+    #[serde(default)]
+    pub animated: bool,
+}
+
+impl Attachment {
+    pub fn is_image(&self) -> bool {
+        self.width.is_some() && self.height.is_some()
+    }
+}
+
+/// One emoji reaction on a message and who added it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reaction {
+    pub emoji: String,
+    pub users: Vec<UserId>,
 }
 
 /// Who is in which voice channel, and whether they're muted.
@@ -145,6 +210,10 @@ pub struct Message {
     pub created_at: i64,
     /// Unix timestamp in milliseconds of the last edit, if any.
     pub edited_at: Option<i64>,
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
 }
 
 /// Snapshot sent right after a successful login.
@@ -158,6 +227,12 @@ pub struct Ready {
     pub channels: Vec<Channel>,
     #[serde(default)]
     pub voice: Vec<VoiceState>,
+    /// Your direct-message conversations.
+    #[serde(default)]
+    pub directs: Vec<DirectChannel>,
+    /// What you've already read, per channel.
+    #[serde(default)]
+    pub read_states: Vec<ReadState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +254,9 @@ pub enum ClientMsg {
     SendMessage {
         channel_id: ChannelId,
         content: String,
+        /// Ids of files uploaded beforehand (see [`UPLOAD_PATH`]).
+        #[serde(default)]
+        attachments: Vec<String>,
     },
     EditMessage {
         message_id: MessageId,
@@ -205,6 +283,23 @@ pub enum ClientMsg {
     },
     DeleteChannel {
         channel_id: ChannelId,
+    },
+    AddReaction {
+        message_id: MessageId,
+        emoji: String,
+    },
+    RemoveReaction {
+        message_id: MessageId,
+        emoji: String,
+    },
+    /// Open (or create) a direct-message conversation with someone.
+    OpenDirect {
+        user_id: UserId,
+    },
+    /// Remember that you've read a channel up to this message.
+    MarkRead {
+        channel_id: ChannelId,
+        message_id: MessageId,
     },
     JoinVoice {
         channel_id: ChannelId,
@@ -249,6 +344,15 @@ pub enum ServerMsg {
     ChannelDeleted {
         channel_id: ChannelId,
     },
+    /// A direct-message conversation was opened (sent only to its two members).
+    DirectOpened(DirectChannel),
+    ReactionUpdate {
+        channel_id: ChannelId,
+        message_id: MessageId,
+        emoji: String,
+        user_id: UserId,
+        added: bool,
+    },
     /// Sent only to the joining connection: how to start sending audio.
     VoiceReady {
         channel_id: ChannelId,
@@ -282,6 +386,19 @@ pub fn normalize_channel_name(name: &str) -> String {
     out.trim_matches('-').chars().take(32).collect()
 }
 
+/// Whether a reaction string is acceptable: short, one "word", no control characters.
+pub fn valid_reaction(emoji: &str) -> bool {
+    !emoji.is_empty() && emoji.len() <= 32 && !emoji.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Tidy a file name for storage and display: no folders, no control characters.
+pub fn clean_filename(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base.chars().filter(|c| !c.is_control()).take(100).collect();
+    let cleaned = cleaned.trim().trim_start_matches('.').to_string();
+    if cleaned.is_empty() { "file".into() } else { cleaned }
+}
+
 /// Tidy a voice channel name: voice channels keep their capitals and spaces.
 pub fn clean_voice_channel_name(name: &str) -> String {
     name.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c| !c.is_control()).take(32).collect()
@@ -300,11 +417,27 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let msg = ClientMsg::SendMessage { channel_id: 3, content: "hi".into() };
+        let msg = ClientMsg::SendMessage { channel_id: 3, content: "hi".into(), attachments: vec![] };
         let json = serde_json::to_string(&msg).unwrap();
-        assert_eq!(json, r#"{"op":"SendMessage","d":{"channel_id":3,"content":"hi"}}"#);
+        assert_eq!(json, r#"{"op":"SendMessage","d":{"channel_id":3,"content":"hi","attachments":[]}}"#);
+        // Older clients that don't send attachments still work.
+        let old: ClientMsg =
+            serde_json::from_str(r#"{"op":"SendMessage","d":{"channel_id":3,"content":"hi"}}"#).unwrap();
+        assert!(matches!(old, ClientMsg::SendMessage { attachments, .. } if attachments.is_empty()));
         let back: ClientMsg = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, ClientMsg::SendMessage { channel_id: 3, .. }));
+    }
+
+    #[test]
+    fn filenames_and_reactions() {
+        assert_eq!(clean_filename("C:\\Users\\me\\cat.png"), "cat.png");
+        assert_eq!(clean_filename("../../etc/passwd"), "passwd");
+        assert_eq!(clean_filename(".hidden"), "hidden");
+        assert_eq!(clean_filename(""), "file");
+        assert!(valid_reaction("👍"));
+        assert!(valid_reaction("👨‍👩‍👧"));
+        assert!(!valid_reaction("a b"));
+        assert!(!valid_reaction(""));
     }
 
     #[test]
