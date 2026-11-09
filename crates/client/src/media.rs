@@ -1,7 +1,7 @@
 //! Pictures and files: HTTP uploads/downloads, decoding (including animated
 //! GIFs), and a cache that keeps memory use within a budget.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,6 +21,13 @@ pub const VIEWER_SIDE: u32 = 2048;
 const MAX_FRAMES: usize = 150;
 /// Decoded pictures kept in memory, in bytes, before old ones are dropped.
 const CACHE_BUDGET: usize = 96 * 1024 * 1024;
+/// Most memory one GIF in the chat may use (every frame is kept decoded); bigger ones
+/// are shown a little smaller. Several fit in the budget at once.
+const GIF_BUDGET: usize = 20 * 1024 * 1024;
+/// Most memory for the GIF open in the viewer.
+const VIEWER_GIF_BUDGET: usize = 64 * 1024 * 1024;
+/// GIFs in the chat are shown at most this big, so they're decoded at that size.
+const CHAT_GIF_SIDE: u32 = 400;
 
 /// `ws://host:port/ws` -> `http://host:port` (and `wss` -> `https`).
 pub fn http_base(ws_url: &str) -> String {
@@ -288,13 +295,34 @@ impl Picture {
         }
     }
 
-    fn memory(&self) -> usize {
+    pub(crate) fn memory(&self) -> usize {
         let (w, h) = self.size();
         let frames = match self {
             Picture::Still { .. } => 1,
             Picture::Animated { frames, .. } => frames.len(),
         };
         w as usize * h as usize * 4 * frames
+    }
+
+    pub fn is_animated(&self) -> bool {
+        matches!(self, Picture::Animated { .. })
+    }
+
+    /// Milliseconds from `elapsed_ms` until the next frame should show.
+    pub fn until_next_frame(&self, elapsed_ms: u64) -> u64 {
+        match self {
+            Picture::Still { .. } => u64::MAX,
+            Picture::Animated { frames, total_ms, .. } => {
+                let mut t = elapsed_ms % (*total_ms).max(1);
+                for (_, delay) in frames {
+                    if t < *delay as u64 {
+                        return (*delay as u64 - t).max(1);
+                    }
+                    t -= *delay as u64;
+                }
+                1
+            }
+        }
     }
 
     /// The frame to show `elapsed_ms` into the animation (or the still picture).
@@ -344,11 +372,29 @@ pub fn decode(bytes: &[u8], max_side: u32) -> Result<Picture, String> {
                 0..=10 => 100,
                 ms => ms,
             };
-            let img = shrink(frame.into_buffer(), max_side);
-            let (w, h) = img.dimensions();
+            let side = if max_side <= THUMB_SIDE { max_side.min(CHAT_GIF_SIDE) } else { max_side };
             total_ms += delay as u64;
-            frames.push((Handle::from_rgba(w, h, img.into_raw()), delay, w, h));
+            frames.push((shrink(frame.into_buffer(), side), delay));
         }
+        // Keep long or large GIFs within their memory budget by showing them a bit smaller.
+        let budget = if max_side <= THUMB_SIDE { GIF_BUDGET } else { VIEWER_GIF_BUDGET };
+        let bytes: usize = frames.iter().map(|(f, _)| f.as_raw().len()).sum();
+        if bytes > budget
+            && let Some((first, _)) = frames.first()
+        {
+            let scale = (budget as f32 / bytes as f32).sqrt();
+            let side = ((first.width().max(first.height()) as f32 * scale) as u32).max(64);
+            for (f, _) in &mut frames {
+                *f = shrink(std::mem::take(f), side);
+            }
+        }
+        let mut frames: Vec<(Handle, u32, u32, u32)> = frames
+            .into_iter()
+            .map(|(img, delay)| {
+                let (w, h) = img.dimensions();
+                (Handle::from_rgba(w, h, img.into_raw()), delay, w, h)
+            })
+            .collect();
         return match frames.len() {
             0 => Err("empty GIF".into()),
             1 => {
@@ -395,6 +441,8 @@ pub enum Entry {
 #[derive(Default)]
 pub struct ImageCache {
     entries: HashMap<String, (Entry, Instant)>,
+    /// Pictures on screen right now: never dropped to make room.
+    visible: HashSet<String>,
 }
 
 impl ImageCache {
@@ -465,12 +513,18 @@ impl ImageCache {
             .sum()
     }
 
+    /// Which pictures are on screen (they stay; the rest can make room).
+    pub fn set_visible(&mut self, visible: &HashSet<String>) {
+        self.visible.clone_from(visible);
+        self.evict();
+    }
+
     fn evict(&mut self) {
         while self.evictable_memory() > CACHE_BUDGET {
             let oldest = self
                 .entries
                 .iter()
-                .filter(|(k, (e, _))| matches!(e, Entry::Ready(_)) && !Self::pinned(k))
+                .filter(|(k, (e, _))| matches!(e, Entry::Ready(_)) && !Self::pinned(k) && !self.visible.contains(*k))
                 .min_by_key(|(_, (_, used))| *used)
                 .map(|(k, _)| k.clone());
             match oldest {
@@ -563,6 +617,51 @@ mod tests {
         assert!(cache.picture("k9").is_some(), "newest kept");
         assert!(cache.picture("k0").is_none(), "oldest dropped");
         assert!(!cache.start("k9"), "already loaded");
+    }
+
+    #[test]
+    fn pictures_on_screen_stay() {
+        let mut cache = ImageCache::default();
+        let big = || Arc::new(still(RgbaImage::new(2048, 2048)));
+        cache.start("seen");
+        cache.finish("seen".into(), Ok(big()));
+        cache.set_visible(&HashSet::from(["seen".to_string()]));
+        for i in 0..10 {
+            let k = format!("k{i}");
+            cache.start(&k);
+            cache.finish(k, Ok(big()));
+        }
+        assert!(cache.picture("seen").is_some(), "on screen, so kept");
+        // Scrolled away: it can go now.
+        cache.set_visible(&HashSet::new());
+        for i in 10..20 {
+            let k = format!("k{i}");
+            cache.start(&k);
+            cache.finish(k, Ok(big()));
+        }
+        assert!(cache.picture("seen").is_none());
+    }
+
+    #[test]
+    fn long_gifs_fit_their_budget() {
+        // 80 frames of 498x280, like a typical GIF from GIPHY.
+        let mut gif = Vec::new();
+        {
+            let mut enc = image::codecs::gif::GifEncoder::new(&mut gif);
+            let frames = (0..80).map(|i| {
+                image::Frame::from_parts(
+                    RgbaImage::from_pixel(498, 280, image::Rgba([i as u8, 0, 0, 255])),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(40, 1),
+                )
+            });
+            enc.encode_frames(frames).unwrap();
+        }
+        let p = decode(&gif, THUMB_SIDE).unwrap();
+        assert!(matches!(p, Picture::Animated { .. }));
+        assert!(p.memory() <= GIF_BUDGET, "{} bytes", p.memory());
+        assert!(p.size().0 >= 250, "still a decent size: {:?}", p.size());
     }
 
     #[test]

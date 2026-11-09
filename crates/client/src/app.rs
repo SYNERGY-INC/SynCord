@@ -91,6 +91,7 @@ pub enum Message {
     DeleteMessage(MessageId),
     /// Right-clicked a message (or pressed its "more" button): show its menu at the pointer.
     OpenMessageMenu(MessageId),
+    HoverOff(MessageId),
     CloseMessageMenu,
     CopyMessageText(MessageId),
     SelectMessageText(MessageId),
@@ -202,6 +203,8 @@ pub enum Message {
     ToggleFavoriteGif(Attachment),
     SendFavorite(Attachment),
     AnimationTick,
+    /// A picture in the chat scrolled into (true) or out of view.
+    PictureSeen(String, bool),
     ToggleAutoplayGifs(bool),
 
     // Emoji and reactions
@@ -748,6 +751,8 @@ pub struct App {
     pub now: Instant,
     /// Messages that just arrived in the open channel (they slide in).
     pub(crate) arrived: HashMap<MessageId, Instant>,
+    /// Chat pictures on screen right now (by cache key).
+    pub(crate) on_screen: HashSet<String>,
     /// When the side panel (members, search, pins) last opened, and the channel last changed.
     pub(crate) panel_opened: Instant,
     pub(crate) switched: Instant,
@@ -865,6 +870,7 @@ impl App {
             anim_epoch: Instant::now(),
             now: Instant::now(),
             arrived: HashMap::new(),
+            on_screen: HashSet::new(),
             panel_opened: Instant::now(),
             switched: Instant::now(),
             pending: Vec::new(),
@@ -1053,7 +1059,8 @@ impl App {
             // Smooth while something pops in (a fraction of a second).
             subs.push(iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimationTick));
         } else if self.wants_animation() {
-            subs.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::AnimationTick));
+            // About 30 fps: smooth for GIFs, and only the ones on screen count.
+            subs.push(iced::time::every(Duration::from_millis(33)).map(|_| Message::AnimationTick));
         }
         Subscription::batch(subs)
     }
@@ -1290,6 +1297,12 @@ impl App {
                 }
             }
             Message::HoverMessage(id) => self.hovered = id,
+            // Leaving a message only clears the hover if it's still that one.
+            Message::HoverOff(id) => {
+                if self.hovered == Some(id) {
+                    self.hovered = None;
+                }
+            }
             Message::StartEdit(id) => {
                 let content = self
                     .session
@@ -1637,6 +1650,7 @@ impl App {
             | Message::ToggleFavoriteGif(_)
             | Message::SendFavorite(_)
             | Message::AnimationTick
+            | Message::PictureSeen(..)
             | Message::ToggleAutoplayGifs(_) => return self.update_media(message),
             Message::OpenEmojiPicker(_)
             | Message::OpenGifPicker
@@ -2188,6 +2202,9 @@ impl App {
         if current != Some(id) {
             self.switched = Instant::now();
             self.now = self.switched;
+            // The new channel's pictures report themselves as they appear.
+            self.on_screen.clear();
+            self.images.set_visible(&self.on_screen);
         }
         // The pins panel follows you to the new channel.
         if let Some(p) = self.pins.as_mut().filter(|p| p.channel != id) {

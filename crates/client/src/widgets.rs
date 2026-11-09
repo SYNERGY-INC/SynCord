@@ -518,7 +518,7 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for HoverFade<'a, Message
     ) {
         let state = tree.state.downcast_mut::<FadeState>();
         match event {
-            Event::Mouse(_) => {
+            Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft) => {
                 let over = cursor.is_over(layout.bounds());
                 if over != state.hovered {
                     state.since = Some((std::time::Instant::now(), state.level()));
@@ -601,6 +601,371 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for HoverFade<'a, Message
 
 impl<'a, Message: 'a> From<HoverFade<'a, Message>> for Element<'a, Message> {
     fn from(h: HoverFade<'a, Message>) -> Self {
+        Element::new(h)
+    }
+}
+
+// ---- On-screen sensor
+
+/// Tells the app (with `on_change(true/false)`) when `content` scrolls into or out of
+/// view. It only speaks up when that changes, so it costs nothing while still.
+pub fn on_screen<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    on_change: impl Fn(bool) -> Message + 'a,
+) -> OnScreen<'a, Message> {
+    OnScreen { content: content.into(), on_change: Box::new(on_change) }
+}
+
+pub struct OnScreen<'a, Message> {
+    content: Element<'a, Message>,
+    on_change: Box<dyn Fn(bool) -> Message + 'a>,
+}
+
+#[derive(Default)]
+struct SeenState {
+    seen: Option<bool>,
+}
+
+impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for OnScreen<'a, Message> {
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn state(&self) -> widget::tree::State {
+        widget::tree::State::new(SeenState::default())
+    }
+
+    fn tag(&self) -> widget::tree::Tag {
+        widget::tree::Tag::of::<SeenState>()
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        if let Event::Window(iced::window::Event::RedrawRequested(_)) = event {
+            let seen = layout.bounds().intersects(viewport);
+            let state = tree.state.downcast_mut::<SeenState>();
+            if state.seen != Some(seen) {
+                state.seen = Some(seen);
+                shell.publish((self.on_change)(seen));
+            }
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        self.content.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, Message: 'a> From<OnScreen<'a, Message>> for Element<'a, Message> {
+    fn from(o: OnScreen<'a, Message>) -> Self {
+        Element::new(o)
+    }
+}
+
+// ---- Pictures that animate themselves
+
+/// Milliseconds since GIFs started playing (they all share one clock).
+pub fn anim_ms() -> u64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// A decoded picture `width` x `height`, filling the box (`cover`) or fitting inside it.
+/// A GIF plays by itself while on screen (with `playing`): it asks for a redraw just
+/// when its next frame is due, so the rest of the window isn't rebuilt or redrawn.
+pub fn picture<'a, Message: 'a>(
+    pic: std::sync::Arc<crate::media::Picture>,
+    width: f32,
+    height: f32,
+    cover: bool,
+    radius: f32,
+    playing: bool,
+) -> Element<'a, Message> {
+    Element::new(AnimatedPicture { pic, width, height, cover, radius, playing })
+}
+
+struct AnimatedPicture {
+    pic: std::sync::Arc<crate::media::Picture>,
+    width: f32,
+    height: f32,
+    cover: bool,
+    radius: f32,
+    playing: bool,
+}
+
+impl AnimatedPicture {
+    fn elapsed(&self) -> u64 {
+        if self.playing { anim_ms() } else { 0 }
+    }
+}
+
+impl<Message> Widget<Message, Theme, Renderer> for AnimatedPicture {
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fixed(self.width), Length::Fixed(self.height))
+    }
+
+    fn layout(&mut self, _tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        layout::Node::new(limits.resolve(self.width, self.height, Size::new(self.width, self.height)))
+    }
+
+    fn update(
+        &mut self,
+        _tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        if let Event::Window(iced::window::Event::RedrawRequested(now)) = event
+            && self.playing
+            && self.pic.is_animated()
+            && layout.bounds().intersects(viewport)
+        {
+            let wait = self.pic.until_next_frame(anim_ms()).min(1000);
+            shell.request_redraw_at(iced::window::RedrawRequest::At(*now + std::time::Duration::from_millis(wait)));
+        }
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        renderer: &mut Renderer,
+        _theme: &Theme,
+        _style: &renderer::Style,
+        layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+    ) {
+        use iced::advanced::image::Renderer as _;
+        let bounds = layout.bounds();
+        let (iw, ih) = self.pic.size();
+        let (iw, ih) = (iw.max(1) as f32, ih.max(1) as f32);
+        let scale = if self.cover {
+            (bounds.width / iw).max(bounds.height / ih)
+        } else {
+            (bounds.width / iw).min(bounds.height / ih)
+        };
+        let (w, h) = (iw * scale, ih * scale);
+        let at = Rectangle {
+            x: bounds.x + (bounds.width - w) / 2.0,
+            y: bounds.y + (bounds.height - h) / 2.0,
+            width: w,
+            height: h,
+        };
+        let mut image = iced::advanced::image::Image::new(self.pic.frame(self.elapsed()).clone());
+        image.border_radius = self.radius.into();
+        renderer.draw_image(image, at, bounds);
+    }
+}
+
+// ---- Hover that follows the mouse, not the scrolling
+
+/// Like `mouse_area`'s on_enter/on_exit, but only the mouse moving changes it: content
+/// scrolling under a still pointer doesn't, so scrolling past hundreds of messages
+/// doesn't rebuild the window for each one.
+pub fn hover_sensor<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    on_change: impl Fn(bool) -> Message + 'a,
+) -> HoverSensor<'a, Message> {
+    HoverSensor { content: content.into(), on_change: Box::new(on_change) }
+}
+
+pub struct HoverSensor<'a, Message> {
+    content: Element<'a, Message>,
+    on_change: Box<dyn Fn(bool) -> Message + 'a>,
+}
+
+impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for HoverSensor<'a, Message> {
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn state(&self) -> widget::tree::State {
+        widget::tree::State::new(SeenState::default())
+    }
+
+    fn tag(&self) -> widget::tree::Tag {
+        widget::tree::Tag::of::<SeenState>()
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let over = match event {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => Some(cursor.is_over(layout.bounds())),
+            Event::Mouse(mouse::Event::CursorLeft) => Some(false),
+            _ => None,
+        };
+        let state = tree.state.downcast_mut::<SeenState>();
+        if let Some(over) = over
+            && state.seen.unwrap_or(false) != over
+        {
+            state.seen = Some(over);
+            shell.publish((self.on_change)(over));
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        self.content.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, Message: 'a> From<HoverSensor<'a, Message>> for Element<'a, Message> {
+    fn from(h: HoverSensor<'a, Message>) -> Self {
         Element::new(h)
     }
 }

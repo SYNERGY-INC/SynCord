@@ -1,7 +1,7 @@
 //! Message text (links, mentions, emoji) and link previews.
 
-use iced::widget::{button, column, container, image, rich_text, row, space, span, text};
-use iced::{Alignment, Border, Color, ContentFit, Element, Font, Length, Padding};
+use iced::widget::{button, column, container, rich_text, row, space, span, text};
+use iced::{Alignment, Border, Color, Element, Font, Length, Padding};
 use syncord_proto::{Embed, Message as ChatMessage};
 
 use crate::app::{App, Message, Session};
@@ -156,17 +156,11 @@ impl App {
     fn embed_picture<'a>(&'a self, a: &'a syncord_proto::Attachment, max_w: f32, max_h: f32) -> Element<'a, Message> {
         let (w, h) = media::fit(a.width.unwrap_or(1), a.height.unwrap_or(1), max_w, max_h);
         match self.preview(a) {
-            Some(p) => button(
-                image(p.frame(self.animation_ms(None)).clone())
-                    .width(w)
-                    .height(h)
-                    .content_fit(ContentFit::Contain)
-                    .border_radius(self.theme.radius * 0.6),
-            )
-            .padding(0)
-            .on_press(Message::OpenViewer(a.clone()))
-            .style(|_, _| button::Style::default())
-            .into(),
+            Some(p) => button(crate::widgets::picture(p.clone(), w, h, false, self.theme.radius * 0.6, true))
+                .padding(0)
+                .on_press(Message::OpenViewer(a.clone()))
+                .style(|_, _| button::Style::default())
+                .into(),
             None => container(space()).width(w).height(h).style(card(self.theme.floating.0, 6.0)).into(),
         }
     }

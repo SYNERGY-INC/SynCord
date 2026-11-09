@@ -30,6 +30,11 @@
 - **Escape** jumps back to the newest message. Click beside a picture to close it.
 - **Roles**: Server settings → Roles now shows each role's members, with *Add* and *Remove*.
 - Smoother: hover highlights fade, new messages slide in, side panels slide open.
+- **Much smoother scrolling**: SynCord now draws with your graphics card by default (Low memory
+  mode, in Appearance, still draws on the CPU if you'd rather save RAM). Scrolling no longer
+  rebuilds the window for every message that passes under the mouse.
+- **GIFs**: several on screen at once all load and play (they used to push each other out of
+  memory), at about 30 fps, and only the ones you can see use any CPU or memory.
 - Fixed: profile pictures sometimes turned back into letters until SynCord restarted.
 - Fixed: after switching microphone or speakers during a call, others stopped hearing you.
 - The Mac app now needs macOS 12.3 or newer (for screen sharing).

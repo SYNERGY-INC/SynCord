@@ -21,9 +21,13 @@ pub struct Settings {
     /// Font file imported by the user (kept in the settings folder).
     pub font_file: Option<PathBuf>,
     pub compact: bool,
-    /// Draw the UI on the CPU instead of the GPU. Uses far less memory
-    /// (no graphics driver overhead) and is plenty fast for a chat app.
+    /// Draw the UI on the CPU instead of the GPU. Uses less memory (no graphics
+    /// driver), but scrolling and GIFs aren't as smooth.
     pub low_memory: bool,
+    /// Set once `low_memory` was decided with 0.6's default (the GPU). Apps before 0.6
+    /// defaulted to the CPU, which made scrolling laggy, so they're switched over once.
+    #[serde(default)]
+    pub renderer_v06: bool,
 
     // Voice
     /// Microphone name; `None` uses the system default.
@@ -99,7 +103,8 @@ impl Default for Settings {
             ui_font: String::new(),
             font_file: None,
             compact: false,
-            low_memory: true,
+            low_memory: false,
+            renderer_v06: true,
             input_device: None,
             output_device: None,
             input_gain: 1.0,
@@ -179,7 +184,17 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| toml::from_str(&t).ok()).unwrap_or_default()
+        let mut s: Self = path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| toml::from_str(&t).ok())
+            .unwrap_or_default();
+        if !s.renderer_v06 {
+            // Older versions drew on the CPU by default: smooth scrolling needs the GPU.
+            s.low_memory = false;
+            s.renderer_v06 = true;
+            s.save();
+        }
+        s
     }
 
     pub fn save(&self) {
@@ -196,5 +211,21 @@ impl Settings {
                 let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod renderer_tests {
+    use super::Settings;
+
+    #[test]
+    fn older_settings_switch_to_the_gpu_once() {
+        // A 0.5 settings file: low memory on (its default), no marker.
+        let old: Settings = toml::from_str("low_memory = true").unwrap();
+        assert!(!old.renderer_v06 && old.low_memory);
+        // Someone who turns it on again in 0.6 keeps it.
+        let chosen: Settings = toml::from_str("low_memory = true\nrenderer_v06 = true").unwrap();
+        assert!(chosen.low_memory);
+        assert!(!Settings::default().low_memory && Settings::default().renderer_v06);
     }
 }

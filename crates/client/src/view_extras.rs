@@ -80,13 +80,9 @@ impl App {
         let (w, h) = media::fit(a.width.unwrap_or(1), a.height.unwrap_or(1), PICTURE_W, PICTURE_H);
         let radius = t.radius;
 
+        let playing = self.settings.autoplay_gifs || self.hovered == Some(m.id);
         let content: Element<'a, Message> = match self.preview(a) {
-            Some(p) => image(p.frame(self.animation_ms(Some(m.id))).clone())
-                .width(w)
-                .height(h)
-                .content_fit(ContentFit::Cover)
-                .border_radius(radius)
-                .into(),
+            Some(p) => crate::widgets::picture(p.clone(), w, h, true, radius, playing),
             None => {
                 let msg = if self.picture_failed(a) { "Couldn't load picture" } else { "" };
                 center(text(msg).size(self.fs() * 0.8).color(t.muted.0))
@@ -97,6 +93,9 @@ impl App {
             }
         };
 
+        // Knowing what's on screen lets GIFs load and play only when you can see them.
+        let key = media::key(&a.id, false);
+        let content = crate::widgets::on_screen(content, move |seen| Message::PictureSeen(key.clone(), seen));
         let mut layers = stack![
             button(content).padding(0).on_press(Message::OpenViewer(a.clone())).style(|_, _| button::Style::default())
         ];

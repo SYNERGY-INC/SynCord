@@ -29,21 +29,10 @@ impl App {
         Some((self.http.clone(), self.server_base(), token))
     }
 
-    /// Keys of the pictures in the channel being shown.
-    pub(crate) fn visible_picture_keys(&self) -> Vec<String> {
-        let Some(s) = &self.session else { return Vec::new() };
-        let Some(st) = s.current.and_then(|c| s.chans.get(&c)) else { return Vec::new() };
-        st.messages
-            .iter()
-            .flat_map(|m| m.attachments.iter().chain(m.embeds.iter().filter_map(|e| e.image.as_ref())))
-            .filter(|a| a.is_image() || a.is_video())
-            .map(|a| media::key(&a.id, false))
-            .collect()
-    }
-
-    /// Start loading previews for the channel being shown.
+    /// Start loading previews for the channel being shown. GIFs wait until they're on
+    /// screen (see `PictureSeen`): each one keeps all its frames in memory.
     pub(crate) fn request_pictures(&mut self) -> Task<Message> {
-        let keys = self.visible_picture_keys();
+        let keys = self.still_picture_keys();
         let Some((http, base, token)) = self.http_ctx() else { return Task::none() };
         let mut tasks = Vec::new();
         for key in keys {
@@ -67,6 +56,28 @@ impl App {
                 Message::PictureLoaded(k.clone(), r)
             })
         }))
+    }
+
+    /// Pictures in the open channel that aren't GIFs (cheap to load up front).
+    fn still_picture_keys(&self) -> Vec<String> {
+        let Some(s) = &self.session else { return Vec::new() };
+        let Some(st) = s.current.and_then(|c| s.chans.get(&c)) else { return Vec::new() };
+        st.messages
+            .iter()
+            .flat_map(|m| m.attachments.iter().chain(m.embeds.iter().filter_map(|e| e.image.as_ref())))
+            .filter(|a| (a.is_image() && !a.animated) || a.is_video())
+            .map(|a| media::key(&a.id, false))
+            .collect()
+    }
+
+    /// Load one chat picture preview, unless it's loaded or on its way.
+    fn load_preview(&mut self, key: String) -> Task<Message> {
+        if !self.images.start(&key) {
+            return Task::none();
+        }
+        let Some((http, base, token)) = self.http_ctx() else { return Task::none() };
+        let k = key.clone();
+        Task::perform(media::load(http, base, token, key, true), move |r| Message::PictureLoaded(k.clone(), r))
     }
 
     /// Whether GIFs need redrawing regularly right now.
@@ -97,25 +108,8 @@ impl App {
             keys.extend(self.gifs.hovered.as_deref().map(|id| media::gif_key(id, true)));
             return self.images.has_animation(&keys);
         }
-        let keys = self.visible_picture_keys();
-        if self.settings.autoplay_gifs {
-            self.images.has_animation(&keys)
-        } else {
-            // Only the GIF under the mouse plays.
-            self.hovered_message_gif_keys().iter().any(|k| self.images.has_animation(std::slice::from_ref(k)))
-        }
-    }
-
-    fn hovered_message_gif_keys(&self) -> Vec<String> {
-        let (Some(s), Some(hovered)) = (&self.session, self.hovered) else { return Vec::new() };
-        let Some(st) = s.current.and_then(|c| s.chans.get(&c)) else { return Vec::new() };
-        st.messages
-            .iter()
-            .filter(|m| m.id == hovered)
-            .flat_map(|m| &m.attachments)
-            .filter(|a| a.animated)
-            .map(|a| media::key(&a.id, false))
-            .collect()
+        // GIFs in the chat play by themselves (see `widgets::picture`).
+        false
     }
 
     /// Milliseconds into the animation for a GIF in message `message_id`.
@@ -285,6 +279,16 @@ impl App {
                 }
             }
             Message::RemovePending(id) => self.pending.retain(|p| p.id != id),
+            Message::PictureSeen(key, seen) => {
+                let changed = if seen { self.on_screen.insert(key.clone()) } else { self.on_screen.remove(&key) };
+                if changed {
+                    self.images.set_visible(&self.on_screen);
+                }
+                // Scrolled to: load it (again, if it was dropped to make room).
+                if seen {
+                    return self.load_preview(key);
+                }
+            }
             Message::PictureLoaded(key, result) => {
                 if let Err(e) = &result {
                     eprintln!("couldn't load picture {key}: {e}");

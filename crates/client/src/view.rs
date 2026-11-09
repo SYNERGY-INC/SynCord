@@ -1117,10 +1117,13 @@ impl App {
                 .width(Length::Fill)
                 .style(move |_| container::Style { background: hover_bg.map(Into::into), ..Default::default() }),
         )
-        .on_enter(Message::HoverMessage(Some(m.id)))
-        .on_exit(Message::HoverMessage(None))
         .on_right_press(Message::OpenMessageMenu(m.id))
         .on_double_click(Message::SelectMessageText(m.id));
+        // Hover follows the mouse moving, not the list scrolling under it.
+        let id = m.id;
+        let row = crate::widgets::hover_sensor(row, move |over| {
+            if over { Message::HoverMessage(Some(id)) } else { Message::HoverOff(id) }
+        });
         let row = crate::widgets::hover_fade(row, style::darken(t.chat.0, 0.12), 0.0);
         // New messages slide up into place.
         match self.arrived.get(&m.id) {
@@ -2004,7 +2007,7 @@ impl App {
             .push(label(t, "Performance", fs))
             .push(
                 toggler(self.settings.low_memory)
-                    .label("Low memory mode (draws on the CPU; uses far less RAM)")
+                    .label("Low memory mode (draws on the CPU: uses less RAM, but scrolling and GIFs are less smooth)")
                     .on_toggle(Message::ToggleLowMemory)
                     .text_size(fs),
             )
