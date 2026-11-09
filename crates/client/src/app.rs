@@ -566,6 +566,9 @@ pub struct Session {
     pub max_upload_mb: u64,
     /// Server clock minus this computer's clock, in milliseconds.
     pub clock_offset_ms: i64,
+    /// The server relays end-to-end encrypted messages (0.7+), and who has published keys.
+    pub e2ee: bool,
+    pub keys: HashMap<UserId, celerity_proto::e2ee::IdentityKeys>,
 }
 
 impl Session {
@@ -733,6 +736,12 @@ pub struct App {
     /// The open server, and the one the call is on.
     pub(crate) server_uid: u64,
     pub(crate) call_uid: Option<u64>,
+    /// This call's end-to-end key (direct-message calls where everyone has keys), and keys
+    /// others sent before we knew their ssrc.
+    pub(crate) call_key: Option<[u8; 32]>,
+    pub(crate) pending_call_keys: HashMap<UserId, [u8; 32]>,
+    /// People we've given our call key to.
+    pub(crate) call_key_sent: HashSet<UserId>,
     /// Handling a message for a server that isn't open: change nothing on screen.
     pub(crate) background: bool,
     /// On the sign-in screen for an extra server (it can be cancelled).
@@ -893,6 +902,9 @@ impl App {
             parked: Vec::new(),
             server_uid: crate::servers::next_uid(),
             call_uid: None,
+            call_key: None,
+            pending_call_keys: HashMap::new(),
+            call_key_sent: HashSet::new(),
             background: false,
             adding_server: false,
             add_return: 0,
@@ -1392,7 +1404,10 @@ impl App {
                     } else {
                         Task::none()
                     };
-                    self.send(ClientMsg::SendMessage { channel_id, content, attachments, reply_to });
+                    // End to end encrypted in direct messages where everyone has keys.
+                    if !self.send_encrypted(channel_id, &content, &attachments, reply_to) {
+                        self.send(ClientMsg::SendMessage { channel_id, content, attachments, reply_to });
+                    }
                     self.set_composer(String::new());
                     self.composer_mentions.clear();
                     self.pending.clear();
@@ -1446,7 +1461,9 @@ impl App {
                     } else {
                         let content = crate::emoji::replace_shortcodes(content.trim());
                         let content = self.encode_mentions(&content, &self.edit_mentions);
-                        self.send(ClientMsg::EditMessage { message_id, content });
+                        if !self.edit_encrypted(message_id, &content) {
+                            self.send(ClientMsg::EditMessage { message_id, content });
+                        }
                     }
                 }
             }
@@ -2196,6 +2213,7 @@ impl App {
 
     fn stop_voice(&mut self) {
         self.stop_live();
+        self.stop_call_e2ee();
         self.link_quality = None;
         self.quality_mark = None;
         self.muted_talking = None;
@@ -2311,6 +2329,7 @@ impl App {
                 match self.start_engine(token, key, udp_port, counters.clone()) {
                     Ok(engine) => {
                         self.install_engine(channel_id, ssrc, token, key, udp_port, counters, Instant::now(), engine);
+                        self.start_call_e2ee(channel_id);
                         if self.settings.voice_sounds && !self.deafened {
                             self.settings.play(crate::sounds::Sound::Join);
                         }
@@ -2369,6 +2388,10 @@ impl App {
                     }
                 } else if let (Some(st), Some(v)) = (&state, &self.voice) {
                     v.engine.set_speaker_volume(st.ssrc, self.settings.user_volume(user_id));
+                    if st.channel_id == v.channel_id {
+                        let (user, ssrc) = (user_id, st.ssrc);
+                        self.on_call_member(user, ssrc);
+                    }
                 }
                 // Someone started (or joined) a call in your DMs: ring, unless you're in it.
                 let Some(s) = &self.session else { return };
@@ -2583,6 +2606,8 @@ impl App {
     }
 
     fn on_ready(&mut self, ready: Ready) -> Task<Message> {
+        // 0.7 servers say they make invite links; they also relay encrypted messages.
+        let (keys, e2ee) = (ready.identity_keys.clone(), ready.invite_links);
         if !self.background {
             self.adding_server = false;
         }
@@ -2652,7 +2677,10 @@ impl App {
             mention_counts: ready.mentions.into_iter().map(|m| (m.channel_id, m.count)).collect(),
             presences: ready.presences.into_iter().map(|p| (p.user_id, (p.status, p.activity))).collect(),
             clock_offset_ms: if ready.server_time > 0 { ready.server_time - now_ms() } else { 0 },
+            e2ee: false,
+            keys: HashMap::new(),
         });
+        self.setup_e2ee(keys, e2ee);
         // Tell the (maybe restarted) server our status again.
         self.sent_presence = None;
         self.send_presence();
@@ -2685,7 +2713,23 @@ impl App {
         Task::batch([open, avatars])
     }
 
-    fn on_server(&mut self, msg: ServerMsg) -> Task<Message> {
+    fn on_server(&mut self, mut msg: ServerMsg) -> Task<Message> {
+        self.decrypt_incoming(&mut msg);
+        match msg {
+            ServerMsg::IdentityKeysUpdated(k) => {
+                self.on_identity_keys(vec![k]);
+                return Task::none();
+            }
+            ServerMsg::IdentityKeys { keys } => {
+                self.on_identity_keys(keys);
+                return Task::none();
+            }
+            ServerMsg::CallSignal { from, data, .. } => {
+                self.on_call_signal(from, &data);
+                return Task::none();
+            }
+            _ => {}
+        }
         if let ServerMsg::Ready(ready) = msg {
             return self.on_ready(ready);
         }

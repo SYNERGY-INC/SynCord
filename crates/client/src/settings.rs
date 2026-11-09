@@ -86,6 +86,9 @@ pub struct Settings {
 
     /// Certificate fingerprints of servers we've connected to (host:port -> fingerprint).
     pub known_servers: HashMap<String, String>,
+    /// This install's end-to-end encryption identity on each server (secret keys; they
+    /// never leave this computer).
+    pub identities: HashMap<String, crate::e2ee::StoredIdentity>,
 
     /// People whose messages are folded away, per server (only on this computer).
     pub ignored: HashMap<String, Vec<i64>>,
@@ -157,6 +160,7 @@ impl Default for Settings {
             recent_emoji: Vec::new(),
             favorite_gifs: Vec::new(),
             known_servers: HashMap::new(),
+            identities: HashMap::new(),
             other_servers: Vec::new(),
             server_position: 0,
             ignored: HashMap::new(),

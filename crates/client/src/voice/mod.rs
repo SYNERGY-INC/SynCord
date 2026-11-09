@@ -201,7 +201,9 @@ impl VoiceEngine {
                     let packet = match &key {
                         Some(key) => {
                             let counter = counters.audio.fetch_add(1, Ordering::Relaxed);
-                            let sealed = seal(key, Direction::Up, counter, seq, opus);
+                            // Sealed end to end first in encrypted calls (the server can't open it).
+                            let opus = crate::e2ee::seal_media(opus);
+                            let sealed = seal(key, Direction::Up, counter, seq, &opus);
                             Packet::SealedUp { token, counter, sealed: &sealed }.encode()
                         }
                         None => Packet::AudioUp { token, seq, opus }.encode(),

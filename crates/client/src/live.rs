@@ -62,7 +62,8 @@ pub(crate) fn send(kind: VideoKind, data: &[u8]) {
     let out = OUT.lock().unwrap();
     let Some((_, o)) = out.as_ref() else { return };
     let counter = o.counters.video.fetch_add(1, Ordering::Relaxed);
-    let sealed = seal_video(&o.key, Direction::Up, counter, kind, data);
+    let data = crate::e2ee::seal_media(data);
+    let sealed = seal_video(&o.key, Direction::Up, counter, kind, &data);
     let packet = Packet::VideoUp { token: o.token, counter, sealed: &sealed }.encode();
     match &o.udp {
         Some(sock) if o.udp_ok.load(Ordering::Relaxed) => {
@@ -98,6 +99,7 @@ pub fn deliver(data: &[u8]) -> bool {
     let Some(Packet::VideoDown { ssrc, counter, sealed }) = Packet::parse(data) else { return false };
     let Some(key) = inbound().lock().unwrap().key else { return true };
     let Some((kind, payload)) = open_video(&key, Direction::Down, counter, sealed) else { return true };
+    let Some(payload) = crate::e2ee::open_media(ssrc, &payload) else { return true };
     if kind == VideoKind::ScreenAudio {
         let listener = inbound().lock().unwrap().audio.get(&ssrc).cloned();
         if let Some(l) = listener {

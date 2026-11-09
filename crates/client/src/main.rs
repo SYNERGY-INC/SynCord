@@ -13,6 +13,7 @@ mod app_social;
 mod color_picker;
 mod composer;
 mod crop;
+mod e2ee;
 mod emoji;
 mod fonts;
 mod icons;

@@ -678,6 +678,8 @@ impl App {
             format!("{channel} · {server}")
         } else if !connected {
             String::new()
+        } else if crate::e2ee::call_encrypted() {
+            format!("{channel} · end-to-end encrypted")
         } else if self.voice_status.udp {
             format!("{channel} · direct (UDP)")
         } else {
@@ -907,6 +909,20 @@ impl App {
                     .into(),
             };
             header = header.push(badge).push(text(ch.name.to_owned()).size(fs * 1.05).font(bold()).color(t.header.0));
+            // Direct messages only the people in them can read.
+            if ch.direct_with.is_some() && self.is_encrypted(ch.id) {
+                header = header.push(iced::widget::tooltip(
+                    icons::icon(&icons::LOCK, fs * 0.95, t.online.0),
+                    container(
+                        text("End-to-end encrypted: only you and they can read these messages (files aren't).")
+                            .size(fs * 0.8)
+                            .color(t.header.0),
+                    )
+                    .padding([5, 9])
+                    .style(card(t.floating.0, 6.0)),
+                    iced::widget::tooltip::Position::Bottom,
+                ));
+            }
             if !ch.topic.is_empty() {
                 header = header
                     .push(text("·").size(fs).color(t.muted.0))

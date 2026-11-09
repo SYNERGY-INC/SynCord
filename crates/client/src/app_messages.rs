@@ -352,12 +352,14 @@ impl App {
         self.discard_outgoing(id);
         let reply_to = m.reply.as_ref().map(|r| r.message_id);
         let local = self.show_outgoing(m.channel_id, &m.content, reply_to);
-        self.send(celerity_proto::ClientMsg::SendMessage {
-            channel_id: m.channel_id,
-            content: m.content,
-            attachments: Vec::new(),
-            reply_to,
-        });
+        if !self.send_encrypted(m.channel_id, &m.content, &[], reply_to) {
+            self.send(celerity_proto::ClientMsg::SendMessage {
+                channel_id: m.channel_id,
+                content: m.content,
+                attachments: Vec::new(),
+                reply_to,
+            });
+        }
         local
     }
 }

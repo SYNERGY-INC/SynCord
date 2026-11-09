@@ -81,7 +81,9 @@ impl Mixer {
             // With encryption on, plain audio is refused: it could be forged.
             Some(Packet::AudioDown { ssrc, seq, opus }) if key.is_none() => self.push(ssrc, seq, opus),
             Some(Packet::SealedDown { ssrc, counter, sealed }) => {
-                if let Some((seq, opus)) = key.and_then(|k| open(&k, Direction::Down, counter, sealed)) {
+                if let Some((seq, opus)) = key.and_then(|k| open(&k, Direction::Down, counter, sealed))
+                    && let Some(opus) = crate::e2ee::open_media(ssrc, &opus)
+                {
                     self.push(ssrc, seq, &opus);
                 }
             }
