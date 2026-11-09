@@ -6,15 +6,30 @@ license.workspace = true
 description = "Live video for Celerity voice calls: camera and screen capture, H.264 encode/decode, datagram packets"
 
 [features]
-default = ["capture"]
-# Camera and screen capture backends (Media Foundation + DXGI on Windows, AVFoundation +
-# ScreenCaptureKit on macOS, V4L2 + X11 on Linux). Without it the crate is codec + packets only.
+default = ["capture", "hardware"]
+# Hardware H.264 encoding (Media Foundation on Windows, VideoToolbox on macOS), self-tested
+# against OpenH264 and falling back to it. Nothing on Linux.
+hardware = [
+    "dep:windows",
+    "dep:windows-core",
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-core-media",
+    "dep:objc2-core-video",
+    "dep:objc2-core-foundation",
+    "dep:objc2-video-toolbox",
+]
+# Camera, screen and stream audio capture backends (Media Foundation + DXGI + Windows.Graphics.
+# Capture + WASAPI on Windows, AVFoundation + ScreenCaptureKit on macOS, V4L2 + X11 + PulseAudio
+# on Linux). Without it the crate is codec + packets only.
 capture = [
     "dep:windows",
+    "dep:windows-core",
     "dep:objc2",
     "dep:objc2-foundation",
     "dep:objc2-av-foundation",
     "dep:objc2-screen-capture-kit",
+    "dep:objc2-core-audio-types",
     "dep:objc2-core-media",
     "dep:objc2-core-video",
     "dep:objc2-core-graphics",
@@ -24,6 +39,7 @@ capture = [
     "dep:x11rb",
     "dep:libc",
     "dep:zune-jpeg",
+    "dep:libloading",
 ]
 
 [dependencies]
@@ -34,15 +50,35 @@ openh264-sys2 = { version = "0.9", default-features = false, features = ["source
 windows = { version = "0.62", optional = true, features = [
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_System_SystemInformation",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
     "Win32_Media_MediaFoundation",
+    "Win32_Media_Audio",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Devices_Display",
     "Win32_UI_WindowsAndMessaging",
+    "Wdk_System_SystemServices",
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
 ] }
+
+# `#[implement]` (COM callbacks) expands to paths in windows-core.
+windows-core = { version = "0.62", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
@@ -86,6 +122,8 @@ objc2-core-media = { version = "0.3", optional = true, default-features = false,
     "CMSampleBuffer",
     "CMTime",
     "CMBase",
+    "CMBlockBuffer",
+    "objc2-core-audio-types",
     "CMSync",
 ] }
 objc2-core-video = { version = "0.3", optional = true, default-features = false, features = [
@@ -94,30 +132,51 @@ objc2-core-video = { version = "0.3", optional = true, default-features = false,
     "CVBuffer",
     "CVImageBuffer",
     "CVPixelBuffer",
+    "CVPixelBufferPool",
     "CVReturn",
 ] }
 objc2-core-graphics = { version = "0.3", optional = true, default-features = false, features = [
     "std",
     "CGDirectDisplay",
     "CGDisplayConfiguration",
+    "CGGeometry",
     "CGWindow",
 ] }
 objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = [
     "std",
+    "CFArray",
     "CFCGTypes",
     "CFDictionary",
     "CFNumber",
     "CFString",
+] }
+objc2-video-toolbox = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "objc2-core-media",
+    "objc2-core-video",
+    "VTBase",
+    "VTCompressionProperties",
+    "VTCompressionSession",
+    "VTErrors",
+    "VTSession",
+    "VTVideoEncoderList",
+] }
+# Stream audio sample layout (AudioStreamBasicDescription, AudioBufferList).
+objc2-core-audio-types = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "CoreAudioBaseTypes",
 ] }
 block2 = { version = "0.6", optional = true }
 dispatch2 = { version = "0.3", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Pure Rust X11 protocol (already used by the GUI stack); MIT-SHM for fast screen grabs.
-x11rb = { version = "0.13", optional = true, features = ["shm", "randr", "xfixes"] }
+x11rb = { version = "0.13", optional = true, features = ["shm", "randr", "xfixes", "composite"] }
 libc = { version = "0.2", optional = true }
 # MJPEG webcams (720p30 is MJPEG-only on most UVC cameras). Same decoder the `image` crate uses.
 zune-jpeg = { version = "0.5", optional = true }
+# libpulse-simple for stream audio, opened at run time so there is no build/link dependency.
+libloading = { version = "0.8", optional = true }
 
 [[example]]
 name = "bench"

@@ -309,3 +309,181 @@ fn text_quality() {
         }
     }
 }
+
+/// Receivers can hand out I420 planes (for GPU conversion) and switch at run time.
+#[test]
+fn receiver_i420_output() {
+    let wire: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+    let w2 = wire.clone();
+    let cfg = SenderConfig { max_width: 640, max_height: 360, hardware_encoder: false, ..SenderConfig::camera(3) };
+    let sender = Sender::start(cfg, Source::Manual, move |d| w2.lock().unwrap().push(d.to_vec())).unwrap();
+    let rx = Receiver::new(ReceiverConfig { output: Output::I420, max_side: 640, ..ReceiverConfig::new(3) });
+    let t0 = now_us();
+    let mut seen_i420 = None;
+    let mut seen_rgba = None;
+    let feed = |n: u64| {
+        let mut f = pattern(n, 640, 360);
+        f.timestamp_us = t0 + n * 33_333;
+        sender.push_frame(&f);
+        std::thread::sleep(Duration::from_millis(15));
+        for p in std::mem::take(&mut *wire.lock().unwrap()) {
+            rx.push_packet(&p);
+        }
+    };
+    // Slow (debug, loaded) machines: run until both kinds were seen, switching after the first.
+    for n in 0..200u64 {
+        if seen_i420.is_some() && seen_rgba.is_some() {
+            break;
+        }
+        feed(n);
+        if seen_i420.is_some() {
+            rx.set_output(Output::Rgba);
+        }
+        let Some(fr) = rx.frame() else { continue };
+        match fr.pixels() {
+            Pixels::I420 { y, u, v, y_stride, uv_stride } => {
+                assert_eq!((fr.width, fr.height, y_stride, uv_stride), (640, 360, 640, 320));
+                assert_eq!((y.len(), u.len(), v.len()), (640 * 360, 320 * 180, 320 * 180));
+                assert!(fr.rgba.is_empty());
+                // The picture matches one of the frames sent.
+                let f = fr.i420.as_ref().unwrap();
+                let best = (0..=n).map(|k| luma_difference(&pattern(k, 640, 360), f)).fold(f64::MAX, f64::min);
+                assert!(best < 8.0, "I420 output far from every source frame ({best})");
+                seen_i420.get_or_insert(fr.serial);
+            }
+            Pixels::Rgba(px) => {
+                assert_eq!(px.len(), 640 * 360 * 4);
+                assert!(fr.i420.is_none());
+                seen_rgba.get_or_insert(fr.serial);
+            }
+        }
+    }
+    assert!(seen_i420.is_some() && seen_rgba.is_some(), "{seen_i420:?} {seen_rgba:?}");
+    // Scaled I420 output keeps the aspect ratio.
+    rx.set_output(Output::I420);
+    rx.set_max_side(320);
+    for n in 200..220u64 {
+        feed(n);
+    }
+    let fr = rx.frame().unwrap();
+    assert_eq!((fr.width, fr.height), (320, 180));
+    assert_eq!(fr.i420.as_ref().map(|f| (f.width(), f.height())), Some((320, 180)));
+    assert_eq!(sender.stats().encoder, "openh264");
+}
+
+#[test]
+fn quality_presets() {
+    for q in ScreenQuality::ALL {
+        let c = SenderConfig::screen_quality(9, q);
+        assert_eq!((c.max_width, c.max_height), q.max_size());
+        assert_eq!(c.encoder.max_fps, q.fps() as f32);
+        assert_eq!(c.encoder.bitrate_bps, q.bitrate_bps());
+        assert!(c.fit_bitrate && c.max_packet == DEFAULT_MAX_PACKET);
+        #[cfg(feature = "capture")]
+        assert_eq!(q.screen_config(true).fps, q.fps());
+    }
+    assert_eq!(ScreenQuality::default(), ScreenQuality::Res1440p60);
+    assert_eq!(ScreenQuality::Res1440p60.bitrate_bps(), 12_000_000);
+    assert_eq!(ScreenQuality::Source60.max_size(), (3840, 2160));
+    for q in CameraQuality::ALL {
+        let c = SenderConfig::camera_quality(1, q);
+        assert_eq!((c.max_width, c.max_height), q.size());
+        #[cfg(feature = "capture")]
+        assert_eq!(q.camera_config().width, q.size().0);
+    }
+    assert_eq!(CameraQuality::Res1080p.bitrate_bps(), 3_500_000);
+}
+
+/// A 4K preset sharing a 720p source sends 720p's bitrate; `set_bitrate` stays the cap.
+#[test]
+fn fit_bitrate_follows_the_source_size() {
+    let mut cfg = SenderConfig::screen_quality(4, ScreenQuality::Source60);
+    cfg.hardware_encoder = false;
+    let sender = Sender::start(cfg, Source::Manual, |_| {}).unwrap();
+    let t0 = now_us();
+    let push = |n: u64| {
+        let mut f = pattern(n, 1280, 720);
+        f.timestamp_us = t0 + n * 16_667;
+        sender.push_frame(&f);
+        let t = Instant::now();
+        while sender.stats().frames_encoded + sender.stats().frames_skipped <= n && t.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    push(0);
+    let fitted = sender.stats().bitrate_bps;
+    assert_eq!(fitted, recommended_bitrate(ContentKind::Screen, 1280, 720, 60.0));
+    assert!(fitted < 6_000_000, "{fitted}");
+    sender.set_bitrate(1_000_000);
+    push(1);
+    assert_eq!(sender.stats().bitrate_bps, 1_000_000);
+}
+
+/// Each frame's packets leave spread over a few milliseconds, not in one burst, and in order.
+#[test]
+fn packets_are_paced() {
+    type Arrivals = Vec<(Instant, u32, u16)>;
+    let arrivals: Arc<Mutex<Arrivals>> = Arc::default();
+    let a2 = arrivals.clone();
+    let mut cfg = SenderConfig::screen_quality(6, ScreenQuality::Res720p30);
+    cfg.hardware_encoder = false;
+    let sender = Sender::start(cfg, Source::Manual, move |d| {
+        let (h, _) = PacketHeader::parse(d).unwrap();
+        a2.lock().unwrap().push((Instant::now(), h.frame, h.index));
+    })
+    .unwrap();
+    // A noisy picture makes a big keyframe (hundreds of packets).
+    let mut f = I420Frame::new(1280, 720);
+    let mut rng = Rng(5);
+    f.planes_mut().0.iter_mut().for_each(|p| *p = 16 + rng.below(220) as u8);
+    f.timestamp_us = now_us();
+    sender.push_frame(&f);
+    let t = Instant::now();
+    while sender.stats().frames_encoded == 0 && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let a = arrivals.lock().unwrap();
+    assert!(a.len() > 50, "only {} packets", a.len());
+    assert!(a.windows(2).all(|w| (w[0].1, w[0].2) < (w[1].1, w[1].2)), "out of order");
+    let spread = a.last().unwrap().0 - a[0].0;
+    eprintln!("{} packets spread over {spread:?}", a.len());
+    assert!(spread >= Duration::from_millis(4), "burst: {spread:?}");
+    assert!(spread <= Duration::from_millis(60), "too slow: {spread:?}");
+}
+
+/// Encoder speed with the presets:
+/// `cargo test --release -p celerity-stream preset_speed -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn preset_speed() {
+    for q in [ScreenQuality::Res1080p30, ScreenQuality::Res1080p60, ScreenQuality::Res1440p60] {
+        let (w, h) = q.max_size();
+        let cfg = SenderConfig::screen_quality(1, q);
+        let mut enc = Encoder::new(cfg.encoder.clone()).unwrap();
+        let mut dec = Decoder::new().unwrap();
+        let mut f = I420Frame::new(w, h);
+        let (mut ms, mut dms, mut bytes, mut n) = (0.0, 0.0, 0usize, 0);
+        for i in 0..60u64 {
+            render_test_pattern(i, &mut f);
+            let t = Instant::now();
+            let Some(ef) = enc.encode(&f, i * 1000 / q.fps() as u64).unwrap() else { continue };
+            ms += t.elapsed().as_secs_f64() * 1000.0;
+            bytes += ef.data.len();
+            n += 1;
+            let data = ef.data.to_vec();
+            let t = Instant::now();
+            dec.decode(&data).unwrap();
+            dms += t.elapsed().as_secs_f64() * 1000.0;
+        }
+        eprintln!(
+            "{}: encode {:.1} ms, decode {:.1} ms per frame, {:.1} Mbps (target {:.1})",
+            q.label(),
+            ms / n as f64,
+            dms / n as f64,
+            bytes as f64 * 8.0 / (60.0 / q.fps() as f64) / 1e6,
+            q.bitrate_bps() as f64 / 1e6
+        );
+    }
+}

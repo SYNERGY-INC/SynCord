@@ -29,7 +29,7 @@ impl Monitor {
     }
 }
 
-fn connect() -> Result<(RustConnection, Window), String> {
+pub(super) fn connect() -> Result<(RustConnection, Window), String> {
     if std::env::var_os("DISPLAY").is_none() {
         return Err(if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             "screen sharing needs an X11 session (Wayland capture is not supported yet)".into()
@@ -87,7 +87,7 @@ pub(crate) fn list_screens() -> Result<Vec<ScreenInfo>, String> {
     let (conn, root) = connect()?;
     let mons = monitors(&conn, root)?;
     let many = mons.len() > 1;
-    Ok(mons
+    let mut list: Vec<ScreenInfo> = mons
         .iter()
         .enumerate()
         .map(|(i, m)| ScreenInfo {
@@ -98,18 +98,20 @@ pub(crate) fn list_screens() -> Result<Vec<ScreenInfo>, String> {
             height: m.h as u32,
             primary: m.primary,
         })
-        .collect())
+        .collect();
+    list.extend(super::window::list_windows(&conn, root));
+    Ok(list)
 }
 
 /// A System V shared memory segment attached to the X server.
-struct ShmSeg {
-    seg: u32,
-    addr: *mut u8,
-    size: usize,
+pub(super) struct ShmSeg {
+    pub(super) seg: u32,
+    pub(super) addr: *mut u8,
+    pub(super) size: usize,
 }
 
 impl ShmSeg {
-    fn new(conn: &RustConnection, size: usize) -> Option<ShmSeg> {
+    pub(super) fn new(conn: &RustConnection, size: usize) -> Option<ShmSeg> {
         unsafe {
             let id = libc::shmget(libc::IPC_PRIVATE, size, libc::IPC_CREAT | 0o600);
             if id < 0 {
@@ -134,7 +136,7 @@ impl ShmSeg {
         }
     }
 
-    fn detach(self, conn: &RustConnection) {
+    pub(super) fn detach(self, conn: &RustConnection) {
         let _ = conn.shm_detach(self.seg).map(|c| c.check());
         unsafe { libc::shmdt(self.addr.cast()) };
     }
@@ -147,6 +149,9 @@ pub(crate) fn run_screen(
     ready: Ready,
     stop: &Stop,
 ) -> Result<(), String> {
+    if let Some(win) = id.strip_prefix("window:") {
+        return super::window::run_window(win, config, sink, ready, stop);
+    }
     let setup = (|| -> Result<_, String> {
         let (conn, root) = connect()?;
         let mons = monitors(&conn, root)?;
@@ -177,14 +182,13 @@ pub(crate) fn run_screen(
     let size = mon.w as usize * mon.h as usize * 4;
     let has_shm = conn.shm_query_version().ok().and_then(|c| c.reply().ok()).is_some();
     let mut shm = if has_shm { ShmSeg::new(&conn, size) } else { None };
-    let has_xfixes = config.show_cursor && conn.xfixes_query_version(4, 0).ok().and_then(|c| c.reply().ok()).is_some();
+    let has_xfixes = config.show_cursor && has_xfixes(&conn);
     ready(Ok(()));
 
     let mut conv = Converter::default();
     let mut frame = I420Frame::default();
     let mut pacer = Pacer::new(config.fps);
-    let mut cursor = CursorImage::default();
-    let mut cursor_serial = None;
+    let mut pointer = Pointer::default();
     let (w, h) = (mon.w as usize, mon.h as usize);
     let mut result = Ok(());
     while !stop.stopped() {
@@ -235,21 +239,8 @@ pub(crate) fn run_screen(
             config.max_height,
             &mut frame,
         );
-        if has_xfixes && let Ok(c) = conn.xfixes_get_cursor_image().map_err(drop).and_then(|c| c.reply().map_err(drop))
-        {
-            if cursor_serial != Some(c.cursor_serial) {
-                cursor_serial = Some(c.cursor_serial);
-                cursor = CursorImage {
-                    width: c.width as usize,
-                    height: c.height as usize,
-                    hot_x: c.xhot as i32,
-                    hot_y: c.yhot as i32,
-                    rgba: c.cursor_image.iter().flat_map(|&p| unpremultiply(p)).collect(),
-                    invert: Vec::new(),
-                };
-            }
-            let (cx, cy) = (c.x as i32 - mon.x as i32, c.y as i32 - mon.y as i32);
-            overlay_cursor(&mut frame, &cursor, cx, cy, w, h);
+        if has_xfixes {
+            pointer.draw(&conn, &mut frame, mon.x as i32, mon.y as i32, w, h);
         }
         frame.timestamp_us = t;
         sink(&frame);
@@ -260,8 +251,41 @@ pub(crate) fn run_screen(
     result
 }
 
+/// The mouse pointer from XFixes, re-read only when its shape changes.
+#[derive(Default)]
+pub(super) struct Pointer {
+    image: CursorImage,
+    serial: Option<u32>,
+}
+
+impl Pointer {
+    /// Draws the pointer onto `frame`, which shows the `w`x`h` area at (`x`, `y`) of the root.
+    pub(super) fn draw(&mut self, conn: &RustConnection, frame: &mut I420Frame, x: i32, y: i32, w: usize, h: usize) {
+        let Ok(c) = conn.xfixes_get_cursor_image().map_err(drop).and_then(|c| c.reply().map_err(drop)) else {
+            return;
+        };
+        if self.serial != Some(c.cursor_serial) {
+            self.serial = Some(c.cursor_serial);
+            self.image = CursorImage {
+                width: c.width as usize,
+                height: c.height as usize,
+                hot_x: c.xhot as i32,
+                hot_y: c.yhot as i32,
+                rgba: c.cursor_image.iter().flat_map(|&p| unpremultiply(p)).collect(),
+                invert: Vec::new(),
+            };
+        }
+        overlay_cursor(frame, &self.image, c.x as i32 - x, c.y as i32 - y, w, h);
+    }
+}
+
+/// XFixes 4+ is there (pointer images).
+pub(super) fn has_xfixes(conn: &RustConnection) -> bool {
+    conn.xfixes_query_version(4, 0).ok().and_then(|c| c.reply().ok()).is_some()
+}
+
 /// XFixes cursor pixels are premultiplied ARGB32.
-fn unpremultiply(p: u32) -> [u8; 4] {
+pub(super) fn unpremultiply(p: u32) -> [u8; 4] {
     let a = (p >> 24) as u8;
     let un = |c: u32| if a == 0 { 0 } else { ((c & 0xff) * 255 / a as u32).min(255) as u8 };
     [un(p >> 16), un(p >> 8), un(p), a]

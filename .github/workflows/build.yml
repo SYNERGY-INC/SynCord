@@ -22,6 +22,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # X11 screen and window capture against a virtual X server (skipped above: no DISPLAY).
+      - name: Stream capture tests (Xvfb)
+        run: sudo apt-get install -y xvfb && xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" cargo test -p celerity-stream --lib capture::linux
 
   build:
     needs: test
@@ -49,6 +52,11 @@ jobs:
       - name: Install nasm (Windows)
         if: runner.os == 'Windows'
         run: choco install nasm -y --no-progress && echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+      # The platform encoders (Media Foundation, VideoToolbox), window capture and stream audio
+      # only run here; their output must decode with OpenH264.
+      - name: Test the streaming engine
+        if: runner.os != 'Linux'
+        run: cargo test -p celerity-stream --release -- --nocapture
       - run: cargo build --release
       - name: Collect binaries
         shell: bash

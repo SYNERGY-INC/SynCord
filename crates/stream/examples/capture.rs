@@ -5,8 +5,10 @@
 //! cargo run --release -p celerity-stream --example capture -- screen [ID] [SECONDS] [FPS] [MAXW] [MAXH]
 //! cargo run --release -p celerity-stream --example capture -- camera [ID] [SECONDS] [FPS] [W] [H]
 //! cargo run --release -p celerity-stream --example capture -- send-screen [ID] [SECONDS] [FPS] [MAXW] [MAXH]
+//! cargo run --release -p celerity-stream --example capture -- audio [system | WINDOW_ID] [SECONDS]
 //! ```
-//! `send-screen` runs the whole sender (capture + encode + packetize) and a receiver.
+//! `send-screen` runs the whole sender (capture + encode + packetize) and a receiver. `audio`
+//! records stream audio and prints its level.
 //! The last captured frame is written to `capture-last.ppm`.
 
 use std::sync::{Arc, Mutex};
@@ -159,6 +161,30 @@ fn main() {
             }
             save_ppm(&g.1);
         }
-        _ => println!("usage: capture [list | screen | camera | send-screen] [ID] [SECONDS] [FPS] [W] [H]"),
+        "audio" => {
+            println!("{:?}", audio_support());
+            let source = match args.get(1).map(String::as_str) {
+                None | Some("system") => AudioSource::System,
+                Some(id) => AudioSource::App { screen_id: id.to_string() },
+            };
+            let level = Arc::new(Mutex::new((0usize, 0f32)));
+            let l2 = level.clone();
+            let cap = AudioCapture::start(source, move |c| {
+                let mut l = l2.lock().unwrap();
+                l.0 += 1;
+                l.1 = c.iter().fold(l.1, |m, s| m.max(s.abs()));
+            })
+            .unwrap_or_else(|e| panic!("{e}"));
+            for _ in 0..num(2, 5) {
+                std::thread::sleep(Duration::from_secs(1));
+                let mut l = level.lock().unwrap();
+                println!("{} chunks, peak {:.3}", l.0, l.1);
+                *l = (0, 0.0);
+            }
+            if let Some(e) = cap.error() {
+                println!("error: {e}");
+            }
+        }
+        _ => println!("usage: capture [list | screen | camera | send-screen | audio] [ID] [SECONDS] [FPS] [W] [H]"),
     }
 }

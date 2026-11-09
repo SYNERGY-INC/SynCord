@@ -120,6 +120,7 @@ pub(crate) fn list_screens() -> Result<Vec<ScreenInfo>, String> {
         })
         .collect();
     list.sort_by_key(|s| !s.primary);
+    list.extend(super::window::list_windows());
     Ok(list)
 }
 
@@ -267,6 +268,9 @@ pub(crate) fn run_screen(
     ready: Ready,
     stop: &Stop,
 ) -> Result<(), String> {
+    if let Some(win) = id.strip_prefix("window:") {
+        return super::window::run_window(win, config, sink, ready, stop);
+    }
     let found = outputs().and_then(|outs| {
         outs.into_iter()
             .find(|o| o.device == id)
