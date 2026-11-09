@@ -57,8 +57,8 @@ pub fn clear_out(id: u64) {
     }
 }
 
-/// Send one video packet (called on the encoder's thread).
-fn send(kind: VideoKind, data: &[u8]) {
+/// Send one video packet (called on the encoder's or the stream audio's thread).
+pub(crate) fn send(kind: VideoKind, data: &[u8]) {
     let out = OUT.lock().unwrap();
     let Some((_, o)) = out.as_ref() else { return };
     let counter = o.counters.video.fetch_add(1, Ordering::Relaxed);
@@ -79,6 +79,8 @@ struct Inbound {
     key: Option<Key>,
     /// By (the sender's ssrc, which video).
     receivers: HashMap<(u32, VideoKind), Arc<stream::Receiver>>,
+    /// Screen share sound, by the sharer's ssrc.
+    audio: HashMap<u32, Arc<crate::stream_audio::Listener>>,
 }
 
 fn inbound() -> &'static Mutex<Inbound> {
@@ -96,6 +98,13 @@ pub fn deliver(data: &[u8]) -> bool {
     let Some(Packet::VideoDown { ssrc, counter, sealed }) = Packet::parse(data) else { return false };
     let Some(key) = inbound().lock().unwrap().key else { return true };
     let Some((kind, payload)) = open_video(&key, Direction::Down, counter, sealed) else { return true };
+    if kind == VideoKind::ScreenAudio {
+        let listener = inbound().lock().unwrap().audio.get(&ssrc).cloned();
+        if let Some(l) = listener {
+            l.push(&payload);
+        }
+        return true;
+    }
     let receiver = inbound().lock().unwrap().receivers.get(&(ssrc, kind)).cloned();
     if let Some(r) = receiver {
         r.push_packet(&payload);
@@ -138,9 +147,13 @@ pub fn start_sender_for_test(kind: VideoKind, cfg: stream::SenderConfig, source:
 
 // ---- The app's side
 
-/// A started sender, passed back from the thread that opened the camera or screen.
+/// A started sender (and a screen's sound, or why it couldn't be shared), passed back
+/// from the thread that opened the camera or screen.
 #[derive(Clone)]
-pub struct Started(Arc<Mutex<Option<stream::Sender>>>);
+pub struct Started(Arc<Mutex<Option<StartedParts>>>);
+
+/// The video sender, and the screen's sound (or why it couldn't be shared) if asked for.
+type StartedParts = (stream::Sender, Option<Result<crate::stream_audio::AudioShare, String>>);
 
 impl std::fmt::Debug for Started {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -175,8 +188,10 @@ pub struct Live {
     /// Latest picture per video, yours included (what others see).
     pub pictures: HashMap<(UserId, VideoKind), Picture>,
     pub cameras: Vec<stream::DeviceInfo>,
-    /// Smooth motion (720p, 30 fps) rather than sharp text (1080p, 15 fps).
-    pub smooth: bool,
+    /// Your screen's sound, while it's shared.
+    pub audio: Option<crate::stream_audio::AudioShare>,
+    /// Sound of the screen shares you watch, by sharer (with their ssrc).
+    listeners: HashMap<UserId, (u32, Arc<crate::stream_audio::Listener>)>,
 }
 
 impl Live {
@@ -209,6 +224,9 @@ fn handle_of(f: &stream::Frame) -> Handle {
     Handle::from_rgba(f.width, f.height, bytes::Bytes::from_owner(Pixels(f.rgba.clone())))
 }
 
+/// Longest side decoded for the video shown big: full quality, up to 4K.
+const FULL_SIDE: u32 = 3840;
+
 fn stream_id(kind: VideoKind) -> u32 {
     kind.to_u8() as u32
 }
@@ -233,20 +251,18 @@ impl App {
                     return Task::none();
                 }
                 self.live.starting.insert(VideoKind::Camera);
-                let mut cfg = stream::SenderConfig::camera(stream_id(VideoKind::Camera));
+                let quality = self.settings.camera_quality();
+                let mut cfg = stream::SenderConfig::camera_quality(stream_id(VideoKind::Camera), quality);
                 cfg.preview_max_side = Some(480);
                 let wanted = self.settings.camera.clone();
-                return start(VideoKind::Camera, cfg, move || {
-                    Ok(stream::Source::Camera {
-                        id: camera_id(wanted.as_deref())?,
-                        config: stream::CameraConfig::default(),
-                    })
+                return start(VideoKind::Camera, cfg, None, move || {
+                    Ok(stream::Source::Camera { id: camera_id(wanted.as_deref())?, config: quality.camera_config() })
                 });
             }
             Message::OpenScreenPicker => {
-                if self.live.screen.take().is_some() {
+                if self.live.screen.is_some() {
                     // The same button stops sharing.
-                    self.tell_video_state();
+                    self.stop_screen();
                     return Task::none();
                 }
                 if !self.in_call() {
@@ -270,24 +286,41 @@ impl App {
                     };
                 }
             }
-            Message::ToggleSmoothScreen(on) => self.live.smooth = on,
+            Message::SetScreenQuality(label) => {
+                self.settings.screen_quality = label;
+                self.settings.save();
+            }
+            Message::SetCameraQuality(label) => {
+                self.settings.camera_quality = label;
+                self.settings.save();
+                // Restart the camera at the new quality if it's on.
+                if self.live.camera.take().is_some() {
+                    return self.update_live(Message::ToggleCamera);
+                }
+            }
+            Message::ToggleShareAudio(on) => {
+                self.settings.share_audio = on;
+                self.settings.save();
+            }
+            Message::StreamVolume(user, volume) => {
+                self.settings.stream_volumes.insert(user.to_string(), volume);
+                self.settings.save();
+                if let Some((_, l)) = self.live.listeners.get(&user) {
+                    l.set_volume(volume);
+                }
+            }
             Message::ShareScreen(id) => {
                 self.close_overlay();
                 if !self.in_call() || self.live.starting.contains(&VideoKind::Screen) {
                     return Task::none();
                 }
                 self.live.starting.insert(VideoKind::Screen);
-                let mut cfg = stream::SenderConfig::screen(stream_id(VideoKind::Screen));
+                let quality = self.settings.screen_quality();
+                let mut cfg = stream::SenderConfig::screen_quality(stream_id(VideoKind::Screen), quality);
                 cfg.preview_max_side = Some(480);
-                let config = if self.live.smooth {
-                    cfg.max_width = 1280;
-                    cfg.max_height = 720;
-                    cfg.encoder.max_fps = 30.0;
-                    stream::ScreenConfig { max_width: 1280, max_height: 720, fps: 30, show_cursor: true }
-                } else {
-                    stream::ScreenConfig { max_width: 1920, max_height: 1080, fps: 15, show_cursor: true }
-                };
-                return start(VideoKind::Screen, cfg, move || Ok(stream::Source::Screen { id, config }));
+                let audio = if self.settings.share_audio { crate::stream_audio::source_for(&id) } else { None };
+                let config = quality.screen_config(true);
+                return start(VideoKind::Screen, cfg, audio, move || Ok(stream::Source::Screen { id, config }));
             }
             Message::VideoStarted(kind, result) => {
                 self.live.starting.remove(&kind);
@@ -302,12 +335,17 @@ impl App {
                     }
                 };
                 // Left the call while it was starting: just drop it.
-                if let Some(sender) = sender.filter(|_| self.in_call()) {
+                if let Some((sender, audio)) = sender.filter(|_| self.in_call()) {
                     match kind {
                         VideoKind::Camera => self.live.camera = Some(sender),
                         VideoKind::Screen | VideoKind::ScreenAudio => {
                             self.live.screen = Some(sender);
                             self.live.stage = true;
+                            match audio {
+                                Some(Ok(a)) => self.live.audio = Some(a),
+                                Some(Err(e)) => self.notice = Some(format!("Sharing your screen without sound: {e}")),
+                                None => {}
+                            }
                         }
                     }
                     self.tell_video_state();
@@ -390,8 +428,28 @@ impl App {
         for (key, ssrc) in &wanted {
             if !self.live.receivers.contains_key(key) {
                 let mut cfg = stream::ReceiverConfig::new(stream_id(key.1));
-                cfg.max_side = if self.live.focus == Some(*key) { 1920 } else { 640 };
+                cfg.max_side = if self.live.focus == Some(*key) { FULL_SIDE } else { 640 };
+                // The GPU turns YUV into colours itself (much less work at 1440p60).
+                cfg.output = if self.settings.low_memory { stream::Output::Rgba } else { stream::Output::I420 };
                 self.live.receivers.insert(*key, (*ssrc, Arc::new(stream::Receiver::new(cfg))));
+                changed = true;
+            }
+        }
+        // The sound of the screen shares you watch.
+        let wanted_audio: HashMap<UserId, u32> =
+            wanted.iter().filter(|((_, k), _)| *k == VideoKind::Screen).map(|((u, _), ssrc)| (*u, *ssrc)).collect();
+        let before = self.live.listeners.len();
+        self.live.listeners.retain(|u, (ssrc, _)| wanted_audio.get(u) == Some(ssrc));
+        changed |= before != self.live.listeners.len();
+        for (user, ssrc) in wanted_audio {
+            if !self.live.listeners.contains_key(&user) {
+                let far_end = self.voice_sink.lock().unwrap().as_ref().map(|m| m.far_end.clone());
+                let listener = crate::stream_audio::Listener::start(
+                    self.settings.output_device.clone(),
+                    self.settings.stream_volume(user),
+                    far_end,
+                );
+                self.live.listeners.insert(user, (ssrc, Arc::new(listener)));
                 changed = true;
             }
         }
@@ -399,6 +457,7 @@ impl App {
             let mut inb = inbound().lock().unwrap();
             inb.receivers =
                 self.live.receivers.iter().map(|((_, kind), (ssrc, r))| ((*ssrc, *kind), r.clone())).collect();
+            inb.audio = self.live.listeners.values().map(|(ssrc, l)| (*ssrc, l.clone())).collect();
         }
         let (camera, screen) = (self.live.camera.is_some(), self.live.screen.is_some());
         let receivers = &self.live.receivers;
@@ -409,7 +468,7 @@ impl App {
 
         for ((user, kind), (_, r)) in &self.live.receivers {
             // Full size only for the video shown big: small tiles decode small (less to draw).
-            r.set_max_side(if self.live.focus == Some((*user, *kind)) { 1920 } else { 640 });
+            r.set_max_side(if self.live.focus == Some((*user, *kind)) { FULL_SIDE } else { 640 });
             if r.take_keyframe_request() {
                 self.send_call(ClientMsg::RequestKeyframe { user_id: *user, kind: *kind });
             }
@@ -421,10 +480,17 @@ impl App {
                 stopped.push((kind, e));
             }
         }
+        if let Some(e) = self.live.audio.as_ref().and_then(|a| a.error()) {
+            self.live.audio = None;
+            self.notice = Some(format!("Your screen's sound stopped: {e}"));
+        }
         for (kind, e) in stopped {
             match kind {
                 VideoKind::Camera => self.live.camera = None,
-                VideoKind::Screen | VideoKind::ScreenAudio => self.live.screen = None,
+                VideoKind::Screen | VideoKind::ScreenAudio => {
+                    self.live.screen = None;
+                    self.live.audio = None;
+                }
             }
             self.notice = Some(match kind {
                 VideoKind::Camera => format!("Your camera stopped: {e}"),
@@ -460,8 +526,9 @@ impl App {
                 serial: f.serial,
                 width: f.width,
                 height: f.height,
-                handle: handle_of(&f),
+                handle: (!f.rgba.is_empty()).then(|| handle_of(&f)),
                 rgba: f.rgba,
+                i420: f.i420,
             };
             self.live.pictures.insert(key, picture);
         }
@@ -480,9 +547,17 @@ impl App {
     /// Leaving the call: stop everything.
     pub(crate) fn stop_live(&mut self) {
         let cameras = std::mem::take(&mut self.live.cameras);
-        let smooth = self.live.smooth;
-        self.live = Live { cameras, smooth, ..Default::default() };
-        inbound().lock().unwrap().receivers.clear();
+        self.live = Live { cameras, ..Default::default() };
+        let mut inb = inbound().lock().unwrap();
+        inb.receivers.clear();
+        inb.audio.clear();
+    }
+
+    /// Stop sharing your screen (and its sound).
+    pub(crate) fn stop_screen(&mut self) {
+        self.live.screen = None;
+        self.live.audio = None;
+        self.tell_video_state();
     }
 
     /// For the camera picker in voice settings.
@@ -502,17 +577,20 @@ fn camera_id(wanted: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "No camera found. Is one plugged in?".to_string())
 }
 
-/// Open the camera or screen on a background thread (it can take a moment).
+/// Open the camera or screen (and the sound to share with it) on a background thread:
+/// it can take a moment, and may wait for a permission prompt.
 fn start(
     kind: VideoKind,
     cfg: stream::SenderConfig,
+    audio: Option<stream::AudioSource>,
     source: impl FnOnce() -> Result<stream::Source, String> + Send + 'static,
 ) -> Task<Message> {
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                stream::Sender::start(cfg, source()?, move |packet| send(kind, packet))
-                    .map(|s| Started(Arc::new(Mutex::new(Some(s)))))
+                let sender = stream::Sender::start(cfg, source()?, move |packet| send(kind, packet))?;
+                let audio = audio.map(crate::stream_audio::AudioShare::start);
+                Ok(Started(Arc::new(Mutex::new(Some((sender, audio))))))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))

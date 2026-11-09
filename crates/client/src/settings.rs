@@ -43,6 +43,13 @@ pub struct Settings {
     pub input_sensitivity: f32,
     pub noise_suppression: bool,
     pub echo_cancellation: bool,
+    /// Screen sharing and camera quality (labels of celerity_stream's presets).
+    pub screen_quality: String,
+    pub camera_quality: String,
+    /// Share your computer's (or the window's app's) sound with your screen.
+    pub share_audio: bool,
+    /// How loud each person's screen share sound plays (by user id, 1.0 = as sent).
+    pub stream_volumes: HashMap<String, f32>,
     /// Push to talk instead of sending when you speak, with this key (see voice::ptt).
     pub push_to_talk: bool,
     pub ptt_key: String,
@@ -129,6 +136,11 @@ impl Default for Settings {
             input_sensitivity: -50.0,
             noise_suppression: true,
             echo_cancellation: true,
+            screen_quality: celerity_stream::ScreenQuality::Res1440p60.label().into(),
+            camera_quality: celerity_stream::CameraQuality::Res1080p.label().into(),
+            // On Linux the computer's sound includes the call itself, so it starts off there.
+            share_audio: !cfg!(all(unix, not(target_os = "macos"))),
+            stream_volumes: HashMap::new(),
             push_to_talk: false,
             ptt_key: "Backquote".into(),
             user_volumes: HashMap::new(),
@@ -267,6 +279,18 @@ impl Settings {
 
     pub fn favorites_here(&self) -> impl Iterator<Item = &FavoriteGif> {
         self.favorite_gifs.iter().filter(|f| f.server == self.server)
+    }
+
+    pub fn screen_quality(&self) -> celerity_stream::ScreenQuality {
+        celerity_stream::ScreenQuality::ALL.into_iter().find(|q| q.label() == self.screen_quality).unwrap_or_default()
+    }
+
+    pub fn camera_quality(&self) -> celerity_stream::CameraQuality {
+        celerity_stream::CameraQuality::ALL.into_iter().find(|q| q.label() == self.camera_quality).unwrap_or_default()
+    }
+
+    pub fn stream_volume(&self, user: celerity_proto::UserId) -> f32 {
+        self.stream_volumes.get(&user.to_string()).copied().unwrap_or(1.0)
     }
 
     pub fn user_volume(&self, user: celerity_proto::UserId) -> f32 {

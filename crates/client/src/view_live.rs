@@ -140,6 +140,25 @@ impl App {
             space::horizontal(),
         ];
         if kind == VideoKind::Screen && !mine && watching {
+            // How loud their screen's sound plays here.
+            let id = user.id;
+            let volume = self.settings.stream_volume(id);
+            let icon = if volume <= 0.0 { &icons::VOLUME_OFF } else { &icons::VOLUME };
+            corner = corner.push(
+                container(
+                    row![
+                        icons::icon(icon, fs * 0.9, Color::WHITE),
+                        iced::widget::slider(0.0..=2.0, volume, move |v| Message::StreamVolume(id, v))
+                            .step(0.05_f32)
+                            .width(90),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([3, 7])
+                .style(style::flat(Color::from_rgba(0.0, 0.0, 0.0, 0.6), 4.0)),
+            );
+            corner = corner.push(space().width(6));
             corner = corner.push(
                 button(text("Stop watching").size(fs * 0.72).color(Color::WHITE))
                     .padding([3, 7])
@@ -250,7 +269,7 @@ impl App {
         .into()
     }
 
-    /// Choosing a screen (or a window, on macOS) to share.
+    /// Choosing a screen or a window to share, how sharp and smooth, and whether with sound.
     pub(crate) fn screen_picker<'a>(&'a self, list: &'a ScreenList) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
@@ -259,42 +278,80 @@ impl App {
             ScreenList::Loading => col = col.push(text("Looking for screens...").size(fs * 0.9).color(t.muted.0)),
             ScreenList::Failed(e) => col = col.push(text(e.clone()).size(fs * 0.9).color(t.danger.0)),
             ScreenList::Ready(screens) => {
-                let mut items = column![].spacing(6);
-                for sc in screens {
-                    let kind = match sc.kind {
-                        celerity_stream::ScreenKind::Display => "Screen",
-                        celerity_stream::ScreenKind::Window => "Window",
-                    };
-                    items = items.push(
-                        button(
-                            row![
-                                icons::icon(&icons::SCREEN, fs * 1.3, t.muted.0),
-                                column![
-                                    text(sc.name.clone()).size(fs * 0.95).color(t.header.0),
-                                    text(format!("{kind} · {}×{}", sc.width, sc.height))
-                                        .size(fs * 0.75)
-                                        .color(t.muted.0),
-                                ]
-                                .spacing(2),
+                let item = |sc: &'a celerity_stream::ScreenInfo| {
+                    let icon =
+                        if sc.kind == celerity_stream::ScreenKind::Display { &icons::SCREEN } else { &icons::FILE };
+                    button(
+                        row![
+                            icons::icon(icon, fs * 1.3, t.muted.0),
+                            column![
+                                text(sc.name.clone())
+                                    .size(fs * 0.95)
+                                    .color(t.header.0)
+                                    .wrapping(iced::widget::text::Wrapping::None),
+                                text(format!("{}×{}", sc.width, sc.height)).size(fs * 0.75).color(t.muted.0),
                             ]
-                            .spacing(10)
-                            .align_y(Alignment::Center),
-                        )
-                        .width(Length::Fill)
-                        .padding(10)
-                        .on_press(Message::ShareScreen(sc.id.clone()))
-                        .style(style::row_button(t, false)),
-                    );
+                            .spacing(2),
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding(10)
+                    .on_press(Message::ShareScreen(sc.id.clone()))
+                    .style(style::row_button(t, false))
+                };
+                let mut items = column![].spacing(4);
+                for (kind, title) in [
+                    (celerity_stream::ScreenKind::Display, "Screens"),
+                    (celerity_stream::ScreenKind::Window, "Windows"),
+                ] {
+                    let group: Vec<_> = screens.iter().filter(|s| s.kind == kind).collect();
+                    if group.is_empty() {
+                        continue;
+                    }
+                    items = items.push(container(style::label(t, title, fs)).padding([6, 4]));
+                    for sc in group {
+                        items = items.push(item(sc));
+                    }
                 }
-                col = col.push(scrollable(items).height(Length::Shrink).style(style::scroll(t)));
+                col = col.push(scrollable(items).height(Length::Fixed(300.0)).style(style::scroll(t)));
             }
         }
+        // Quality: the highest by default (1440p at 60 fps).
+        let labels: Vec<String> = celerity_stream::ScreenQuality::ALL.iter().map(|q| q.label().to_string()).collect();
         col = col.push(
-            toggler(self.live.smooth)
-                .label("Smooth motion (720p, 30 fps) instead of sharp text (1080p, 15 fps)")
-                .text_size(fs * 0.85)
-                .on_toggle(Message::ToggleSmoothScreen),
+            row![
+                text("Quality").size(fs * 0.9).color(t.text.0),
+                iced::widget::pick_list(
+                    labels,
+                    Some(self.settings.screen_quality().label().to_string()),
+                    Message::SetScreenQuality
+                )
+                .text_size(fs * 0.9)
+                .padding(8),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
         );
+        match crate::stream_audio::describe(false) {
+            Some(label) => {
+                let label = if celerity_stream::audio_support().per_app {
+                    format!("{label}; for a window, just that app's sound")
+                } else {
+                    label.to_string()
+                };
+                col = col.push(
+                    toggler(self.settings.share_audio)
+                        .label(label)
+                        .text_size(fs * 0.85)
+                        .on_toggle(Message::ToggleShareAudio),
+                );
+            }
+            None => {
+                col = col.push(text("Sharing sound isn't available on this computer.").size(fs * 0.8).color(t.muted.0));
+            }
+        }
         col = col.push(row![
             space::horizontal(),
             button(text("Cancel").size(fs * 0.9))
@@ -302,7 +359,7 @@ impl App {
                 .on_press(Message::CloseOverlay)
                 .style(style::solid_button(t.floating.0, 6.0)),
         ]);
-        container(col).width(460).max_height(520).padding(20).style(card(t.chat.0, t.radius * 1.5)).into()
+        container(col).width(520).max_height(620).padding(20).style(card(t.chat.0, t.radius * 1.5)).into()
     }
 
     /// Camera and "LIVE" badges next to someone under a voice channel.

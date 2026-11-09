@@ -2019,7 +2019,19 @@ impl App {
                 ]
                 .spacing(8)
                 .width(Length::Fill),
-                space::horizontal().width(Length::Fill),
+                column![
+                    label(t, "Camera quality", fs),
+                    pick_list(
+                        celerity_stream::CameraQuality::ALL.iter().map(|q| q.label().to_string()).collect::<Vec<_>>(),
+                        Some(st.camera_quality().label().to_string()),
+                        Message::SetCameraQuality
+                    )
+                    .text_size(fs * 0.9)
+                    .padding(10)
+                    .width(Length::Fill)
+                ]
+                .spacing(8)
+                .width(Length::Fill),
             ]
             .spacing(20),
             label(t, "Mic test", fs),

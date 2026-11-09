@@ -326,7 +326,11 @@ pub enum Message {
     ToggleCamera,
     OpenScreenPicker,
     ScreensListed(Result<Vec<celerity_stream::ScreenInfo>, String>),
-    ToggleSmoothScreen(bool),
+    SetScreenQuality(String),
+    SetCameraQuality(String),
+    ToggleShareAudio(bool),
+    /// How loud someone's screen share sound is (0..2).
+    StreamVolume(UserId, f32),
     ShareScreen(String),
     VideoStarted(celerity_proto::VideoKind, Result<crate::live::Started, String>),
     WatchScreen(UserId),
@@ -721,7 +725,7 @@ pub struct App {
 
     pub(crate) generation: u64,
     pub(crate) conn: Option<Connection>,
-    voice_sink: crate::voice::VoiceSink,
+    pub(crate) voice_sink: crate::voice::VoiceSink,
     pub(crate) pending_auth: Option<ClientMsg>,
     pub(crate) reconnect_attempts: u32,
     /// Other servers you're signed in to (see servers.rs).
@@ -2000,7 +2004,10 @@ impl App {
             Message::ToggleCamera
             | Message::OpenScreenPicker
             | Message::ScreensListed(_)
-            | Message::ToggleSmoothScreen(_)
+            | Message::SetScreenQuality(_)
+            | Message::SetCameraQuality(_)
+            | Message::ToggleShareAudio(_)
+            | Message::StreamVolume(..)
             | Message::ShareScreen(_)
             | Message::VideoStarted(..)
             | Message::WatchScreen(_)

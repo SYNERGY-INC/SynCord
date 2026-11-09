@@ -27,6 +27,7 @@ mod settings;
 mod shortcuts;
 mod sound;
 mod sounds;
+mod stream_audio;
 mod style;
 mod theme;
 mod theme_editor;

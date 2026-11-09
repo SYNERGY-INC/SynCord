@@ -204,6 +204,104 @@ pub fn start_output_source(name: Option<&str>, source: Source) -> Result<Stream,
     Ok(stream)
 }
 
+/// Fills a buffer with 48 kHz interleaved stereo audio (left, right, left, right...).
+pub type StereoSource = Box<dyn FnMut(&mut [f32]) + Send>;
+
+/// Like [`OutputStage`], for stereo.
+struct StereoStage {
+    source: StereoSource,
+    step: f64,
+    t: f64,
+    a: [f32; 2],
+    b: [f32; 2],
+    chunk: Vec<f32>,
+    pos: usize,
+}
+
+impl StereoStage {
+    fn next_source(&mut self) -> [f32; 2] {
+        if self.pos >= self.chunk.len() {
+            (self.source)(&mut self.chunk);
+            self.pos = 0;
+        }
+        self.pos += 2;
+        [self.chunk[self.pos - 2], self.chunk[self.pos - 1]]
+    }
+
+    fn next(&mut self) -> [f32; 2] {
+        if self.step == 1.0 {
+            return self.next_source();
+        }
+        while self.t >= 1.0 {
+            self.t -= 1.0;
+            self.a = self.b;
+            self.b = self.next_source();
+        }
+        let t = self.t as f32;
+        self.t += self.step;
+        [self.a[0] + (self.b[0] - self.a[0]) * t, self.a[1] + (self.b[1] - self.a[1]) * t]
+    }
+}
+
+/// Play stereo audio from `source` (a screen share's sound) on the named output device.
+pub fn start_output_stereo(name: Option<&str>, source: StereoSource) -> Result<Stream, String> {
+    let device = find_output(name).ok_or("No speakers or headphones found")?;
+    let default = device.default_output_config().map_err(|e| format!("Speakers unavailable: {e}"))?;
+    let supported = device.supported_output_configs().map(|c| c.collect()).unwrap_or_default();
+    let config = pick_config(default, supported);
+    let format = config.sample_format();
+    let config: StreamConfig = config.config();
+    let stage = StereoStage {
+        source,
+        step: SAMPLE_RATE as f64 / config.sample_rate as f64,
+        t: 1.0,
+        a: [0.0; 2],
+        b: [0.0; 2],
+        chunk: vec![0.0; 960],
+        pos: 960,
+    };
+
+    fn build<T: SizedSample + FromSample<f32>>(
+        device: &Device,
+        config: StreamConfig,
+        mut stage: StereoStage,
+    ) -> Result<Stream, String> {
+        let channels = config.channels as usize;
+        device
+            .build_output_stream(
+                config,
+                move |data: &mut [T], _| {
+                    for frame in data.chunks_mut(channels) {
+                        let [l, r] = stage.next();
+                        match frame {
+                            [mono] => *mono = T::from_sample((l + r) * 0.5),
+                            [fl, fr, rest @ ..] => {
+                                *fl = T::from_sample(l);
+                                *fr = T::from_sample(r);
+                                rest.iter_mut().for_each(|s| *s = T::from_sample(0.0));
+                            }
+                            [] => {}
+                        }
+                    }
+                },
+                |e| eprintln!("speaker error: {e}"),
+                None,
+            )
+            .map_err(|e| format!("Couldn't open speakers: {e}"))
+    }
+
+    let stream = match format {
+        SampleFormat::F32 => build::<f32>(&device, config, stage),
+        SampleFormat::I16 => build::<i16>(&device, config, stage),
+        SampleFormat::U16 => build::<u16>(&device, config, stage),
+        SampleFormat::I32 => build::<i32>(&device, config, stage),
+        SampleFormat::U8 => build::<u8>(&device, config, stage),
+        other => Err(format!("Unsupported speaker format {other:?}")),
+    }?;
+    stream.play().map_err(|e| format!("Couldn't start speakers: {e}"))?;
+    Ok(stream)
+}
+
 // Keep the Sample trait in scope for `from_sample` on all platforms.
 #[allow(unused_imports)]
 use Sample as _;

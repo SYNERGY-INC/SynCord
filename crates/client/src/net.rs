@@ -167,7 +167,9 @@ pub fn connect(input: String, pin: Option<String>, voice: VoiceSink) -> impl Str
             if !encrypted && pin.is_some() {
                 break; // This server encrypts: never fall back to plain.
             }
-            match open(&url, pin.clone()).await {
+            // Tell the server which protocol we speak (older servers ignore it).
+            let versioned = format!("{url}?protocol={}", celerity_proto::PROTOCOL_VERSION);
+            match open(&versioned, pin.clone()).await {
                 Ok((ws, fingerprint)) => {
                     opened = Some((ws, url, fingerprint));
                     break;
