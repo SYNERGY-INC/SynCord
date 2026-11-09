@@ -31,8 +31,8 @@ impl App {
             .width(Length::Fill)
             .padding(0)
             .on_press(ch(ChannelsMsg::ToggleServerMenu))
-            .style(style::row_button_still(t, self.server_menu));
-        let header = crate::widgets::hover_fade(header, t.hover.0, 0.0);
+            .style(style::row_button_still(t, false));
+        let header = crate::widgets::hover_fade(header, t.hover.0, style::panel_radius(t));
         let mut col = column![Element::from(header)];
         if self.server_menu {
             col = col.push(self.server_menu_view(s));
@@ -215,7 +215,8 @@ impl App {
                 ..Default::default()
             });
         let header: Element<'a, Message> = if manage {
-            press_sensor(header, ch(ChannelsMsg::Press(DragItem::Category(cat.id)))).into()
+            press_sensor(header, ch(ChannelsMsg::Press(DragItem::Category(cat.id))), ch(ChannelsMsg::DragRelease))
+                .into()
         } else {
             header.into()
         };
@@ -270,7 +271,7 @@ impl App {
     /// A row a manager can drag, with the drop line above it.
     fn draggable_channel<'a>(&'a self, s: &Session, c: &Channel, row: Element<'a, Message>) -> Element<'a, Message> {
         let row: Element<'a, Message> = if s.can(perms::MANAGE_CHANNELS) {
-            press_sensor(row, ch(ChannelsMsg::Press(DragItem::Channel(c.id)))).into()
+            press_sensor(row, ch(ChannelsMsg::Press(DragItem::Channel(c.id))), ch(ChannelsMsg::DragRelease)).into()
         } else {
             row
         };

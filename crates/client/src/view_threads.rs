@@ -6,6 +6,7 @@ use iced::widget::{Id, button, column, container, row, scrollable, space, text, 
 use iced::{Alignment, Border, Element, Length, Padding};
 
 use crate::app::{App, Message, Session};
+use crate::app_expressions::plain_emoji;
 use crate::app_threads::{THREAD_COMPOSER_ID, THREAD_MESSAGES_ID, ThreadList, ThreadMsg};
 use crate::icons;
 use crate::style::{self, bold, card, label, semibold};
@@ -34,19 +35,22 @@ impl App {
             icons::icon(&icons::THREAD, fs * 1.05, t.accent.0),
             text(replies(count)).size(fs * 0.85).font(semibold()).color(t.accent.0),
             text("·").size(fs * 0.85).color(t.muted.0),
-            text(crate::view::truncate(&summary.name, 40)).size(fs * 0.85).color(t.header.0),
+            text(crate::view::truncate(&plain_emoji(&summary.name), 40))
+                .size(fs * 0.85)
+                .color(t.header.0)
+                .wrapping(iced::widget::text::Wrapping::None),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
         let when = if archived {
             "Archived".to_string()
         } else if activity > 0 {
-            crate::view::long_time(activity)
+            crate::view::long_time(activity).trim_start_matches("Today at ").to_string()
         } else {
             String::new()
         };
         if !when.is_empty() {
-            line = line.push(text(when).size(fs * 0.75).color(t.muted.0));
+            line = line.push(text(when).size(fs * 0.75).color(t.muted.0).wrapping(iced::widget::text::Wrapping::None));
         }
         let (floating, hover, edge) = (t.floating.0, style::darken(t.floating.0, 0.12), t.hover.0);
         let open = s.open_thread == Some(summary.id);
@@ -100,7 +104,7 @@ impl App {
             .align_y(Alignment::Center)
             .into(),
             None => column![
-                text(thread.name.clone()).size(fs * 0.95).font(bold()).color(t.header.0),
+                text(plain_emoji(&thread.name)).size(fs * 0.95).font(bold()).color(t.header.0),
                 text(format!("Thread in #{parent}")).size(fs * 0.75).color(t.muted.0),
             ]
             .spacing(1)
@@ -143,7 +147,7 @@ impl App {
                     container(icons::icon(&icons::THREAD, 28.0, t.accent.0))
                         .center(52)
                         .style(card(with_alpha(t.accent.0, 0.16), 16.0)),
-                    text(thread.name.clone()).size(fs * 1.3).font(bold()).color(t.header.0),
+                    text(plain_emoji(&thread.name)).size(fs * 1.3).font(bold()).color(t.header.0),
                     text(format!("Started by {who}")).size(fs * 0.85).color(t.muted.0),
                 ]
                 .spacing(6);
@@ -208,13 +212,16 @@ impl App {
         let (floating, edge, radius) = (t.floating.0, with_alpha(t.header.0, 0.07), t.radius);
         bottom = bottom.push(
             container(
-                text_input(&format!("Message {}", crate::view::truncate(&thread.name, 30)), &self.thread_ui.draft)
-                    .id(Id::new(THREAD_COMPOSER_ID))
-                    .on_input(|v| th(ThreadMsg::Draft(v)))
-                    .on_submit(th(ThreadMsg::Send))
-                    .padding(12)
-                    .size(fs)
-                    .style(style::pill_input(t, floating)),
+                text_input(
+                    &format!("Message {}", crate::view::truncate(&plain_emoji(&thread.name), 30)),
+                    &self.thread_ui.draft,
+                )
+                .id(Id::new(THREAD_COMPOSER_ID))
+                .on_input(|v| th(ThreadMsg::Draft(v)))
+                .on_submit(th(ThreadMsg::Send))
+                .padding(12)
+                .size(fs)
+                .style(style::pill_input(t, floating)),
             )
             .style(move |_| container::Style {
                 border: Border { radius: (radius * 2.6).clamp(10.0, 24.0).into(), width: 1.0, color: edge },
@@ -291,7 +298,7 @@ impl App {
                 let who = s.users.get(&x.owner_id).map(User::name).unwrap_or("someone");
                 let when = if x.last_activity > 0 { crate::view::long_time(x.last_activity) } else { String::new() };
                 let body = column![
-                    text(x.name.clone()).size(fs * 0.95).font(semibold()).color(t.header.0),
+                    text(plain_emoji(&x.name)).size(fs * 0.95).font(semibold()).color(t.header.0),
                     text(format!("{} · started by {who} · {when}", replies(x.message_count)))
                         .size(fs * 0.75)
                         .color(t.muted.0),

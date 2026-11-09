@@ -542,6 +542,8 @@ pub struct LoginForm {
     pub register: bool,
     pub error: Option<String>,
     pub busy: bool,
+    /// Filled in from an invite link (0.7).
+    pub from_invite: bool,
 }
 
 #[derive(Default)]
@@ -1280,7 +1282,8 @@ impl App {
         self.identity_changed = None;
         let generation = self.generation;
         let pin = self.settings.known_servers.get(&net::server_key(&self.settings.server)).cloned();
-        let stream = net::connect(self.settings.server.clone(), pin, self.voice_sink.clone());
+        let address = crate::features::with_protocol(&self.settings.server);
+        let stream = net::connect(address, pin, self.voice_sink.clone());
         Task::run(stream, move |event| Message::Net(generation, event))
     }
 
@@ -1376,6 +1379,7 @@ impl App {
             Message::LoginInvite(s) => self.login.invite = s,
             Message::ToggleRegister => {
                 self.login.register = !self.login.register;
+                self.login.from_invite = false;
                 self.login.error = None;
             }
             Message::SubmitLogin => {
@@ -1623,6 +1627,9 @@ impl App {
                     self.mic_test = None;
                 }
                 self.settings_tab = Some(tab);
+                if tab == SettingsTab::Emoji {
+                    return self.request_expressions();
+                }
                 if tab == SettingsTab::Appearance && self.installed_fonts.is_empty() {
                     return Task::perform(crate::fonts::installed(), Message::InstalledFonts);
                 }

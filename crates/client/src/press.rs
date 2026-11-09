@@ -1,5 +1,6 @@
-//! A wrapper that notices the left mouse button going down on its content without taking
-//! the click away from it, so a channel row stays a normal button and can also be dragged.
+//! A wrapper that notices the left mouse button going down on its content (and coming up
+//! again) without taking the click away from it, so a channel row stays a normal button and
+//! can also be dragged.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
@@ -8,18 +9,25 @@ use iced::advanced::widget::{self, Tree, Widget};
 use iced::advanced::{Clipboard, Shell};
 use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
-/// `content`, publishing `on_press` when the left button goes down over it.
+/// `content`, publishing `on_press` when the left button goes down over it, and
+/// `on_release` when it comes up again (anywhere: a quick click can end before an app-wide
+/// listener for it is set up).
 pub fn press_sensor<'a, Message: Clone + 'a>(
     content: impl Into<Element<'a, Message>>,
     on_press: Message,
+    on_release: Message,
 ) -> PressSensor<'a, Message> {
-    PressSensor { content: content.into(), on_press }
+    PressSensor { content: content.into(), on_press, on_release }
 }
 
 pub struct PressSensor<'a, Message> {
     content: Element<'a, Message>,
     on_press: Message,
+    on_release: Message,
 }
+
+#[derive(Default)]
+struct Pressed(bool);
 
 impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for PressSensor<'a, Message> {
     fn children(&self) -> Vec<Tree> {
@@ -28,6 +36,14 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for PressSensor<'
 
     fn diff(&self, tree: &mut Tree) {
         tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn state(&self) -> widget::tree::State {
+        widget::tree::State::new(Pressed::default())
+    }
+
+    fn tag(&self) -> widget::tree::Tag {
+        widget::tree::Tag::of::<Pressed>()
     }
 
     fn size(&self) -> Size<Length> {
@@ -54,11 +70,19 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for PressSensor<'
         viewport: &Rectangle,
     ) {
         // Seen before the content, which may capture the press (a button does).
-        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
-            && cursor.is_over(layout.bounds())
-            && !shell.is_event_captured()
-        {
-            shell.publish(self.on_press.clone());
+        let pressed = tree.state.downcast_mut::<Pressed>();
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if cursor.is_over(layout.bounds()) && !shell.is_event_captured() =>
+            {
+                pressed.0 = true;
+                shell.publish(self.on_press.clone());
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if pressed.0 => {
+                pressed.0 = false;
+                shell.publish(self.on_release.clone());
+            }
+            _ => {}
         }
         self.content.as_widget_mut().update(
             &mut tree.children[0],

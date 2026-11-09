@@ -138,6 +138,21 @@ fn expand_plain(text: &str, custom: &[CustomEmoji]) -> String {
     out
 }
 
+/// Text with server emoji codes written as `:name:`, for places that show plain text.
+pub fn plain_emoji(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for r in find_custom_emoji(text) {
+        out.push_str(&text[last..r.range.start]);
+        out.push(':');
+        out.push_str(r.name);
+        out.push(':');
+        last = r.range.end;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
 /// Server emoji whose names match a half-typed `:code`, best matches first.
 pub fn custom_suggestions<'a>(custom: &'a [CustomEmoji], code: &str, limit: usize) -> Vec<&'a CustomEmoji> {
     let code = code.to_lowercase();
@@ -437,6 +452,7 @@ mod tests {
         assert_eq!(expand_emoji("<:wave:6> and <a:party:5>", &custom), "<:wave:6> and <a:party:5>");
         assert_eq!(expand_emoji("time 10:30:45 :nope:", &custom), "time 10:30:45 :nope:");
         assert_eq!(expand_emoji(":PARTY::party:", &custom), "<a:party:5><a:party:5>");
+        assert_eq!(plain_emoji("hi <a:party:5> there"), "hi :party: there");
     }
 
     #[test]
@@ -446,6 +462,74 @@ mod tests {
         assert_eq!(names, ["party"]);
         let names: Vec<&str> = custom_suggestions(&custom, "a", 5).iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["party", "wave"]);
+    }
+
+    /// Uploading through a real server: pictures and sounds go up, mistakes come back explained.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn uploads_to_a_server() {
+        use celerity_proto::ClientMsg;
+        use celerity_server::{AppState, Config, db::Db, router};
+        use futures::StreamExt;
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = std::env::temp_dir().join(format!("celerity-expr-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config { invite_code: "x".into(), uploads: dir.join("uploads"), ..Config::default() };
+        let state = AppState::new(config, Db::open_in_memory().unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+        let mut events = Box::pin(crate::net::connect(format!("ws://{addr}/ws?protocol=7"), None, Default::default()));
+        let Some(crate::net::Event::Connected { conn, .. }) = events.next().await else { panic!("connect failed") };
+        conn.send(ClientMsg::Register { username: "sam".into(), password: "password123".into(), invite: "x".into() });
+        let token = loop {
+            if let Some(crate::net::Event::Received(msg)) = events.next().await
+                && let ServerMsg::Ready(r) = *msg
+            {
+                break r.token;
+            }
+        };
+        let base = format!("http://{addr}");
+        let http = media::client();
+
+        let picture = dir.join("party parrot.png");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(40, 40, image::Rgba([200, 30, 30, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&picture, png.into_inner()).unwrap();
+        let name = name_from_file("party parrot");
+        let up = |kind, path: &PathBuf, name: &str| {
+            upload(http.clone(), base.clone(), token.clone(), kind, path.clone(), vec![("name", name.to_string())])
+        };
+        up(ExprKind::Emoji, &picture, &name).await.unwrap();
+        let err = up(ExprKind::Emoji, &picture, &name).await.unwrap_err();
+        assert!(err.starts_with(char::is_uppercase) && err.ends_with('.'), "explained: {err}");
+        let pic =
+            load_picture(http.clone(), format!("{base}{EMOJI_PATH}/1"), token.clone(), EMOJI_DECODE).await.unwrap();
+        assert_eq!(pic.size(), (40, 40));
+
+        // A sound comes back as it was sent, and plays.
+        let rate = 8000u32;
+        let data: Vec<u8> = (0..rate / 2).flat_map(|i| (((i % 40) as i16 - 20) * 800).to_le_bytes()).collect();
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[1, 0, 1, 0]);
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * 2).to_le_bytes());
+        wav.extend_from_slice(&[2, 0, 16, 0]);
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
+        let sound = dir.join("ding.wav");
+        std::fs::write(&sound, &wav).unwrap();
+        up(ExprKind::Sound, &sound, "Ding").await.unwrap();
+        let back = http.get(format!("{base}{SOUNDS_PATH}/1")).bearer_auth(&token).send().await.unwrap();
+        let samples = crate::soundboard::decode(&back.bytes().await.unwrap()).unwrap();
+        assert!((samples.len() as i64 - 24_000).abs() < 10, "half a second at 48 kHz: {}", samples.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

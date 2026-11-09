@@ -131,7 +131,15 @@ impl App {
             .spacing(6)
         };
 
-        let (title, subtitle, action, switch) = if f.register {
+        let (title, subtitle, action, switch) = if f.register && f.from_invite {
+            // Opened from an invite link.
+            (
+                "You're invited!",
+                "Your invite is filled in: pick a username and password.",
+                "Continue",
+                "Already have an account? Log in",
+            )
+        } else if f.register {
             (
                 "Create an account",
                 "Ask whoever runs the server for the invite code.",
@@ -665,33 +673,24 @@ impl App {
             );
         }
 
-        let mut content = row![info].spacing(6).align_y(Alignment::Center);
-        let soundboard = connected && elsewhere.is_none() && self.soundboard_available(s);
-        if soundboard {
-            let color = if self.soundboard.open { t.header.0 } else { t.muted.0 };
-            content = content.push(iced::widget::tooltip(
-                button(icons::icon(&icons::SOUNDBOARD, fs * 1.2, color))
-                    .padding(6)
-                    .on_press(Message::Soundboard(crate::soundboard::SoundMsg::Toggle))
-                    .style(style::icon_button(t)),
-                container(text("Soundboard").size(fs * 0.8).color(t.header.0))
-                    .padding([5, 9])
-                    .style(card(t.floating.0, 6.0)),
-                iced::widget::tooltip::Position::Top,
-            ));
-        }
-        content = content.push(
+        let content = row![
+            info,
             button(icons::icon(&icons::HANG_UP, fs * 1.3, t.header.0))
                 .padding(6)
                 .on_press(Message::LeaveVoice)
                 .style(style::icon_button(t)),
-        );
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
         let mut body = column![content].spacing(8);
-        if soundboard && self.soundboard.open {
-            body = body.push(self.soundboard_grid(s));
-        }
         if connected && elsewhere.is_none() {
             body = body.push(self.live_buttons());
+            if self.soundboard_available(s) {
+                body = body.push(self.soundboard_button());
+                if self.soundboard.open {
+                    body = body.push(self.soundboard_grid(s));
+                }
+            }
         }
         // An inset card with a faint green glow while connected.
         let fill = if connected { style::mix(t.user_panel.0, t.online.0, 0.1) } else { t.user_panel.0 };

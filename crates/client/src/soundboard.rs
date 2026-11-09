@@ -15,6 +15,7 @@ use iced::widget::{button, column, container, row, text, tooltip};
 use iced::{Alignment, Element, Length, Task};
 
 use crate::app::{App, Message, Session};
+use crate::icons;
 use crate::style::{self, card};
 
 /// Decoded sounds kept per server (`<server>/<id>`); a server has at most 100 short ones.
@@ -112,6 +113,29 @@ impl App {
         });
     }
 
+    /// Under Camera and Screen: shows or hides the grid of sounds.
+    pub(crate) fn soundboard_button(&self) -> Element<'_, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let open = self.soundboard.open;
+        let (fg, fill) =
+            if open { (iced::Color::WHITE, t.accent.0) } else { (t.header.0, style::darken(t.user_panel.0, -0.08)) };
+        button(
+            row![
+                icons::icon(&icons::SOUNDBOARD, fs * 1.05, fg),
+                text("Soundboard").size(fs * 0.8).color(fg).width(Length::Fill),
+                icons::icon(if open { &icons::CHEVRON_DOWN } else { &icons::CHEVRON_RIGHT }, fs * 0.8, fg),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([6, 8])
+        .on_press(Message::Soundboard(SoundMsg::Toggle))
+        .style(style::solid_button(fill, 6.0))
+        .into()
+    }
+
     /// The grid of sounds under the call panel's buttons.
     pub(crate) fn soundboard_grid<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
@@ -125,6 +149,7 @@ impl App {
                     text(crate::view::truncate(&x.name, 9)).size(fs * 0.7).color(t.text.0),
                 ]
                 .spacing(2)
+                .width(Length::Fill)
                 .align_x(Alignment::Center),
             )
             .width(66)
@@ -137,11 +162,10 @@ impl App {
                 tooltip::Position::Top,
             ));
         }
-        column![
-            text("Soundboard").size(fs * 0.75).font(style::bold()).color(t.muted.0),
+        container(
             iced::widget::scrollable(grid.wrap().vertical_spacing(4)).height(Length::Shrink).style(style::scroll(t)),
-        ]
-        .spacing(6)
+        )
+        .max_height(200)
         .into()
     }
 }

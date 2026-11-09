@@ -105,6 +105,7 @@ pub fn describe(invite: &Invite, now: i64) -> String {
     };
     match invite.max_uses {
         Some(max) => format!("{expiry} · {} of {max} uses", invite.uses),
+        None if invite.uses == 0 => format!("{expiry} · not used yet"),
         None if invite.uses == 1 => format!("{expiry} · used once"),
         None => format!("{expiry} · used {} times", invite.uses),
     }
@@ -229,6 +230,7 @@ impl App {
         self.login.server = address;
         self.login.invite = token;
         self.login.register = true;
+        self.login.from_invite = true;
         self.login.error = None;
         Task::none()
     }

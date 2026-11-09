@@ -169,7 +169,7 @@ impl App {
             None => author,
         };
         // Mentions read as names, not ids.
-        let mut content = m.content.clone();
+        let mut content = crate::app_expressions::plain_emoji(&m.content);
         for id in &m.mentions {
             if let Some(u) = s.users.get(id) {
                 content = content.replace(&format!("<@{id}>"), &format!("@{}", u.name()));

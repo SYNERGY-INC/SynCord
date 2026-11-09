@@ -3,7 +3,7 @@
 
 use celerity_proto::social::{MAX_POLL_OPTION, MAX_POLL_OPTIONS, MAX_POLL_QUESTION, MIN_POLL_OPTIONS};
 use celerity_proto::{ClientMsg, Message as ChatMessage, MessageId, Poll, ServerMsg, User, perms};
-use iced::widget::{Id, button, checkbox, column, container, pick_list, row, space, stack, text, text_input, tooltip};
+use iced::widget::{Id, button, checkbox, column, container, pick_list, row, space, text, text_input, tooltip};
 use iced::{Alignment, Border, Element, Length, Task};
 
 use crate::app::{App, Message, Overlay, Session};
@@ -90,6 +90,8 @@ pub enum PollMsg {
     Question(String),
     Answer(usize, String),
     AddAnswer,
+    /// Enter in a box: on to answer `n` (a new one after a filled last answer; posting after an empty one).
+    Next(usize),
     RemoveAnswer(usize),
     Multiple(bool),
     Length(PollLength),
@@ -168,6 +170,16 @@ impl App {
                     _ => 0,
                 };
                 return iced::widget::operation::focus(Id::from(format!("poll-answer-{last}")));
+            }
+            PollMsg::Next(n) => {
+                let Some(Overlay::Dialog(Dialog::Poll(p))) = &self.overlay else { return Task::none() };
+                if n < p.answers.len() {
+                    return iced::widget::operation::focus(Id::from(format!("poll-answer-{n}")));
+                }
+                let last_filled = p.answers.last().is_some_and(|a| !a.trim().is_empty());
+                let next =
+                    if last_filled && p.answers.len() < MAX_POLL_OPTIONS { PollMsg::AddAnswer } else { PollMsg::Send };
+                return self.update_polls(next);
             }
             PollMsg::RemoveAnswer(i) => self.edit_poll(|p| {
                 if p.answers.len() > MIN_POLL_OPTIONS && i < p.answers.len() {
@@ -252,13 +264,6 @@ impl App {
             } else {
                 t.hover.0
             };
-            let bar = container(space()).width((WIDTH - 2.0) * fraction).height(Length::Fill).style(move |_| {
-                container::Style {
-                    background: Some(fill_color.into()),
-                    border: Border { radius: 7.0.into(), ..Default::default() },
-                    ..Default::default()
-                }
-            });
             let mark = if mine { "✓ " } else { "" };
             let line = row![
                 text(format!("{mark}{}", o.text))
@@ -270,7 +275,28 @@ impl App {
             ]
             .spacing(8)
             .align_y(Alignment::Center);
-            let content = stack![bar, container(line).padding([8, 12]).width(Length::Fill)];
+            // The bar is the answer's background, filled as far as its share of the votes.
+            let filled = iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2))
+                    .add_stop(0.0, fill_color)
+                    .add_stop(fraction, fill_color)
+                    .add_stop((fraction + 0.002).min(1.0), iced::Color::TRANSPARENT)
+                    .add_stop(1.0, iced::Color::TRANSPARENT),
+            ));
+            let content = container(line)
+                .padding([0, 12])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_y(Alignment::Center)
+                .style(move |_| container::Style {
+                    background: match fraction {
+                        f if f <= 0.0 => None,
+                        f if f >= 0.999 => Some(fill_color.into()),
+                        _ => Some(filled),
+                    },
+                    border: Border { radius: 7.0.into(), ..Default::default() },
+                    ..Default::default()
+                });
             let edge = if mine {
                 accent
             } else if won {
@@ -356,7 +382,16 @@ impl App {
         if s.v07 && ch.direct_with.is_none() {
             col = col.push(item(&icons::POLL, "Create Poll", Message::Polls(PollMsg::Open)));
         }
-        container(col).padding(6).width(220).style(card(style::darken(t.floating.0, 0.12), t.radius)).into()
+        let (fill, edge, radius) = (t.floating.0, t.hover.0, t.radius);
+        container(col)
+            .padding(6)
+            .width(220)
+            .style(move |_| container::Style {
+                background: Some(fill.into()),
+                border: Border { radius: radius.into(), width: 1.0, color: edge },
+                ..Default::default()
+            })
+            .into()
     }
 
     pub(crate) fn poll_dialog<'a>(&'a self, p: &'a PollDraft) -> Element<'a, Message> {
@@ -369,11 +404,7 @@ impl App {
                 text_input(&format!("Answer {}", i + 1), a)
                     .id(Id::from(format!("poll-answer-{i}")))
                     .on_input(move |v| pm(PollMsg::Answer(i, v)))
-                    .on_submit(if i + 1 == p.answers.len() && p.answers.len() < MAX_POLL_OPTIONS {
-                        pm(PollMsg::AddAnswer)
-                    } else {
-                        pm(PollMsg::Send)
-                    })
+                    .on_submit(pm(PollMsg::Next(i + 1)))
                     .padding(9)
                     .size(fs)
                     .style(style::input(t, t.rail.0))
@@ -409,7 +440,7 @@ impl App {
             text_input("What do you want to ask?", &p.question)
                 .id(Id::new("poll-question"))
                 .on_input(move |v| pm(PollMsg::Question(v)))
-                .on_submit(pm(PollMsg::Send))
+                .on_submit(pm(PollMsg::Next(0)))
                 .padding(10)
                 .size(fs)
                 .style(style::input(t, t.rail.0)),

@@ -40,6 +40,21 @@ pub enum ConfirmAction {
     DeleteSound(SoundId),
 }
 
+/// The address to connect to, saying which protocol this app speaks (`/ws?protocol=7`):
+/// without it the server takes us for an app older than 0.7 and leaves out thread and
+/// group messages.
+pub fn with_protocol(input: &str) -> String {
+    let input = input.trim().trim_end_matches('/');
+    let rest = input.split_once("://").map_or(input, |(_, r)| r);
+    let q = format!("protocol={}", celerity_proto::PROTOCOL_VERSION);
+    match rest.find('/') {
+        _ if rest.contains("protocol=") => input.to_string(),
+        None => format!("{input}/ws?{q}"),
+        Some(_) if rest.contains('?') => format!("{input}&{q}"),
+        Some(_) => format!("{input}?{q}"),
+    }
+}
+
 /// Server events added in 0.7 that one of the feature modules handles.
 pub fn is_feature_event(msg: &ServerMsg) -> bool {
     use ServerMsg::*;
@@ -160,5 +175,23 @@ impl App {
         self.composer_plus = false;
         self.soundboard.open = false;
         open
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_protocol;
+
+    #[test]
+    fn says_which_protocol_it_speaks() {
+        assert_eq!(with_protocol("10.0.0.2"), "10.0.0.2/ws?protocol=7");
+        assert_eq!(with_protocol("chat.example.com:7878/"), "chat.example.com:7878/ws?protocol=7");
+        assert_eq!(with_protocol("wss://chat.example.com"), "wss://chat.example.com/ws?protocol=7");
+        assert_eq!(with_protocol("https://example.com/celerity/ws"), "https://example.com/celerity/ws?protocol=7");
+        assert_eq!(with_protocol("ws://h/ws?x=1"), "ws://h/ws?x=1&protocol=7");
+        assert_eq!(with_protocol("[::1]:7878"), "[::1]:7878/ws?protocol=7");
+        // The address the app connects to is the same as without it.
+        assert_eq!(crate::net::server_url(&with_protocol("10.0.0.2")), "ws://10.0.0.2:7878/ws?protocol=7");
+        assert_eq!(crate::net::server_key(&with_protocol("10.0.0.2")), crate::net::server_key("10.0.0.2"));
     }
 }
