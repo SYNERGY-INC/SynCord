@@ -2,6 +2,75 @@
 
 Celerity was called SynCord before 0.7.0.
 
+## v0.7.0
+
+**SynCord is now Celerity.** Your settings, servers, messages and invite codes come along: the app
+and server update to Celerity by themselves.
+
+**Streaming at the highest quality, with sound**
+
+- **Share a single window** instead of your whole screen (the picker lists Screens and Windows).
+- **Share your screen's sound**, in stereo at music quality: on Windows and Mac just the shared
+  window's app, or everything your computer plays except the call. Only people watching hear it,
+  each with their own volume slider on the video.
+- **Quality up to 1440p at 60 fps, or your screen's own resolution (up to 4K)**. 1440p60 is the
+  default. Cameras open at 1080p (Settings > Voice & Video > Camera quality).
+- **Graphics-card encoding** (NVIDIA, AMD and Intel on Windows; Apple's encoder on Mac), checked
+  before use and falling back to the built-in encoder, so your CPU stays free for the game.
+- **No more flickering** while watching a stream, and what you watch is drawn by your graphics card
+  at full resolution.
+
+**Voice**
+
+- **Push to talk** with any key or mouse side button, which works while a game is in front.
+- **Echo cancellation**: people no longer hear themselves through your speakers.
+- **Soundboard**: play short sounds into the call (servers add them in Server Settings).
+- **Connection meter**: the bars show your ping and how much audio is getting lost.
+- **"You're muted"** when you talk while muted; click to unmute.
+- Per-person volume goes up to 200%, and muting, deafening and going live make a sound.
+
+**Talk more ways**
+
+- **Be signed in to several servers at once**: each has its own icon in the left rail, with unread
+  dots and pings; the + adds one. A call keeps going while you look at another server.
+- **Threads**: start one from any message; it opens beside the channel.
+- **Group messages** with 3 to 10 people, with group calls.
+- **Custom emoji and stickers** for your server, in the picker and `:name:` autocomplete.
+- **Polls**: the + next to the message box > Create Poll.
+- **Categories**: collapse them, drag channels and categories to reorder, and make channels private
+  to some roles (with a lock).
+- **End-to-end encrypted direct messages and calls**: only the people in the conversation can read
+  or hear them, not even the server (a lock in the header shows it). Files aren't covered yet.
+
+**Feels instant**
+
+- Messages appear the moment you press Enter. If one can't be sent, you can retry or delete it.
+- Channels you're likely to open next are loaded in the background.
+- Short connection drops are invisible: the screen stays as it was and quietly catches up.
+
+**Notifications**
+
+- **Desktop notifications** for direct messages and @mentions (or every message) while Celerity
+  isn't in front, from all your servers. Click one to open the conversation.
+- **Mute** a channel, conversation or server from its right-click menu.
+- Opening a busy channel tells you how many new messages there are, with a jump to the first one.
+
+**For server owners**
+
+- **Invite links**: Invite People makes a link that expires when you want, for a set number of
+  uses. Opening it in Celerity fills in the address and code; the web link has a download button.
+- **Kick and ban** from a member's right-click menu.
+- **An admin page** in the browser (`http://your-server:7878/admin`) with who's online, storage,
+  invites, members and backups.
+- **Daily backups** of the database (the last 7 are kept).
+- **Docker auto-update** (optional): see the README.
+
+**Polish**
+
+- A new logo, new sounds, and a short welcome the first time you sign in (theme, picture, mic check).
+- Rich previews for YouTube (with a play button), X/Twitter posts and Spotify.
+- The emoji you use most are one click away when you hover a message; *Copy Message Link* in its menu.
+
 ## v0.6.0
 
 **New: a fresh look, cameras and screen sharing, statuses, search, pinned messages, replies and markdown.**

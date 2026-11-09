@@ -58,8 +58,17 @@ off in **Settings → Appearance** for GPU rendering.
   Ctrl+/ lists them
 - **Encrypted connections**, including voice: the app remembers each server's identity the first
   time it connects and refuses an impostor after that
-- Auto-reconnect if the connection drops (and rejoins your voice call); stays logged in between launches
-- Unread markers that are remembered between launches
+- **Several servers at once**: each has an icon in the left rail with its unread dot and pings;
+  **+** signs in to another. A call keeps going while you look at another server
+- **Threads**, **polls**, **custom emoji and stickers**, and **categories** you can collapse and
+  drag to reorder, with **private channels** for chosen roles
+- **Desktop notifications** for DMs and @mentions (or everything), and **mute** for any channel,
+  conversation or server (right-click it)
+- Messages appear the moment you send them; channels load in the background; short connection
+  drops are invisible (and it rejoins your voice call); stays logged in between launches
+- Unread markers that are remembered between launches, and a "new messages" bar with a jump to
+  the first one
+- **Invite links** (`celerity://join/...`), **kick and ban**, and an **admin page** for owners
 
 ### Pictures, GIFs and files
 
@@ -92,8 +101,10 @@ off in **Settings → Appearance** for GPU rendering.
 - Start one with **Message** on anyone's profile card, or the **+** next to *Conversations*
 - **Calls**: the phone button in a conversation (or right-click → Start a Call) rings the other
   person, and leaves a note in the chat (how long it lasted, or that it was missed)
-- Only the two people in a conversation can see it or its files. (Connections are encrypted,
-  but messages aren't end-to-end encrypted: whoever hosts the server could read the database file.)
+- **Group messages** with 3 to 10 people (the **+** next to *Conversations*), with group calls
+- **End-to-end encrypted**: when everyone has Celerity 0.7 or newer, messages and calls in DMs and
+  groups can only be read or heard by the people in them; not even whoever runs the server can (a
+  lock in the header shows it). Files aren't end-to-end encrypted yet
 
 ### Voice chat
 
@@ -102,9 +113,14 @@ off in **Settings → Appearance** for GPU rendering.
 - **Noise suppression** (an RNNoise port) that removes fans, keyboard clatter and hum
 - **Voice activity detection** with an adjustable sensitivity and a live level meter, so you
   only send audio while you're talking
+- **Push to talk** with any key or mouse side button, working while a game is in front (on macOS
+  this needs Input Monitoring; on Wayland it works while Celerity is in front)
+- **Echo cancellation** (WebRTC's AEC3), so others don't hear themselves through your speakers
+- **Soundboard**: short sounds the server adds, played into the call
+- A **connection meter** (ping and audio lost) and a "You're muted" reminder when you talk muted
 - **Mute and deafen** buttons, shown to everyone in the channel; call timers
 - Moderators can **move people** between voice channels (drag them) and **server-mute** them
-- **Per-person volume**: click someone in your call to turn them up or down
+- **Per-person volume** up to 200%: click someone in your call to turn them up or down
 - Pick your microphone and speakers, input and output volume, and a **mic test** that plays you back
 - Uses **UDP** for the lowest delay and switches automatically to the normal connection if UDP is
   blocked, so voice still works through strict networks and HTTPS proxies
@@ -113,14 +129,18 @@ off in **Settings → Appearance** for GPU rendering.
 ### Video and screen sharing
 
 - **Camera** and **Screen** buttons in every call (voice channels and DM calls)
-- Share a whole screen (or a window, on a Mac) as **sharp text** (1080p, 15 fps) or **smooth
-  motion** (720p, 30 fps); the server only sends it to people who click **Watch Stream**
-- Cameras show for everyone in the call; click a video to make it big
-- H.264 (OpenH264) with the operating system's own camera and screen capture, no extra installs.
-  Encrypted like voice, over UDP with the same fallback
-- Lightweight: a 640×360 camera is about 700 kbit/s; a screen share 1–2.5 Mbit/s while it changes
-  and very little while it doesn't
-- Linux: screen sharing needs an X11 session (Wayland isn't supported yet); cameras work anywhere
+- Share a **whole screen or a single window**, at up to **1440p 60 fps** (the default) or your
+  screen's own resolution up to 4K; the server only sends it to people who click **Watch Stream**
+- **With sound**, in stereo at music quality: the shared window's app on Windows and Mac, or
+  everything your computer plays except the call. Each watcher has their own volume slider
+- Cameras at up to **1080p**, shown for everyone in the call; click a video to make it big
+- H.264, encoded by your **graphics card** when it can (NVIDIA, AMD, Intel, Apple), otherwise by
+  OpenH264, with the operating system's own capture: no extra installs. Watched video is decoded
+  to YUV and turned into colour on the graphics card. Encrypted like voice (end to end in DMs)
+- About 12 Mbit/s for 1440p60 and 3.5 Mbit/s for a 1080p camera, and very little while a screen
+  doesn't change
+- Linux: screen sharing needs an X11 session (Wayland isn't supported yet); the computer's sound
+  includes the call there, so it's off by default; cameras work anywhere
 
 | Profile settings | Themes | Voice settings |
 |---|---|---|
@@ -488,11 +508,9 @@ Themes are plain files, so you can send them to friends.
 
 ## Roadmap
 
-1. Echo cancellation and push-to-talk (needs a global hotkey that works while the app is in
-   the background)
-2. Markdown formatting, replies and desktop notifications
-3. Custom server emoji and group DMs
-4. Screen sharing on Wayland, and sharing your computer's sound with a stream
+1. A phone app (Android first)
+2. Screen sharing on Wayland
+3. End-to-end encrypted files
 
 ## Credits
 
