@@ -156,12 +156,20 @@ pub fn channels_for(conn: &Connection, user: UserId) -> DbResult<Vec<Channel>> {
 
 /// Which text and voice channels each member can see, to tell people about channels
 /// they gained or lost sight of after a change.
-pub fn visibility_map(conn: &Connection) -> DbResult<HashMap<UserId, HashSet<ChannelId>>> {
-    let mut out = HashMap::new();
+pub fn visibility_map(conn: &Connection) -> DbResult<Visibility> {
+    let mut out = Visibility::default();
     for u in member_ids(conn)? {
-        out.insert(u, channels_for(conn, u)?.into_iter().map(|c| c.id).collect());
+        out.channels.insert(u, channels_for(conn, u)?.into_iter().map(|c| c.id).collect());
+        out.categories.insert(u, categories_for(conn, u)?.into_iter().map(|c| c.id).collect());
     }
     Ok(out)
+}
+
+/// What each member can see (see [`visibility_map`]).
+#[derive(Debug, Clone, Default)]
+pub struct Visibility {
+    pub channels: HashMap<UserId, HashSet<ChannelId>>,
+    pub categories: HashMap<UserId, HashSet<CategoryId>>,
 }
 
 /// Channels whose messages `user` may search: visible text channels and their threads,

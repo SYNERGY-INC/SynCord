@@ -1514,6 +1514,48 @@ mod tests {
         assert_eq!(chans[0].kind, ChannelKind::Text);
     }
 
+    #[test]
+    fn upgrades_a_0_6_database() {
+        let dir = std::env::temp_dir().join(format!("celerity-migrate-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("celerity.db");
+        // Make a database, then wind it back to how 0.6 left it.
+        {
+            let db = Db::open(&path).unwrap();
+            let c = db.lock();
+            create_user(&c, "alice", "x", true).unwrap();
+            let ch = all_channels(&c).unwrap()[0].id;
+            insert_message(&c, ch, 1, "old message", &[], None).unwrap().unwrap();
+            c.execute_batch(
+                "ALTER TABLE messages DROP COLUMN poll; ALTER TABLE messages DROP COLUMN sticker;
+                 ALTER TABLE messages DROP COLUMN encrypted; ALTER TABLE users DROP COLUMN removed;
+                 DROP INDEX channels_by_parent; DROP INDEX channels_by_parent_message;
+                 ALTER TABLE channels DROP COLUMN category_id; ALTER TABLE channels DROP COLUMN parent_message_id;
+                 ALTER TABLE channels DROP COLUMN owner_id; ALTER TABLE channels DROP COLUMN archived;
+                 PRAGMA user_version = 0;",
+            )
+            .unwrap();
+            let old = (perms::DEFAULT & !perms::USE_SOUNDBOARD) as i64;
+            c.execute("UPDATE roles SET permissions = ?1 WHERE id = ?2", params![old, EVERYONE_ROLE]).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let c = db.lock();
+        let everyone = get_role(&c, EVERYONE_ROLE).unwrap().unwrap();
+        assert!(everyone.permissions & perms::USE_SOUNDBOARD != 0, "the new everyday permission is turned on");
+        assert!(!all_users(&c).unwrap()[0].removed);
+        let ch = all_channels(&c).unwrap()[0].clone();
+        assert_eq!(ch.category_id, None);
+        assert_eq!(history(&c, ch.id, None).unwrap()[0].content, "old message");
+        // Turning it off again sticks: the upgrade only happens once.
+        c.execute("UPDATE roles SET permissions = 0 WHERE id = ?1", params![EVERYONE_ROLE]).unwrap();
+        drop(c);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(get_role(&db.lock(), EVERYONE_ROLE).unwrap().unwrap().permissions, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn att(id: &str) -> Attachment {
         Attachment {
             id: id.into(),

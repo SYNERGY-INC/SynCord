@@ -1216,14 +1216,21 @@ impl Connection {
 
 /// Channels (and categories) people gained or lost sight of since `before` was taken:
 /// tell each of them, so their channel list stays right without reconnecting.
-async fn announce_visibility(
-    state: &AppState,
-    before: HashMap<UserId, std::collections::HashSet<ChannelId>>,
-) -> Result<(), rusqlite::Error> {
-    let (after, channels) = state.db.call(|c| Ok((db::visibility_map(c)?, db::all_channels(c)?))).await?;
+async fn announce_visibility(state: &AppState, before: db::Visibility) -> Result<(), rusqlite::Error> {
+    let (after, channels, categories) =
+        state.db.call(|c| Ok((db::visibility_map(c)?, db::all_channels(c)?, db::all_categories(c)?))).await?;
     let find = |id: &ChannelId| channels.iter().find(|c| c.id == *id).cloned();
-    for (user, now) in &after {
-        let was = before.get(user);
+    // Categories first, so the channels in them have somewhere to go.
+    for (user, now) in &after.categories {
+        let was = before.categories.get(user);
+        for gained in now.iter().filter(|c| was.is_none_or(|w| !w.contains(c))) {
+            if let Some(cat) = categories.iter().find(|c| c.id == *gained) {
+                state.broadcast(&ServerMsg::CategoryUpdated(cat.clone()), Some(Arc::from([*user])));
+            }
+        }
+    }
+    for (user, now) in &after.channels {
+        let was = before.channels.get(user);
         for gained in now.iter().filter(|c| was.is_none_or(|w| !w.contains(c))) {
             if let Some(ch) = find(gained) {
                 state.broadcast(&ServerMsg::ChannelCreated(ch), Some(Arc::from([*user])));
@@ -1237,6 +1244,13 @@ async fn announce_visibility(
                     state.voice.remove_user(*user);
                     state.broadcast(&ServerMsg::VoiceStateUpdate { user_id: *user, state: None }, None);
                 }
+            }
+        }
+    }
+    for (user, now) in &after.categories {
+        if let Some(was) = before.categories.get(user) {
+            for lost in was.iter().filter(|c| !now.contains(c)) {
+                state.broadcast(&ServerMsg::CategoryDeleted { category_id: *lost }, Some(Arc::from([*user])));
             }
         }
     }
