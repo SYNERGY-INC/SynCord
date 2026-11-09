@@ -16,7 +16,7 @@
 //!
 //! Video (cameras and screen shares) is always sealed; `kind` says which of the
 //! sender's two videos a packet belongs to (see [`crate::VideoKind`]), and the
-//! rest is one `syncord-stream` datagram, which the server never looks inside.
+//! rest is one `celerity-stream` datagram, which the server never looks inside.
 //!
 //! Sealed packets are encrypted and authenticated with ChaCha20-Poly1305 using a
 //! per-session key that the server hands out over the (encrypted) WebSocket.

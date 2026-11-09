@@ -255,7 +255,7 @@ fn glyph(f: &mut I420Frame, row: usize, col: usize, rng: &mut Rng) {
 }
 
 /// Text-like content (dark glyphs on white, ten new characters "typed" per frame) through both
-/// encoder modes: `cargo test --release -p syncord-stream text_quality -- --ignored --nocapture`
+/// encoder modes: `cargo test --release -p celerity-stream text_quality -- --ignored --nocapture`
 #[test]
 #[ignore]
 fn text_quality() {

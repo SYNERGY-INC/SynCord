@@ -689,7 +689,7 @@ mod tests {
     }
 }
 
-/// `cargo test --release -p syncord-stream --lib conversion_speed -- --ignored --nocapture`
+/// `cargo test --release -p celerity-stream --lib conversion_speed -- --ignored --nocapture`
 #[cfg(test)]
 mod bench {
     use super::*;

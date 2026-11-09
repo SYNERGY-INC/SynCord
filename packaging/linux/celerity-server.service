@@ -1,0 +1,20 @@
+[Unit]
+Description=Celerity chat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# systemd creates an unprivileged user and /var/lib/celerity for us.
+DynamicUser=yes
+StateDirectory=celerity
+WorkingDirectory=/var/lib/celerity
+ExecStart=/usr/bin/celerity-server /var/lib/celerity/celerity-server.toml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rand::Rng;
 use serde::Deserialize;
-use syncord_proto::{
+use celerity_proto::{
     AVATAR_SIZE, Attachment, BANNER_SIZE, ChannelId, ChannelKind, ProfileImage, ServerMsg, UserId, clean_filename,
 };
 use tracing::warn;
@@ -186,7 +186,7 @@ async fn finish_upload(
             processed.width = Some(info.width);
             processed.height = Some(info.height);
             processed.thumb = Some(thumb);
-            video = Some(syncord_proto::VideoInfo { duration_ms: info.duration_ms, has_audio: info.has_audio });
+            video = Some(celerity_proto::VideoInfo { duration_ms: info.duration_ms, has_audio: info.has_audio });
             if !processed.mime.starts_with("video/") {
                 processed.mime = "video/mp4".into();
             }
@@ -290,8 +290,8 @@ fn looks_like_video(name: &str, mime: &str) -> bool {
 }
 
 /// Size, length and a JPEG of the first frame, for videos the app can play.
-fn video_preview(path: &Path) -> Option<(syncord_video::Info, Vec<u8>)> {
-    let (info, frame) = syncord_video::poster(path, 480).ok()?;
+fn video_preview(path: &Path) -> Option<(celerity_video::Info, Vec<u8>)> {
+    let (info, frame) = celerity_video::poster(path, 480).ok()?;
     let rgb = image::DynamicImage::ImageRgba8(frame).to_rgb8();
     let mut out = std::io::Cursor::new(Vec::new());
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82).encode_image(&rgb).ok()?;
@@ -407,7 +407,7 @@ pub async fn store_embed_image(
     state: &AppState,
     author: UserId,
     channel: ChannelId,
-    message: syncord_proto::MessageId,
+    message: celerity_proto::MessageId,
     image: &crate::embeds::PreviewImage,
 ) -> Option<Attachment> {
     let id = new_id();

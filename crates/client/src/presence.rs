@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iced::Task;
-use syncord_proto::{Activity, ActivityKind, ClientMsg, Status};
+use celerity_proto::{Activity, ActivityKind, ClientMsg, Status};
 
 use crate::app::{App, Message};
 

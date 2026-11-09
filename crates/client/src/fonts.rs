@@ -1,5 +1,5 @@
 //! The UI font: Inter by default, or any font installed on the computer, or a font file
-//! the user picked. The choice is applied when SynCord starts.
+//! the user picked. The choice is applied when Celerity starts.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -12,7 +12,7 @@ use crate::style::INTER;
 /// Family name of the font chosen at startup.
 static FAMILY: OnceLock<&'static str> = OnceLock::new();
 
-/// The UI font for this run of SynCord.
+/// The UI font for this run of Celerity.
 pub fn ui() -> Font {
     FAMILY.get().map(|f| Font::with_name(f)).unwrap_or(INTER)
 }
@@ -62,10 +62,10 @@ pub async fn installed() -> Vec<String> {
 
 /// Folder where imported font files are kept.
 fn fonts_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("syncord").join("fonts"))
+    dirs::config_dir().map(|d| d.join("celerity").join("fonts"))
 }
 
-/// Copy a font file into SynCord's settings folder. Returns its family name and new path.
+/// Copy a font file into Celerity's settings folder. Returns its family name and new path.
 pub fn import(path: &Path) -> Result<(String, PathBuf), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read the font: {e}"))?;
     let mut db = fontdb::Database::new();
@@ -73,7 +73,7 @@ pub fn import(path: &Path) -> Result<(String, PathBuf), String> {
     let family = db
         .faces()
         .find_map(|f| f.families.first().map(|(name, _)| name.clone()))
-        .ok_or("That file isn't a font SynCord can use (try a .ttf or .otf file).")?;
+        .ok_or("That file isn't a font Celerity can use (try a .ttf or .otf file).")?;
     let dir = fonts_dir().ok_or("Custom fonts aren't supported on this system.")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let name = path.file_name().ok_or("That file has no name")?;
@@ -82,10 +82,10 @@ pub fn import(path: &Path) -> Result<(String, PathBuf), String> {
     Ok((family, dest))
 }
 
-/// Start a new copy of SynCord (the caller then closes this one).
+/// Start a new copy of Celerity (the caller then closes this one).
 pub fn relaunch() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    std::process::Command::new(exe).spawn().map(|_| ()).map_err(|e| format!("Couldn't restart SynCord: {e}"))
+    std::process::Command::new(exe).spawn().map(|_| ()).map_err(|e| format!("Couldn't restart Celerity: {e}"))
 }
 
 #[cfg(test)]
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn imports_a_font_file_and_reads_its_name() {
-        let dir = std::env::temp_dir().join(format!("syncord-font-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("celerity-font-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("Inter-Regular.otf");
         std::fs::write(&src, include_bytes!("../assets/fonts/Inter-Regular.otf")).unwrap();

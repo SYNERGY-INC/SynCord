@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use syncord_update::files;
+use celerity_update::files;
 use tracing::{info, warn};
 
 use crate::AppState;
@@ -43,30 +43,30 @@ pub fn start(state: Arc<AppState>) {
 }
 
 async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
-    let http = syncord_update::client();
-    let manifest = syncord_update::fetch_manifest(&http, &state.config.update_url).await?;
+    let http = celerity_update::client();
+    let manifest = celerity_update::fetch_manifest(&http, &state.config.update_url).await?;
     let current = env!("CARGO_PKG_VERSION");
-    if !syncord_update::is_newer(&manifest.version, current) {
+    if !celerity_update::is_newer(&manifest.version, current) {
         return Ok(());
     }
     if windows_install().is_none() {
         if std::path::Path::new("/.dockerenv").exists() {
             info!(
-                "SynCord Server {} is available (you have {current}). Pull the new image to update \
+                "Celerity Server {} is available (you have {current}). Pull the new image to update \
                  (in CasaOS: open the app's settings and update it).",
                 manifest.version
             );
         } else {
             info!(
-                "SynCord Server {} is available (you have {current}). Install it with the server package for your system: {}",
+                "Celerity Server {} is available (you have {current}). Install it with the server package for your system: {}",
                 manifest.version, manifest.page
             );
         }
         return Ok(());
     }
     let entry = manifest.files.get(files::WINDOWS_SERVER).ok_or("the release has no Windows server installer")?;
-    info!("downloading SynCord Server {}", manifest.version);
-    let bytes = syncord_update::download(&http, entry, &syncord_update::PUBLIC_KEY).await?;
+    info!("downloading Celerity Server {}", manifest.version);
+    let bytes = celerity_update::download(&http, entry, &celerity_update::PUBLIC_KEY).await?;
     let dir = state.config.database.parent().map(|p| p.join("updates")).unwrap_or_else(|| PathBuf::from("updates"));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let installer = dir.join(&entry.name);
@@ -82,7 +82,7 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
         }
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
-    info!("installing SynCord Server {}; the server will restart", manifest.version);
+    info!("installing Celerity Server {}; the server will restart", manifest.version);
     launch_installer(&installer)
 }
 
@@ -90,7 +90,7 @@ async fn check_once(state: &Arc<AppState>) -> Result<(), String> {
 /// mustn't be one of this server's child processes.
 fn launch_installer(installer: &std::path::Path) -> Result<(), String> {
     use std::process::Command;
-    let task = "SynCord Server Update";
+    let task = "Celerity Server Update";
     let command = format!("\"{}\" /S", installer.display());
     let created = Command::new("schtasks")
         .args(["/Create", "/F", "/TN", task, "/SC", "ONCE", "/ST", "00:00", "/RU", "SYSTEM", "/RL", "HIGHEST", "/TR"])

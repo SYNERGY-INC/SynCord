@@ -1,9 +1,9 @@
 [package]
-name = "syncord-video"
+name = "celerity-video"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Inline MP4/H.264 video for SynCord: probe, poster frames and a lightweight player"
+description = "Inline MP4/H.264 video for Celerity: probe, poster frames and a lightweight player"
 
 [features]
 default = []

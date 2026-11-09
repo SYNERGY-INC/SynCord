@@ -90,7 +90,7 @@ fn even(v: u32) -> u32 {
 }
 
 /// A decoded (or preview) frame as tightly packed RGBA8 (`width * height * 4` bytes, alpha 255).
-/// Same shape as `syncord_video::Frame`, so the GUI can upload both the same way.
+/// Same shape as `celerity_video::Frame`, so the GUI can upload both the same way.
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub width: u32,

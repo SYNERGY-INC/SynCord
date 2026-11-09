@@ -4,9 +4,9 @@
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use syncord_proto::voice::{Packet, token_from_hex};
-use syncord_proto::{ChannelKind, ClientMsg, Profile, ServerMsg};
-use syncord_server::{AppState, Config, db::Db, router, start_udp};
+use celerity_proto::voice::{Packet, token_from_hex};
+use celerity_proto::{ChannelKind, ClientMsg, Profile, ServerMsg};
+use celerity_server::{AppState, Config, db::Db, router, start_udp};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message as Ws};
 
@@ -18,7 +18,7 @@ async fn start_server() -> String {
 
 /// Returns the WebSocket URL and the UDP voice port.
 async fn start_server_with_udp() -> (String, u16) {
-    let uploads = std::env::temp_dir().join(format!("syncord-test-{}", rand_suffix()));
+    let uploads = std::env::temp_dir().join(format!("celerity-test-{}", rand_suffix()));
     let config =
         Config { invite_code: "letmein".into(), community_name: "Test Crew".into(), uploads, ..Config::default() };
     let state = AppState::new(config, Db::open_in_memory().unwrap());
@@ -330,13 +330,13 @@ async fn direct_messages_files_and_reactions() {
 
     // Upload rules.
     let upload = |token: &str, channel: i64, name: &str, body: Vec<u8>| {
-        http.post(format!("{base}{}?channel_id={channel}&filename={name}", syncord_proto::UPLOAD_PATH))
+        http.post(format!("{base}{}?channel_id={channel}&filename={name}", celerity_proto::UPLOAD_PATH))
             .header("Authorization", format!("Bearer {token}"))
             .body(body)
             .send()
     };
     let r = http
-        .post(format!("{base}{}?channel_id={}&filename=x.png", syncord_proto::UPLOAD_PATH, dm.id))
+        .post(format!("{base}{}?channel_id={}&filename=x.png", celerity_proto::UPLOAD_PATH, dm.id))
         .body(png_bytes(4, 4))
         .send()
         .await
@@ -347,12 +347,12 @@ async fn direct_messages_files_and_reactions() {
 
     let r = upload(&alice_token, dm.id, "../../cat.png", png_bytes(1200, 900)).await.unwrap();
     assert_eq!(r.status(), 200);
-    let att: syncord_proto::Attachment = serde_json::from_slice(&r.bytes().await.unwrap()).unwrap();
+    let att: celerity_proto::Attachment = serde_json::from_slice(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(att.filename, "cat.png");
     assert_eq!((att.width, att.height), (Some(1200), Some(900)));
 
     let download = |token: &str, id: &str, thumb: bool| {
-        http.get(format!("{base}{}/{id}{}", syncord_proto::FILES_PATH, if thumb { "?thumb=1" } else { "" }))
+        http.get(format!("{base}{}/{id}{}", celerity_proto::FILES_PATH, if thumb { "?thumb=1" } else { "" }))
             .header("Authorization", format!("Bearer {token}"))
             .send()
     };
@@ -484,7 +484,7 @@ async fn start_fake_giphy() -> String {
 #[tokio::test]
 async fn gif_search_and_sending() {
     let gif_base = start_fake_giphy().await;
-    let uploads = std::env::temp_dir().join(format!("syncord-test-{}", rand_suffix()));
+    let uploads = std::env::temp_dir().join(format!("celerity-test-{}", rand_suffix()));
     let config = Config {
         invite_code: "x".into(),
         uploads,
@@ -536,7 +536,7 @@ async fn gif_search_and_sending() {
 
 #[tokio::test]
 async fn upload_size_limit_and_streamed_download() {
-    let uploads = std::env::temp_dir().join(format!("syncord-test-{}", rand_suffix()));
+    let uploads = std::env::temp_dir().join(format!("celerity-test-{}", rand_suffix()));
     let config = Config { invite_code: "x".into(), uploads, max_upload_mb: 1, ..Config::default() };
     let state = AppState::new(config, Db::open_in_memory().unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -550,7 +550,7 @@ async fn upload_size_limit_and_streamed_download() {
     let ServerMsg::Ready(ready) = r else { panic!() };
     let general = ready.channels.iter().find(|c| c.kind == ChannelKind::Text).unwrap().id;
     let upload = |body: Vec<u8>| {
-        http.post(format!("{base}{}?channel_id={general}&filename=data.bin", syncord_proto::UPLOAD_PATH))
+        http.post(format!("{base}{}?channel_id={general}&filename=data.bin", celerity_proto::UPLOAD_PATH))
             .header("Authorization", format!("Bearer {}", ready.token))
             .body(body)
             .send()
@@ -563,11 +563,11 @@ async fn upload_size_limit_and_streamed_download() {
     let body: Vec<u8> = (0..900_000u32).map(|i| (i % 251) as u8).collect();
     let r = upload(body.clone()).await.unwrap();
     assert_eq!(r.status(), 200);
-    let att: syncord_proto::Attachment = serde_json::from_slice(&r.bytes().await.unwrap()).unwrap();
+    let att: celerity_proto::Attachment = serde_json::from_slice(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(att.size, 900_000);
     assert_eq!(att.mime, "application/octet-stream");
     let r = http
-        .get(format!("{base}{}/{}", syncord_proto::FILES_PATH, att.id))
+        .get(format!("{base}{}/{}", celerity_proto::FILES_PATH, att.id))
         .header("Authorization", format!("Bearer {}", ready.token))
         .send()
         .await
@@ -608,9 +608,9 @@ fn png(w: u32, h: u32) -> Vec<u8> {
 
 #[tokio::test]
 async fn roles_mentions_blocks_calls_previews_and_profile_pictures() {
-    use syncord_proto::{EVERYONE_ROLE, perms};
+    use celerity_proto::{EVERYONE_ROLE, perms};
     let site = start_fake_site().await;
-    let uploads = std::env::temp_dir().join(format!("syncord-test-{}", rand_suffix()));
+    let uploads = std::env::temp_dir().join(format!("celerity-test-{}", rand_suffix()));
     let config =
         Config { invite_code: "x".into(), uploads, unsafe_allow_private_link_previews: true, ..Config::default() };
     let state = AppState::new(config, Db::open_in_memory().unwrap());
@@ -663,7 +663,7 @@ async fn roles_mentions_blocks_calls_previews_and_profile_pictures() {
     else {
         unreachable!()
     };
-    send(&mut bob, ClientMsg::UpdateRole(syncord_proto::Role { name: "Bosses".into(), ..mods.clone() })).await;
+    send(&mut bob, ClientMsg::UpdateRole(celerity_proto::Role { name: "Bosses".into(), ..mods.clone() })).await;
     expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("below"))).await;
     helpers.permissions = perms::ADMINISTRATOR;
     send(&mut bob, ClientMsg::UpdateRole(helpers.clone())).await;
@@ -680,7 +680,7 @@ async fn roles_mentions_blocks_calls_previews_and_profile_pictures() {
     assert!(h.position < mods.position.max(2), "stays below Mods: {h:?}");
 
     // Taking Send messages away from everyone silences Carol.
-    send(&mut alice, ClientMsg::UpdateRole(syncord_proto::Role { permissions: 0, ..everyone.clone() })).await;
+    send(&mut alice, ClientMsg::UpdateRole(celerity_proto::Role { permissions: 0, ..everyone.clone() })).await;
     expect(&mut alice, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.id == EVERYONE_ROLE && r.permissions == 0)).await;
     let say = |text: &str| ClientMsg::SendMessage {
         channel_id: general,
@@ -774,7 +774,7 @@ async fn roles_mentions_blocks_calls_previews_and_profile_pictures() {
         .await
         .unwrap();
     assert!(up.status().is_success());
-    let image: syncord_proto::ProfileImage = up.json().await.unwrap();
+    let image: celerity_proto::ProfileImage = up.json().await.unwrap();
     expect(
         &mut carol,
         |m| matches!(m, ServerMsg::UserUpdated(u) if u.profile.avatar.as_ref().is_some_and(|a| a.id == image.id)),
@@ -808,7 +808,7 @@ async fn login(url: &str, token: &str) -> (Socket, ServerMsg) {
 /// Uploading an MP4 the app can play gives it a preview frame, its size and its length.
 #[tokio::test]
 async fn videos_get_a_preview_and_their_length() {
-    let dir = std::env::temp_dir().join(format!("syncord-video-test-{}", rand_suffix()));
+    let dir = std::env::temp_dir().join(format!("celerity-video-test-{}", rand_suffix()));
     std::fs::create_dir_all(&dir).unwrap();
     let clip = dir.join("clip.mp4");
     let made = std::process::Command::new("ffmpeg")
@@ -836,7 +836,7 @@ async fn videos_get_a_preview_and_their_length() {
         .send()
         .await
         .unwrap();
-    let a: syncord_proto::Attachment = up.json().await.unwrap();
+    let a: celerity_proto::Attachment = up.json().await.unwrap();
     let v = a.video.expect("recognised as a video");
     assert!((1900..=2100).contains(&v.duration_ms), "{v:?}");
     assert!(v.has_audio);
@@ -854,7 +854,7 @@ async fn videos_get_a_preview_and_their_length() {
         .send()
         .await
         .unwrap();
-    let f: syncord_proto::Attachment = fake.json().await.unwrap();
+    let f: celerity_proto::Attachment = fake.json().await.unwrap();
     assert!(f.video.is_none() && f.width.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -862,7 +862,7 @@ async fn videos_get_a_preview_and_their_length() {
 /// A call in a direct message leaves a note: started, who joined, and when it ended.
 #[tokio::test]
 async fn dm_calls_leave_a_note() {
-    use syncord_proto::MessageKind;
+    use celerity_proto::MessageKind;
     let url = start_server().await;
     let (mut alice, r) = register(&url, "alice", "letmein").await;
     let ServerMsg::Ready(ready) = r else { panic!() };
@@ -906,7 +906,7 @@ async fn dm_calls_leave_a_note() {
 /// Statuses and activities reach others; invisible looks offline.
 #[tokio::test]
 async fn statuses_and_activities() {
-    use syncord_proto::{Activity, ActivityKind, Status};
+    use celerity_proto::{Activity, ActivityKind, Status};
     let url = start_server().await;
     let (mut alice, r) = register(&url, "alice", "letmein").await;
     let ServerMsg::Ready(ready) = r else { panic!() };
@@ -944,7 +944,7 @@ async fn statuses_and_activities() {
 /// Search finds messages by words, author and channel, but never other people's DMs.
 #[tokio::test]
 async fn searching_messages() {
-    use syncord_proto::{SearchHas, SearchQuery};
+    use celerity_proto::{SearchHas, SearchQuery};
     let url = start_server().await;
     let (mut alice, r) = register(&url, "alice", "letmein").await;
     let ServerMsg::Ready(ready) = r else { panic!() };
@@ -1036,7 +1036,7 @@ async fn voice_moderation_is_limited() {
     let ServerMsg::Ready(ready) = r else { panic!() };
     let alice_id = ready.me;
     let voice = ready.channels.iter().find(|c| c.kind == ChannelKind::Voice).unwrap().id;
-    let everyone = ready.roles.iter().find(|r| r.id == syncord_proto::EVERYONE_ROLE).unwrap().clone();
+    let everyone = ready.roles.iter().find(|r| r.id == celerity_proto::EVERYONE_ROLE).unwrap().clone();
     let (mut bob, _) = register(&url, "bob", "letmein").await;
     let (mut carol, r) = register(&url, "carol", "letmein").await;
     let ServerMsg::Ready(ready) = r else { panic!() };
@@ -1052,8 +1052,8 @@ async fn voice_moderation_is_limited() {
     send(&mut bob, mute(carol_id)).await;
     expect(&mut bob, refused).await;
     // With the permission for everyone: not the owner, but people of the same rank.
-    let perms = everyone.permissions | syncord_proto::perms::MUTE_MEMBERS;
-    send(&mut alice, ClientMsg::UpdateRole(syncord_proto::Role { permissions: perms, ..everyone.clone() })).await;
+    let perms = everyone.permissions | celerity_proto::perms::MUTE_MEMBERS;
+    send(&mut alice, ClientMsg::UpdateRole(celerity_proto::Role { permissions: perms, ..everyone.clone() })).await;
     expect(&mut bob, |m| matches!(m, ServerMsg::RoleUpdated(r) if r.permissions == perms)).await;
     send(&mut bob, mute(alice_id)).await;
     expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("ranked above"))).await;
@@ -1082,7 +1082,7 @@ async fn voice_moderation_is_limited() {
 /// note, and only people who can see the channel can list its pins.
 #[tokio::test]
 async fn pinned_messages() {
-    use syncord_proto::MessageKind;
+    use celerity_proto::MessageKind;
     let url = start_server().await;
     let (mut alice, r) = register(&url, "alice", "letmein").await;
     let ServerMsg::Ready(ready) = r else { panic!() };

@@ -1,9 +1,9 @@
-//! SynCord server: one small binary that stores everything in a single SQLite
+//! Celerity server: one small binary that stores everything in a single SQLite
 //! file and talks to clients over a WebSocket at `/ws`.
 //!
-//! Usage: `syncord-server [path/to/syncord-server.toml]`
+//! Usage: `celerity-server [path/to/celerity-server.toml]`
 //!
-//! Everything it prints also goes to `syncord-server.log` next to the settings
+//! Everything it prints also goes to `celerity-server.log` next to the settings
 //! file, so problems can be diagnosed even when it runs in the background.
 
 use std::fs::{File, OpenOptions};
@@ -12,12 +12,31 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use syncord_server::{AppState, Config, db, router, start_cleanup, start_udp};
+use celerity_server::{AppState, Config, db, router, start_cleanup, start_udp};
 use tracing::{error, info, warn};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
-const CONFIG_FILE: &str = "syncord-server.toml";
-const LOG_FILE: &str = "syncord-server.log";
+const CONFIG_FILE: &str = "celerity-server.toml";
+const LOG_FILE: &str = "celerity-server.log";
+/// Before the rename to Celerity. A server set up back then keeps its files.
+const LEGACY_CONFIG_FILE: &str = "syncord-server.toml";
+const LEGACY_DATABASE: &str = "syncord.db";
+
+/// A `syncord-server.toml` where `celerity-server.toml` was asked for is renamed to it (or
+/// used as it is if it can't be).
+fn with_legacy_name(path: PathBuf) -> PathBuf {
+    if path.exists() || path.file_name().is_none_or(|n| n != CONFIG_FILE) {
+        return path;
+    }
+    let legacy = path.with_file_name(LEGACY_CONFIG_FILE);
+    if !legacy.exists() {
+        path
+    } else if std::fs::rename(&legacy, &path).is_ok() {
+        path
+    } else {
+        legacy
+    }
+}
 /// Start a fresh log when the old one gets bigger than this.
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
@@ -81,7 +100,7 @@ fn load_config(path: &Path) -> Config {
         Err(_) => {
             let cfg = Config::default();
             let text = format!(
-                "# SynCord server settings. Restart the server after editing.\n{}",
+                "# Celerity server settings. Restart the server after editing.\n{}",
                 toml::to_string_pretty(&cfg).unwrap()
             );
             match std::fs::write(path, text) {
@@ -99,6 +118,10 @@ fn load_config(path: &Path) -> Config {
             if p.is_relative() {
                 *p = dir.join(&*p);
             }
+        }
+        // A settings file without `database` used to mean syncord.db.
+        if !cfg.database.exists() && dir.join(LEGACY_DATABASE).exists() {
+            cfg.database = dir.join(LEGACY_DATABASE);
         }
     }
     if let Err(e) = std::fs::create_dir_all(&cfg.uploads) {
@@ -135,7 +158,7 @@ async fn main() {
     // Update downloads use HTTPS; use the same small crypto library as everything else.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let config_path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| CONFIG_FILE.into());
-    let config_path = std::path::absolute(&config_path).unwrap_or(config_path);
+    let config_path = with_legacy_name(std::path::absolute(&config_path).unwrap_or(config_path));
     let dir = config_path.parent().map(Path::to_path_buf).unwrap_or_default();
     let _ = std::fs::create_dir_all(&dir);
 
@@ -149,7 +172,7 @@ async fn main() {
         None => tracing_subscriber::fmt().with_env_filter(filter).init(),
     }
 
-    info!("SynCord Server {} starting (settings: {})", env!("CARGO_PKG_VERSION"), config_path.display());
+    info!("Celerity Server {} starting (settings: {})", env!("CARGO_PKG_VERSION"), config_path.display());
     let config = load_config(&config_path);
 
     let db = match db::Db::open(&config.database) {
@@ -171,12 +194,12 @@ async fn main() {
     let state = AppState::new(config, db);
     let app = router(state.clone());
     start_cleanup(state.clone());
-    syncord_server::update::start(state.clone());
+    celerity_server::update::start(state.clone());
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => fail(format!(
-            "Port {} is already in use. SynCord Server is probably already running in the background \
+            "Port {} is already in use. Celerity Server is probably already running in the background \
              (open http://localhost:{} in a browser to check). If not, another program is using that port: \
              change `bind` in {} to a different port.",
             addr.port(),
@@ -186,7 +209,7 @@ async fn main() {
         Err(e) => fail(format!("Could not listen on {addr}: {e}")),
     };
 
-    info!("SynCord server \"{}\" listening on {addr} (TCP)", state.config.community_name);
+    info!("Celerity server \"{}\" listening on {addr} (TCP)", state.config.community_name);
     match start_udp(&state, addr).await {
         Ok(port) => info!("voice audio on UDP port {port}"),
         Err(e) => warn!("could not open UDP port for voice ({e}); voice will go over TCP instead"),
@@ -201,10 +224,10 @@ async fn main() {
         stop_requested().await;
         info!("shutting down");
     };
-    let result = match syncord_server::tls::load_or_create(&dir) {
+    let result = match celerity_server::tls::load_or_create(&dir) {
         Ok((tls, fingerprint)) => {
             info!("connections are encrypted (certificate fingerprint {fingerprint})");
-            match syncord_server::tls::DualListener::new(listener, tls) {
+            match celerity_server::tls::DualListener::new(listener, tls) {
                 Ok(dual) => axum::serve(dual, app).with_graceful_shutdown(stopped).await,
                 Err(e) => fail(format!("Could not listen on {addr}: {e}")),
             }

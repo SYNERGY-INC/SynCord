@@ -40,7 +40,7 @@ fn connect() -> Result<(RustConnection, Window), String> {
     let (conn, screen) = x11rb::connect(None).map_err(|e| format!("cannot connect to the X server: {e}"))?;
     let root = conn.setup().roots[screen].root;
     if conn.extension_information("XWAYLAND").ok().flatten().is_some()
-        && std::env::var_os("SYNCORD_ALLOW_XWAYLAND_CAPTURE").is_none()
+        && std::env::var_os("CELERITY_ALLOW_XWAYLAND_CAPTURE").is_none()
     {
         // XWayland only sees X11 windows; the rest of the desktop would be black.
         return Err("screen sharing needs an X11 session (on Wayland only XWayland windows would be visible)".into());

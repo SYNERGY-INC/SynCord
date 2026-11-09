@@ -1,5 +1,7 @@
 # Changelog
 
+Celerity was called SynCord before 0.7.0.
+
 ## v0.6.0
 
 **New: a fresh look, cameras and screen sharing, statuses, search, pinned messages, replies and markdown.**

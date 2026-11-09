@@ -1,5 +1,5 @@
 //! Thin safe wrappers around the OpenH264 encoder and decoder (compiled from source by
-//! `openh264-sys2`, the same build syncord-video uses).
+//! `openh264-sys2`, the same build celerity-video uses).
 
 use std::ffi::c_void;
 use std::ptr::null_mut;

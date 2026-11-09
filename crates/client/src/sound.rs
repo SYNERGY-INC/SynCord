@@ -22,7 +22,7 @@ pub fn chime(rate: u32, volume: f32) -> Vec<f32> {
 
 /// Play the chime on the chosen speakers without blocking (does nothing if there are none).
 pub fn ping(device: Option<String>, volume: f32) {
-    let _ = std::thread::Builder::new().name("syncord-ping".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("celerity-ping".into()).spawn(move || {
         let Some(device) = crate::voice::devices::find_output(device.as_deref()) else { return };
         let Ok(config) = device.default_output_config() else { return };
         let format = config.sample_format();

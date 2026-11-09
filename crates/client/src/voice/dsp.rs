@@ -2,7 +2,7 @@
 //! noise suppression, the voice-activity gate and Opus encoding.
 
 use nnnoiseless::DenoiseState;
-use syncord_proto::voice::FRAME_SAMPLES;
+use celerity_proto::voice::FRAME_SAMPLES;
 
 /// Streaming linear resampler. Linear interpolation is plenty for speech.
 pub struct Resampler {

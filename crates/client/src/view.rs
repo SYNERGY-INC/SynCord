@@ -7,7 +7,7 @@ use iced::widget::{
     text_input, toggler,
 };
 use iced::{Alignment, Border, Color, Element, Length, Padding};
-use syncord_proto::{AvatarRing, ChannelKind, Message as ChatMessage, User, UserId, VoiceState};
+use celerity_proto::{AvatarRing, ChannelKind, Message as ChatMessage, User, UserId, VoiceState};
 
 use crate::app::{
     App, COMPOSER_ID, ChannelInfo, DEFAULT_DEVICE, DEFAULT_FONT, DraftField, MESSAGES_ID, Message, Overlay,
@@ -181,7 +181,7 @@ impl App {
                         .color(t.muted.0),
                 );
                 col = col.push(
-                    text("The server owner can find the right one at the top of syncord-server.log.")
+                    text("The server owner can find the right one at the top of celerity-server.log.")
                         .size(fs * 0.8)
                         .color(t.muted.0),
                 );
@@ -411,7 +411,7 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let mut category = row![label(t, title, fs), space::horizontal()].align_y(Alignment::Center);
-        if s.can(syncord_proto::perms::MANAGE_CHANNELS) {
+        if s.can(celerity_proto::perms::MANAGE_CHANNELS) {
             category = category.push(
                 button(text("+").size(fs * 1.2))
                     .padding([0, 6])
@@ -634,7 +634,7 @@ impl App {
         let status = if self.reconnecting {
             "Reconnecting...".to_string()
         } else if let Some(a) =
-            self.effective_activity().filter(|_| self.effective_status() != syncord_proto::Status::Invisible)
+            self.effective_activity().filter(|_| self.effective_status() != celerity_proto::Status::Invisible)
         {
             truncate(&format!("{} {}", a.kind.verb(), a.name), 14)
         } else if !me.profile.status_text.is_empty() {
@@ -691,12 +691,12 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let (available, action, tip) = match &self.update {
-            Stage::Ready { version, .. } => (true, Some(Message::UpdateNow), format!("Install SynCord {version} now")),
+            Stage::Ready { version, .. } => (true, Some(Message::UpdateNow), format!("Install Celerity {version} now")),
             Stage::Postponed { version } => {
-                (true, Some(Message::CheckForUpdates), format!("SynCord {version} is ready: click to install"))
+                (true, Some(Message::CheckForUpdates), format!("Celerity {version} is ready: click to install"))
             }
             Stage::Manual { version, .. } => {
-                (true, Some(Message::OpenUpdatePage), format!("SynCord {version} is out: click to download"))
+                (true, Some(Message::OpenUpdatePage), format!("Celerity {version} is out: click to download"))
             }
             Stage::Checking => (false, None, "Checking for updates...".into()),
             Stage::Installing(v) => (false, None, format!("Installing {v}...")),
@@ -797,7 +797,7 @@ impl App {
         }
         if let Some(ch) = channel
             .as_ref()
-            .filter(|_| s.can(syncord_proto::perms::MANAGE_CHANNELS) && s.channels.len() > 1 && !is_direct)
+            .filter(|_| s.can(celerity_proto::perms::MANAGE_CHANNELS) && s.channels.len() > 1 && !is_direct)
         {
             header = header.push(tool(&icons::TRASH, false, "Delete channel", Message::AskDeleteChannel(ch.id)));
         }
@@ -991,7 +991,7 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let author = s.users.get(&m.author_id);
-        if matches!(m.kind, syncord_proto::MessageKind::Pinned { .. }) {
+        if matches!(m.kind, celerity_proto::MessageKind::Pinned { .. }) {
             return self.pin_note(s, m);
         }
         if !m.kind.is_normal() {
@@ -1150,7 +1150,7 @@ impl App {
                 );
             }
             let danger = t.danger.0;
-            if mine || (s.can(syncord_proto::perms::MANAGE_MESSAGES) && in_server) {
+            if mine || (s.can(celerity_proto::perms::MANAGE_MESSAGES) && in_server) {
                 tools = tools.push(
                     button(text("Delete").size(fs * 0.8))
                         .padding([2, 8])
@@ -1426,8 +1426,8 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let preview = match kind {
-            ChannelKind::Text => syncord_proto::normalize_channel_name(name),
-            ChannelKind::Voice | ChannelKind::Direct => syncord_proto::clean_voice_channel_name(name),
+            ChannelKind::Text => celerity_proto::normalize_channel_name(name),
+            ChannelKind::Voice | ChannelKind::Direct => celerity_proto::clean_voice_channel_name(name),
         };
         let kind_button = |label_text: &'static str, k: ChannelKind| {
             let selected = k == kind;
@@ -1487,15 +1487,15 @@ impl App {
         container(body).width(440).padding(24).style(card(t.chat.0, t.radius * 1.5)).into()
     }
 
-    /// "You're leaving SynCord": shows exactly where a link goes before opening it.
+    /// "You're leaving Celerity": shows exactly where a link goes before opening it.
     fn confirm_link_dialog<'a>(&'a self, url: &'a str, trust: bool) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let site = crate::app::link_site(url).unwrap_or_default();
         let shown = crate::view::truncate(url, 300);
         let body = column![
-            text("Leaving SynCord").size(fs * 1.3).font(bold()).color(t.header.0),
-            text("This link goes to a website outside SynCord. Are you sure you want to open it?")
+            text("Leaving Celerity").size(fs * 1.3).font(bold()).color(t.header.0),
+            text("This link goes to a website outside Celerity. Are you sure you want to open it?")
                 .size(fs * 0.95)
                 .color(t.text.0),
             container(
@@ -1581,7 +1581,7 @@ impl App {
         .spacing(4)
         .width(200);
         let mut nav = nav;
-        if s.can(syncord_proto::perms::MANAGE_ROLES) {
+        if s.can(celerity_proto::perms::MANAGE_ROLES) {
             nav = nav
                 .push(label(t, "Server settings", fs))
                 .push(nav_item("Roles", SettingsTab::Roles))
@@ -1867,7 +1867,7 @@ impl App {
                 .on_toggle(Message::TogglePingSound)
                 .text_size(fs),
             toggler(st.flash_taskbar)
-                .label("Flash the taskbar icon for every new message while SynCord isn't focused (mentions always do)")
+                .label("Flash the taskbar icon for every new message while Celerity isn't focused (mentions always do)")
                 .on_toggle(Message::ToggleFlashTaskbar)
                 .text_size(fs),
             toggler(st.voice_sounds)
@@ -1905,9 +1905,9 @@ impl App {
             Stage::Ready { version, notes, deadline, .. } => {
                 let secs = deadline.saturating_duration_since(std::time::Instant::now()).as_secs() + 1;
                 let status = if in_call {
-                    "SynCord will update as soon as you leave the voice call.".to_string()
+                    "Celerity will update as soon as you leave the voice call.".to_string()
                 } else {
-                    format!("Installing in {secs} second{}... SynCord will reopen by itself.", if secs == 1 { "" } else { "s" })
+                    format!("Installing in {secs} second{}... Celerity will reopen by itself.", if secs == 1 { "" } else { "s" })
                 };
                 // Release notes are Markdown; show them as plain text with bullets.
                 let summary: String = notes
@@ -1942,15 +1942,15 @@ impl App {
                         .style(style::solid_button(t.accent.0, t.radius * 0.6)),
                 ]
                 .spacing(8);
-                (format!("Updating SynCord to {version}"), col.into(), buttons.into())
+                (format!("Updating Celerity to {version}"), col.into(), buttons.into())
             }
             Stage::Installing(version) => (
-                format!("Installing SynCord {version}"),
-                text("Just a moment, SynCord will reopen by itself.").size(fs).color(t.text.0).into(),
+                format!("Installing Celerity {version}"),
+                text("Just a moment, Celerity will reopen by itself.").size(fs).color(t.text.0).into(),
                 space().into(),
             ),
             Stage::Manual { version, dismissed: false, .. } => (
-                format!("SynCord {version} is available"),
+                format!("Celerity {version} is available"),
                 text("This copy was installed by your system's package manager, so it can't update itself. Download the new version and open it to install.")
                     .size(fs)
                     .color(t.text.0)
@@ -1999,7 +1999,7 @@ impl App {
             Stage::Checking => "Checking for updates...".to_string(),
             Stage::UpToDate => "You have the newest version.".into(),
             Stage::Ready { version, .. } => format!("{version} is ready to install."),
-            Stage::Postponed { version } => format!("{version} will install the next time you open SynCord."),
+            Stage::Postponed { version } => format!("{version} will install the next time you open Celerity."),
             Stage::Manual { version, .. } => format!("{version} is available to download."),
             Stage::Installing(v) => format!("Installing {v}..."),
             Stage::Failed(e) => format!("Couldn't check for updates: {e}"),
@@ -2007,7 +2007,7 @@ impl App {
         let busy = matches!(self.update, Stage::Checking | Stage::Installing(_));
         let mut col = column![
             label(t, "Updates", fs),
-            text(format!("SynCord {VERSION}")).size(fs).color(t.header.0),
+            text(format!("Celerity {VERSION}")).size(fs).color(t.header.0),
             text(status).size(fs * 0.85).color(t.muted.0),
             button(text("Check for updates").size(fs * 0.9))
                 .padding([6, 14])
@@ -2033,7 +2033,7 @@ impl App {
                 col = col.push(text(security).size(fs * 0.85).color(color));
             }
             if s.is_owner()
-                && syncord_update::is_newer(
+                && celerity_update::is_newer(
                     VERSION,
                     if s.server_version.is_empty() { "0.0.0" } else { &s.server_version },
                 )
@@ -2114,17 +2114,17 @@ impl App {
                     .on_toggle(Message::ToggleLowMemory)
                     .text_size(fs),
             )
-            .push(text("Takes effect the next time you open SynCord.").size(fs * 0.8).color(t.muted.0))
+            .push(text("Takes effect the next time you open Celerity.").size(fs * 0.8).color(t.muted.0))
             .push(label(t, "Closing the window", fs))
             .push(if crate::tray::SUPPORTED {
                 Element::from(
                     toggler(self.settings.close_to_tray)
-                        .label("Keep SynCord running in the tray when you close it (calls and messages keep working)")
+                        .label("Keep Celerity running in the tray when you close it (calls and messages keep working)")
                         .on_toggle(Message::ToggleCloseToTray)
                         .text_size(fs),
                 )
             } else {
-                text("On Linux, closing the window quits SynCord.").size(fs * 0.85).color(t.muted.0).into()
+                text("On Linux, closing the window quits Celerity.").size(fs * 0.85).color(t.muted.0).into()
             })
             .push(self.trusted_sites_section())
             .push(self.updates_section());
@@ -2133,7 +2133,7 @@ impl App {
 }
 
 impl App {
-    /// Sites whose links open without asking (ticked in the leaving-SynCord dialog).
+    /// Sites whose links open without asking (ticked in the leaving-Celerity dialog).
     fn trusted_sites_section(&self) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();
@@ -2191,7 +2191,7 @@ impl App {
         if running != wanted {
             col = col.push(
                 row![
-                    text("The new font is used after SynCord restarts.").size(fs * 0.85).color(t.text.0),
+                    text("The new font is used after Celerity restarts.").size(fs * 0.85).color(t.text.0),
                     button(text("Restart now").size(fs * 0.9))
                         .padding([6, 14])
                         .on_press(Message::RestartApp)

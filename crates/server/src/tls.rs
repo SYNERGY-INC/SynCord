@@ -22,8 +22,11 @@ use tokio_rustls::server::TlsStream;
 use tokio_util::either::Either;
 use tracing::{debug, info, warn};
 
-pub const CERT_FILE: &str = "syncord-tls-cert.pem";
-pub const KEY_FILE: &str = "syncord-tls-key.pem";
+pub const CERT_FILE: &str = "celerity-tls-cert.pem";
+pub const KEY_FILE: &str = "celerity-tls-key.pem";
+/// Names from before the rename to Celerity: kept, so apps that trust this server still do.
+const LEGACY_CERT_FILE: &str = "syncord-tls-cert.pem";
+const LEGACY_KEY_FILE: &str = "syncord-tls-key.pem";
 
 /// First byte of a TLS handshake.
 const TLS_HANDSHAKE: u8 = 0x16;
@@ -38,9 +41,12 @@ pub fn fingerprint(cert: &[u8]) -> String {
 
 /// Load the server's certificate, making one the first time. Returns the TLS settings and the fingerprint.
 pub fn load_or_create(dir: &Path) -> Result<(Arc<ServerConfig>, String), String> {
-    let (cert_path, key_path) = (dir.join(CERT_FILE), dir.join(KEY_FILE));
+    let (mut cert_path, mut key_path) = (dir.join(CERT_FILE), dir.join(KEY_FILE));
+    if !cert_path.exists() && dir.join(LEGACY_CERT_FILE).exists() && dir.join(LEGACY_KEY_FILE).exists() {
+        (cert_path, key_path) = (dir.join(LEGACY_CERT_FILE), dir.join(LEGACY_KEY_FILE));
+    }
     if !cert_path.exists() || !key_path.exists() {
-        let made = rcgen::generate_simple_self_signed(vec!["syncord".to_string(), "localhost".to_string()])
+        let made = rcgen::generate_simple_self_signed(vec!["celerity".to_string(), "localhost".to_string()])
             .map_err(|e| format!("couldn't make a certificate: {e}"))?;
         std::fs::write(&cert_path, made.cert.pem())
             .map_err(|e| format!("couldn't save {}: {e}", cert_path.display()))?;
@@ -149,7 +155,7 @@ mod tests {
 
     #[test]
     fn certificate_is_made_once_and_reused() {
-        let dir = std::env::temp_dir().join(format!("syncord-tls-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("celerity-tls-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (_, first) = load_or_create(&dir).unwrap();
         let (_, second) = load_or_create(&dir).unwrap();

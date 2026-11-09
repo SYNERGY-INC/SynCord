@@ -6,7 +6,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding};
 use std::sync::atomic::Ordering;
-use syncord_proto::{Attachment, Message as ChatMessage, User};
+use celerity_proto::{Attachment, Message as ChatMessage, User};
 
 use crate::app::{App, Message, PickerTab, PickerTarget, Session, UploadState};
 use crate::emoji;
@@ -503,7 +503,7 @@ impl App {
                     container(
                         text(
                             "GIF search isn't set up on this server yet. The server owner can add a free GIPHY or \
-                             KLIPY key to syncord-server.toml. Meanwhile, star GIFs in the chat to keep them here.",
+                             KLIPY key to celerity-server.toml. Meanwhile, star GIFs in the chat to keep them here.",
                         )
                         .size(fs * 0.85)
                         .color(t.muted.0),

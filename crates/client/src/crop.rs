@@ -11,7 +11,7 @@ use iced::{Alignment, Border, Color, Element, Length, Point, Task};
 use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
 use image::imageops::FilterType;
 use image::{AnimationDecoder, Delay, Frame, ImageFormat, RgbaImage};
-use syncord_proto::{AVATAR_SIZE, BANNER_SIZE, PROFILE_IMAGE_PATH};
+use celerity_proto::{AVATAR_SIZE, BANNER_SIZE, PROFILE_IMAGE_PATH};
 
 use crate::app::{App, Message};
 use crate::style::{self, bold, card};
@@ -97,7 +97,7 @@ fn cut(img: &RgbaImage, rect: (u32, u32, u32, u32), out: (u32, u32), filter: Fil
 
 /// Decode a picture for cropping (in the background: big files take a moment).
 pub fn load(bytes: &[u8], banner: bool) -> Result<Source, String> {
-    let format = image::guess_format(bytes).map_err(|_| "That isn't a picture SynCord can read.".to_string())?;
+    let format = image::guess_format(bytes).map_err(|_| "That isn't a picture Celerity can read.".to_string())?;
     // Enough detail for the output, without holding huge frames in memory.
     let (still_max, anim_max) = if banner { (1600, 720) } else { (1024, 384) };
     let shrink = |img: RgbaImage, max: u32| {
@@ -309,14 +309,14 @@ impl App {
                 self.crop = None;
                 self.close_overlay();
             }
-            Message::RemoveProfileImage(banner) => self.send(syncord_proto::ClientMsg::ClearProfileImage { banner }),
+            Message::RemoveProfileImage(banner) => self.send(celerity_proto::ClientMsg::ClearProfileImage { banner }),
             _ => {}
         }
         Task::none()
     }
 
     /// Upload/remove buttons for the profile picture and banner, in profile settings.
-    pub(crate) fn picture_buttons<'a>(&'a self, me: &syncord_proto::User) -> Element<'a, Message> {
+    pub(crate) fn picture_buttons<'a>(&'a self, me: &celerity_proto::User) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let line = |name: &'static str, hint: &'static str, banner: bool, has: bool| {

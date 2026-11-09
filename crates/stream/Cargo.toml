@@ -1,9 +1,9 @@
 [package]
-name = "syncord-stream"
+name = "celerity-stream"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Live video for SynCord voice calls: camera and screen capture, H.264 encode/decode, datagram packets"
+description = "Live video for Celerity voice calls: camera and screen capture, H.264 encode/decode, datagram packets"
 
 [features]
 default = ["capture"]
@@ -27,7 +27,7 @@ capture = [
 ]
 
 [dependencies]
-# Same OpenH264 build as syncord-video (compiled once from bundled C++ source with `cc`).
+# Same OpenH264 build as celerity-video (compiled once from bundled C++ source with `cc`).
 openh264-sys2 = { version = "0.9", default-features = false, features = ["source"] }
 
 [target.'cfg(windows)'.dependencies]

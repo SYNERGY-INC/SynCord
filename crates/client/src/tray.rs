@@ -1,4 +1,4 @@
-//! Keeping SynCord running in the background: the tray icon (Windows and
+//! Keeping Celerity running in the background: the tray icon (Windows and
 //! macOS), and making a second launch bring back the running copy instead of
 //! opening another one.
 //!
@@ -15,9 +15,9 @@ use tokio::sync::mpsc;
 /// Something outside the window wants the app's attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
-    /// Show the window (tray click, "Open SynCord", or SynCord started again).
+    /// Show the window (tray click, "Open Celerity", or Celerity started again).
     Show,
-    /// "Quit SynCord" in the tray menu (there's no tray on Linux).
+    /// "Quit Celerity" in the tray menu (there's no tray on Linux).
     #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     Quit,
 }
@@ -49,11 +49,13 @@ pub fn events() -> impl Stream<Item = Wake> {
 // ---- One copy at a time
 
 fn instance_dir() -> std::path::PathBuf {
-    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("syncord")
+    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("celerity")
 }
 
 /// Set by the updater when it starts the new version: wait for the old copy to exit.
-pub const REPLACING_ENV: &str = "SYNCORD_REPLACING";
+pub const REPLACING_ENV: &str = "CELERITY_REPLACING";
+/// What SynCord's updater sets when it starts Celerity.
+const LEGACY_REPLACING_ENV: &str = "SYNCORD_REPLACING";
 
 /// Make sure only one copy runs (per user). Returns false if another copy was
 /// asked to show itself, in which case this one should quit.
@@ -64,6 +66,18 @@ pub fn claim_single_instance() -> bool {
     else {
         return true; // can't tell: just run
     };
+    if std::env::var_os(LEGACY_REPLACING_ENV).is_some() {
+        // SynCord (the old name) is updating to this: wait for it to close.
+        let old = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("syncord").join("instance.lock");
+        if let Ok(old) = std::fs::OpenOptions::new().write(true).open(old) {
+            for _ in 0..100 {
+                if old.try_lock().is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
     let replacing = std::env::var_os(REPLACING_ENV).is_some();
     let mut tries = if replacing { 100 } else { 1 };
     loop {
@@ -92,7 +106,7 @@ pub fn claim_single_instance() -> bool {
         && let Ok(addr) = listener.local_addr()
     {
         let _ = std::fs::write(dir.join("instance.port"), addr.port().to_string());
-        let _ = std::thread::Builder::new().name("syncord-instance".into()).spawn(move || {
+        let _ = std::thread::Builder::new().name("celerity-instance".into()).spawn(move || {
             for mut conn in listener.incoming().flatten() {
                 let mut buf = [0u8; 4];
                 if conn.read_exact(&mut buf).is_ok() && &buf == b"show" {
@@ -120,8 +134,8 @@ mod imp {
     pub const SUPPORTED: bool = true;
 
     pub fn create() -> Result<Tray, String> {
-        let open = MenuItem::new("Open SynCord", true, None);
-        let quit = MenuItem::new("Quit SynCord", true, None);
+        let open = MenuItem::new("Open Celerity", true, None);
+        let quit = MenuItem::new("Quit Celerity", true, None);
         let menu = Menu::new();
         menu.append(&open).map_err(|e| e.to_string())?;
         menu.append(&quit).map_err(|e| e.to_string())?;
@@ -139,10 +153,10 @@ mod imp {
             }
         }));
         let icon =
-            tray_icon::Icon::from_rgba(include_bytes!("../../../packaging/icons/syncord-64.rgba").to_vec(), 64, 64)
+            tray_icon::Icon::from_rgba(include_bytes!("../../../packaging/icons/celerity-64.rgba").to_vec(), 64, 64)
                 .map_err(|e| e.to_string())?;
         let tray = TrayIconBuilder::new()
-            .with_tooltip("SynCord")
+            .with_tooltip("Celerity")
             .with_icon(icon)
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)

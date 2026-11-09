@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>SynCord</string>
+    <string>Celerity</string>
     <key>CFBundleDisplayName</key>
-    <string>SynCord</string>
+    <string>Celerity</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.bxpo.syncord</string>
+    <string>io.github.bxpo.celerity</string>
     <key>CFBundleExecutable</key>
-    <string>SynCord</string>
+    <string>Celerity</string>
     <key>CFBundleIconFile</key>
-    <string>syncord</string>
+    <string>celerity</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -27,8 +27,8 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>SynCord uses your microphone for voice chat.</string>
+    <string>Celerity uses your microphone for voice chat.</string>
     <key>NSCameraUsageDescription</key>
-    <string>SynCord uses your camera when you turn on video in a call.</string>
+    <string>Celerity uses your camera when you turn on video in a call.</string>
 </dict>
 </plist>

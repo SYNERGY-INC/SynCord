@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use syncord_proto::{
+use celerity_proto::{
     Attachment, Channel, ChannelId, ChannelKind, DirectChannel, EVERYONE_ROLE, Embed, HISTORY_PAGE, MAX_PINS,
     MentionCount, Message, MessageId, MessageKind, Profile, REPLY_SNIPPET_LEN, Reaction, ReadState, ReplyRef, Role,
     RoleId, SEARCH_PAGE, SearchHas, SearchQuery, User, UserId, parse_mentions, perms,

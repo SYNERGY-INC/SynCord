@@ -14,11 +14,13 @@ repo = os.environ.get("GITHUB_REPOSITORY", "bxpo/SynCord")
 key_pem = os.environ.get("SIGNING_KEY", "").strip()
 
 wanted = {
-    "windows": f"SynCord-Setup-{version}.exe",
-    "windows-server": f"SynCord-Server-Setup-{version}.exe",
-    "macos": f"SynCord-{version}-macOS.dmg",
-    "linux": f"syncord-{version}-linux-x86_64.tar.gz",
-    "linux-deb": f"syncord_{version}_amd64.deb",
+    "windows": f"Celerity-Setup-{version}.exe",
+    "windows-server": f"Celerity-Server-Setup-{version}.exe",
+    "macos-app": f"Celerity-{version}-macOS.dmg",
+    # SynCord 0.6 and older look for SynCord.app under the "macos" key.
+    "macos": f"Celerity-{version}-macOS-update-from-SynCord.dmg",
+    "linux": f"celerity-{version}-linux-x86_64.tar.gz",
+    "linux-deb": f"celerity_{version}_amd64.deb",
 }
 
 key_path = None

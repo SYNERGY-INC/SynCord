@@ -38,7 +38,7 @@ use crate::media;
 /// User agent sent with every request. Some sites (YouTube, X/Twitter) only
 /// include OpenGraph tags for agents that look like a link-preview bot.
 pub const USER_AGENT: &str =
-    concat!("Mozilla/5.0 (compatible; SynCordBot/", env!("CARGO_PKG_VERSION"), "; +https://github.com/bxpo/SynCord)");
+    concat!("Mozilla/5.0 (compatible; CelerityBot/", env!("CARGO_PKG_VERSION"), "; +https://github.com/bxpo/SynCord)");
 
 /// Most links previewed per message.
 pub const MAX_URLS: usize = 3;

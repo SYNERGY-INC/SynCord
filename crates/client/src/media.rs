@@ -11,7 +11,7 @@ use futures::StreamExt;
 
 use iced::widget::image::Handle;
 use image::{AnimationDecoder, ImageFormat, codecs::gif::GifDecoder, imageops::FilterType};
-use syncord_proto::{Attachment, ChannelId, FILES_PATH, UPLOAD_PATH};
+use celerity_proto::{Attachment, ChannelId, FILES_PATH, UPLOAD_PATH};
 
 /// Longest side for pictures in the chat (server previews are at most 480 px).
 pub const THUMB_SIDE: u32 = 480;
@@ -107,7 +107,7 @@ pub async fn upload(
         .await
         .map_err(|e| format!("Upload failed: {}", root_cause(&e)))?;
     if matches!(resp.status().as_u16(), 404 | 405) {
-        return Err("The server doesn't support files yet: it needs the latest SynCord Server.".into());
+        return Err("The server doesn't support files yet: it needs the latest Celerity Server.".into());
     }
     if !resp.status().is_success() {
         return Err(describe(resp.status()));
@@ -187,7 +187,7 @@ pub async fn load_profile_image(
     animate: bool,
     round: bool,
 ) -> Result<Arc<Picture>, String> {
-    let url = format!("{base}{}/{id}", syncord_proto::PROFILE_IMAGE_PATH);
+    let url = format!("{base}{}/{id}", celerity_proto::PROFILE_IMAGE_PATH);
     let resp = http.get(url).bearer_auth(token).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(describe(resp.status()));
@@ -496,7 +496,7 @@ impl ImageCache {
     }
 
     /// Still profile pictures stay: they're small, shown everywhere, and only loaded once
-    /// (dropping them left people with just their letter until SynCord restarted).
+    /// (dropping them left people with just their letter until Celerity restarted).
     fn pinned(key: &str) -> bool {
         key.starts_with("pfp:") && !key.ends_with(":anim")
     }
@@ -684,11 +684,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn streamed_upload_and_save_with_progress() {
         use futures::StreamExt;
-        use syncord_proto::{ChannelKind, ClientMsg, ServerMsg};
-        use syncord_server::{AppState, Config, db::Db, router};
+        use celerity_proto::{ChannelKind, ClientMsg, ServerMsg};
+        use celerity_server::{AppState, Config, db::Db, router};
 
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let dir = std::env::temp_dir().join(format!("syncord-media-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("celerity-media-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let config = Config { invite_code: "x".into(), uploads: dir.join("uploads"), ..Config::default() };
         std::fs::create_dir_all(&config.uploads).unwrap();

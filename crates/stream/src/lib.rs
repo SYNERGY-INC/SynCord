@@ -1,8 +1,8 @@
-//! Live video for SynCord voice calls (facecam and screen sharing): capture, H.264 encoding and
+//! Live video for Celerity voice calls (facecam and screen sharing): capture, H.264 encoding and
 //! decoding, and datagram packetization with loss-tolerant reassembly.
 //!
 //! Everything is pure Rust plus OpenH264, which `openh264-sys2` compiles from bundled C++ source
-//! (shared with `syncord-video`). Capture uses the operating system's own APIs directly; no
+//! (shared with `celerity-video`). Capture uses the operating system's own APIs directly; no
 //! ffmpeg, GStreamer or other media libraries.
 //!
 //! # Pieces
@@ -110,7 +110,7 @@
 //! - `Capture::camera` / `Capture::screen` (and `Sender::start` with a device source) block
 //!   until the device streams, which on macOS includes the first-time permission prompt: call
 //!   them off the UI thread.
-//! - macOS needs `NSCameraUsageDescription` in Info.plist (e.g. "SynCord uses the camera for
+//! - macOS needs `NSCameraUsageDescription` in Info.plist (e.g. "Celerity uses the camera for
 //!   video calls."). Screen recording has no Info.plist key; the user grants it in System
 //!   Settings > Privacy & Security > Screen Recording and it applies after an app restart (the
 //!   error message says so). ScreenCaptureKit is linked, so the app needs macOS 12.3+.

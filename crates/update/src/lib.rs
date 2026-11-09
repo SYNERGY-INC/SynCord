@@ -26,7 +26,12 @@ pub const PUBLIC_KEY: [u8; 32] = [
 pub mod files {
     pub const WINDOWS_APP: &str = "windows";
     pub const WINDOWS_SERVER: &str = "windows-server";
-    pub const MACOS_APP: &str = "macos";
+    /// The Celerity.app disk image.
+    pub const MACOS_APP: &str = "macos-app";
+    /// For SynCord 0.6 and older, whose updater looks for SynCord.app: the same app in a
+    /// disk image under that name.
+    pub const MACOS_LEGACY: &str = "macos";
+    /// The portable app (`celerity`, plus a `syncord` link for SynCord's updater).
     pub const LINUX_APP: &str = "linux";
     pub const LINUX_DEB: &str = "linux-deb";
 }
@@ -86,7 +91,7 @@ pub fn verify(bytes: &[u8], entry: &FileEntry, key: &[u8; 32]) -> Result<(), Str
 
 pub fn client() -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent(concat!("SynCord-updater/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Celerity-updater/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(std::time::Duration::from_secs(15))
         .build()
         .unwrap_or_default()

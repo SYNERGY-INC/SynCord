@@ -2,7 +2,7 @@
 
 use iced::widget::{button, column, container, rich_text, row, space, span, text};
 use iced::{Alignment, Border, Color, Element, Font, Length, Padding};
-use syncord_proto::{Embed, Message as ChatMessage};
+use celerity_proto::{Embed, Message as ChatMessage};
 
 use crate::app::{App, Message, Session};
 use crate::icons;
@@ -153,7 +153,7 @@ impl App {
         Some(col.into())
     }
 
-    fn embed_picture<'a>(&'a self, a: &'a syncord_proto::Attachment, max_w: f32, max_h: f32) -> Element<'a, Message> {
+    fn embed_picture<'a>(&'a self, a: &'a celerity_proto::Attachment, max_w: f32, max_h: f32) -> Element<'a, Message> {
         let (w, h) = media::fit(a.width.unwrap_or(1), a.height.unwrap_or(1), max_w, max_h);
         match self.preview(a) {
             Some(p) => button(crate::widgets::picture(p.clone(), w, h, false, self.theme.radius * 0.6, true))
@@ -216,7 +216,7 @@ impl App {
     pub(crate) fn call_note<'a>(&'a self, s: &'a Session, m: &'a ChatMessage) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let syncord_proto::MessageKind::Call { participants, ended_at } = &m.kind else { return text("").into() };
+        let celerity_proto::MessageKind::Call { participants, ended_at } = &m.kind else { return text("").into() };
         let name = |id: i64| s.users.get(&id).map(|u| u.name().to_string()).unwrap_or_else(|| "Someone".into());
         let mine = m.author_id == s.me;
         let answered = participants.len() > 1;
@@ -261,7 +261,7 @@ impl App {
     pub(crate) fn pin_note<'a>(&'a self, s: &'a Session, m: &'a ChatMessage) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let syncord_proto::MessageKind::Pinned { message_id } = m.kind else { return text("").into() };
+        let celerity_proto::MessageKind::Pinned { message_id } = m.kind else { return text("").into() };
         let who = if m.author_id == s.me {
             "You".to_string()
         } else {

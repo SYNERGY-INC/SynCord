@@ -11,7 +11,7 @@ use crate::{poster, probe};
 fn fixture_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let d = std::env::temp_dir().join("syncord-video-fixtures-v1");
+        let d = std::env::temp_dir().join("celerity-video-fixtures-v1");
         std::fs::create_dir_all(&d).unwrap();
         d
     })

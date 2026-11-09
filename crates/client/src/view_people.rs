@@ -2,7 +2,7 @@
 
 use iced::widget::{column, container, row, space, stack, text};
 use iced::{Alignment, Border, Element, Length, Padding};
-use syncord_proto::User;
+use celerity_proto::User;
 
 use crate::app::{App, Message, Session};
 use crate::style::{self, bold, card, divider, label};
@@ -12,8 +12,8 @@ const BANNER_HEIGHT: f32 = 128.0;
 const AVATAR: f32 = 84.0;
 
 /// Dot colours: green, yellow, red; grey for offline and invisible.
-pub fn status_color(t: &crate::theme::AppTheme, status: Option<syncord_proto::Status>) -> iced::Color {
-    use syncord_proto::Status::*;
+pub fn status_color(t: &crate::theme::AppTheme, status: Option<celerity_proto::Status>) -> iced::Color {
+    use celerity_proto::Status::*;
     match status {
         Some(Online) => t.online.0,
         Some(Idle) => iced::Color::from_rgb8(0xF0, 0xB2, 0x32),
@@ -24,7 +24,7 @@ pub fn status_color(t: &crate::theme::AppTheme, status: Option<syncord_proto::St
 
 impl App {
     /// Someone's status as shown on their dot (None: offline).
-    pub(crate) fn status_of(&self, s: &Session, user: syncord_proto::UserId) -> Option<syncord_proto::Status> {
+    pub(crate) fn status_of(&self, s: &Session, user: celerity_proto::UserId) -> Option<celerity_proto::Status> {
         if user == s.me {
             return Some(self.effective_status());
         }
@@ -32,23 +32,23 @@ impl App {
     }
 
     /// "Playing Minecraft", if they're doing something.
-    pub(crate) fn activity_of(&self, s: &Session, user: syncord_proto::UserId) -> Option<syncord_proto::Activity> {
+    pub(crate) fn activity_of(&self, s: &Session, user: celerity_proto::UserId) -> Option<celerity_proto::Activity> {
         if user == s.me {
-            return self.effective_activity().filter(|_| self.effective_status() != syncord_proto::Status::Invisible);
+            return self.effective_activity().filter(|_| self.effective_status() != celerity_proto::Status::Invisible);
         }
         s.presences.get(&user).and_then(|p| p.1.clone())
     }
 
     /// Pick your status and what you're doing.
     pub(crate) fn status_picker<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
-        use syncord_proto::{ActivityKind, Status};
+        use celerity_proto::{ActivityKind, Status};
         let t = &self.theme;
         let fs = self.fs();
         let about = |st: Status| match st {
             Status::Online => "",
             Status::Idle => "Shown automatically after 10 minutes away",
             Status::DoNotDisturb => "No sounds or pop-ups for messages and calls",
-            Status::Invisible => "You'll look offline, but can use SynCord as usual",
+            Status::Invisible => "You'll look offline, but can use Celerity as usual",
         };
         let mut list = column![text("Set your status").size(fs * 1.25).font(bold()).color(t.header.0)].spacing(4);
         for st in Status::ALL {
@@ -119,7 +119,7 @@ impl App {
     pub(crate) fn call_bar<'a>(
         &'a self,
         s: &'a Session,
-        channel: syncord_proto::ChannelId,
+        channel: celerity_proto::ChannelId,
     ) -> Option<Element<'a, Message>> {
         let t = &self.theme;
         let fs = self.fs();

@@ -1,4 +1,4 @@
-//! Wire protocol shared by the SynCord server and client.
+//! Wire protocol shared by the Celerity server and client.
 //!
 //! Every frame on the WebSocket is a single JSON object: the client sends
 //! [`ClientMsg`] and the server replies / pushes [`ServerMsg`].

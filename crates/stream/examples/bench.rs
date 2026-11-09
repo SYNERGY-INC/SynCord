@@ -1,13 +1,13 @@
 //! Encode/decode/convert cost and memory on synthetic frames.
 //!
-//! `cargo run --release -p syncord-stream --example bench`
+//! `cargo run --release -p celerity-stream --example bench`
 //!
 //! Two kinds of content: "moving" (the whole test pattern changes every frame: worst case) and
 //! "static" (a mostly still picture with a small area changing, like a document being typed in).
 
 use std::time::Instant;
 
-use syncord_stream::*;
+use celerity_stream::*;
 
 /// Process CPU time in seconds (Linux: /proc; elsewhere: None).
 fn cpu_time() -> Option<f64> {

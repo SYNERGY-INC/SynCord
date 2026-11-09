@@ -5,7 +5,7 @@ use std::sync::mpsc::SyncSender;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig, SupportedStreamConfig};
-use syncord_proto::voice::SAMPLE_RATE;
+use celerity_proto::voice::SAMPLE_RATE;
 
 use super::dsp::Resampler;
 use super::mixer::Mixer;

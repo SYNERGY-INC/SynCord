@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use iced::widget::{Id, operation};
 use iced::{Subscription, Task, keyboard};
-use syncord_proto::{
+use celerity_proto::{
     AvatarRing, Channel, ChannelId, ClientMsg, Message as ChatMessage, MessageId, Profile, Ready, ServerMsg, User,
     UserId,
 };
@@ -19,9 +19,9 @@ use crate::net::{self, Connection};
 use crate::settings::Settings;
 use crate::theme::{self, AppTheme, Hex, to_u32};
 use crate::voice::{self, Link, VoiceEngine};
-use syncord_proto::voice::{Key, Token, key_from_hex, token_from_hex};
-use syncord_proto::{Attachment, DirectChannel};
-use syncord_proto::{ChannelKind, VoiceState};
+use celerity_proto::voice::{Key, Token, key_from_hex, token_from_hex};
+use celerity_proto::{Attachment, DirectChannel};
+use celerity_proto::{ChannelKind, VoiceState};
 
 pub const MESSAGES_ID: &str = "messages";
 
@@ -241,7 +241,7 @@ pub enum Message {
     WindowFocused(bool),
     /// Open a link from a message in the browser.
     OpenLink(String),
-    /// "Trust this site" in the leaving-SynCord dialog.
+    /// "Trust this site" in the leaving-Celerity dialog.
     TrustLinkSite(bool),
     VisitLink,
     UntrustSite(String),
@@ -251,7 +251,7 @@ pub enum Message {
     StartCall(UserId),
     ToggleIgnore(UserId),
     ToggleBlock(UserId),
-    ToggleUserRole(UserId, syncord_proto::RoleId),
+    ToggleUserRole(UserId, celerity_proto::RoleId),
     CopyText(String),
 
     // Profile pictures and banners
@@ -269,7 +269,7 @@ pub enum Message {
 
     // Roles (server settings)
     CreateRole,
-    SelectRole(syncord_proto::RoleId),
+    SelectRole(celerity_proto::RoleId),
     RoleName(String),
     /// Search box for adding people to the role being edited.
     RoleMemberQuery(String),
@@ -278,9 +278,9 @@ pub enum Message {
     RolePermission(u64, bool),
     SaveRole,
     ResetRole,
-    DeleteRole(syncord_proto::RoleId),
+    DeleteRole(celerity_proto::RoleId),
     /// Move a role up (true) or down one place.
-    MoveRole(syncord_proto::RoleId, bool),
+    MoveRole(celerity_proto::RoleId, bool),
 
     // Videos
     /// Play (or pause) a video in the chat.
@@ -299,15 +299,15 @@ pub enum Message {
     // Cameras and screen shares
     ToggleCamera,
     OpenScreenPicker,
-    ScreensListed(Result<Vec<syncord_stream::ScreenInfo>, String>),
+    ScreensListed(Result<Vec<celerity_stream::ScreenInfo>, String>),
     ToggleSmoothScreen(bool),
     ShareScreen(String),
-    VideoStarted(syncord_proto::VideoKind, Result<crate::live::Started, String>),
+    VideoStarted(celerity_proto::VideoKind, Result<crate::live::Started, String>),
     WatchScreen(UserId),
     StopWatching(UserId),
     OpenStage,
     CloseStage,
-    FocusVideo(Option<(UserId, syncord_proto::VideoKind)>),
+    FocusVideo(Option<(UserId, celerity_proto::VideoKind)>),
     CameraDevice(String),
     LiveTick,
 
@@ -330,14 +330,14 @@ pub enum Message {
     PresenceTick,
     BackFromIdle,
     GameDetected(Option<String>),
-    SetStatus(syncord_proto::Status),
+    SetStatus(celerity_proto::Status),
     OpenStatusPicker,
-    ActivityKindPicked(syncord_proto::ActivityKind),
+    ActivityKindPicked(celerity_proto::ActivityKind),
     ActivityText(String),
     SaveActivity,
     ClearActivity,
     ToggleDetectGames(bool),
-    /// The tray icon, or SynCord being started again.
+    /// The tray icon, or Celerity being started again.
     Wake(crate::tray::Wake),
     ToggleCloseToTray(bool),
     SwitcherQuery(String),
@@ -398,7 +398,7 @@ pub struct Download {
 pub struct GifSearch {
     /// The search these results are for ("" is trending).
     pub query: Option<String>,
-    pub results: Vec<syncord_proto::GifResult>,
+    pub results: Vec<celerity_proto::GifResult>,
     /// Search waiting for an answer.
     pub waiting: Option<String>,
     pub error: Option<String>,
@@ -472,7 +472,7 @@ pub enum Overlay {
     StatusPicker,
     /// Choosing what to share.
     ScreenPicker(crate::live::ScreenList),
-    /// "You're leaving SynCord" before opening a link; `trust`: don't ask again for its site.
+    /// "You're leaving Celerity" before opening a link; `trust`: don't ask again for its site.
     ConfirmLink {
         url: String,
         trust: bool,
@@ -522,12 +522,12 @@ pub struct Session {
     pub last_server_channel: Option<ChannelId>,
     pub server_version: String,
     /// Highest first.
-    pub roles: Vec<syncord_proto::Role>,
+    pub roles: Vec<celerity_proto::Role>,
     pub blocked: HashSet<UserId>,
     /// Unread pings per channel.
     pub mention_counts: HashMap<ChannelId, u32>,
     /// Statuses and activities of people online.
-    pub presences: HashMap<UserId, (syncord_proto::Status, Option<syncord_proto::Activity>)>,
+    pub presences: HashMap<UserId, (celerity_proto::Status, Option<celerity_proto::Activity>)>,
     /// GIF search service the server offers, if any.
     pub gif_provider: Option<String>,
     /// Largest upload the server accepts, in MB (0 if it doesn't say).
@@ -602,7 +602,7 @@ pub struct ProfileDraft {
 /// A role being edited in the server settings.
 #[derive(Debug, Clone, Default)]
 pub struct RoleDraft {
-    pub id: syncord_proto::RoleId,
+    pub id: celerity_proto::RoleId,
     pub name: String,
     /// Colour as typed ("" for none).
     pub color: String,
@@ -613,7 +613,7 @@ pub struct RoleDraft {
 }
 
 impl RoleDraft {
-    pub fn from_role(r: &syncord_proto::Role) -> Self {
+    pub fn from_role(r: &celerity_proto::Role) -> Self {
         Self {
             id: r.id,
             name: r.name.clone(),
@@ -763,7 +763,7 @@ pub struct App {
     pub gifs: GifSearch,
     pub downloads: Vec<Download>,
     pub(crate) next_download_id: u64,
-    /// Kept open so pictures copied from SynCord stay on the clipboard (needed on Linux).
+    /// Kept open so pictures copied from Celerity stay on the clipboard (needed on Linux).
     pub(crate) clipboard: Option<arboard::Clipboard>,
     /// Address actually connected to, and the server's certificate fingerprint (`Some(None)`: not encrypted).
     pub(crate) server_url: Option<String>,
@@ -783,15 +783,15 @@ pub struct App {
     pub video_errors: HashMap<String, String>,
     /// A direct-message call someone started that you haven't joined or dismissed.
     pub ringing: Option<ChannelId>,
-    /// The tray icon, while SynCord closes to the tray.
+    /// The tray icon, while Celerity closes to the tray.
     pub(crate) tray: Option<crate::tray::Tray>,
     /// Away from the computer for a while (shown as idle).
     pub away: bool,
     pub detected_game: Option<String>,
     /// What the server was last told.
-    pub(crate) sent_presence: Option<(syncord_proto::Status, Option<syncord_proto::Activity>)>,
+    pub(crate) sent_presence: Option<(celerity_proto::Status, Option<celerity_proto::Activity>)>,
     /// The activity being typed in the status picker.
-    pub activity_draft: (syncord_proto::ActivityKind, String),
+    pub activity_draft: (celerity_proto::ActivityKind, String),
     pub search: crate::app_search::Search,
     /// The pinned messages panel, while open.
     pub pins: Option<crate::app_search::Pins>,
@@ -897,7 +897,7 @@ impl App {
             away: false,
             detected_game: None,
             sent_presence: None,
-            activity_draft: (syncord_proto::ActivityKind::Playing, String::new()),
+            activity_draft: (celerity_proto::ActivityKind::Playing, String::new()),
             search: Default::default(),
             pins: None,
             live: Default::default(),
@@ -936,9 +936,9 @@ impl App {
 
     pub fn title(&self) -> String {
         match self.session.as_ref().and_then(|s| s.current_info()) {
-            Some(c) if c.direct_with.is_some() => format!("@{} - SynCord", c.name),
-            Some(c) => format!("#{} - SynCord", c.name),
-            None => "SynCord".into(),
+            Some(c) if c.direct_with.is_some() => format!("@{} - Celerity", c.name),
+            Some(c) => format!("#{} - Celerity", c.name),
+            None => "Celerity".into(),
         }
     }
 
@@ -1972,7 +1972,7 @@ impl App {
                 iced::exit()
             }
             Err(e) => {
-                self.notice = Some(format!("Couldn't install SynCord {version}: {e}"));
+                self.notice = Some(format!("Couldn't install Celerity {version}: {e}"));
                 self.update = Stage::Failed(e);
                 Task::none()
             }
@@ -2272,7 +2272,7 @@ impl App {
                 self.reconnecting = false;
                 self.login.busy = false;
                 self.login.error = Some(
-                    "This server's identity has changed since you last connected, so SynCord didn't connect. \
+                    "This server's identity has changed since you last connected, so Celerity didn't connect. \
                      That happens when the server is reinstalled or moved to another PC, but it could also mean \
                      someone is pretending to be it. Check with whoever runs the server before trusting it."
                         .into(),
@@ -2445,14 +2445,14 @@ impl App {
                 let quiet = s.mentions_me(&m)
                     || s.blocked.contains(&m.author_id)
                     || self.settings.ignored_here(&self.settings.server).contains(&m.author_id);
-                let dnd = self.settings.status == syncord_proto::Status::DoNotDisturb;
+                let dnd = self.settings.status == celerity_proto::Status::DoNotDisturb;
                 if Some(m.author_id) != me && !self.deafened && !quiet && !dnd {
                     let in_server = s.channels.iter().any(|c| c.id == channel);
                     if (in_server && self.settings.server_sound) || (!in_server && self.settings.dm_sound) {
                         self.settings.play(crate::sounds::Sound::Message);
                     }
                 }
-                // Flash the taskbar icon while SynCord isn't focused (pings flash in on_mention).
+                // Flash the taskbar icon while Celerity isn't focused (pings flash in on_mention).
                 let flash = Some(m.author_id) != me && !quiet && self.settings.flash_taskbar && !self.focused;
                 let latest = s.latest.entry(channel).or_insert(m.id);
                 *latest = (*latest).max(m.id);
@@ -2603,8 +2603,8 @@ pub(crate) fn link_site(url: &str) -> Option<String> {
 /// ("unknown variant `OpenDirect`"); explain what's actually going on.
 fn friendly_error(message: String) -> String {
     if message.starts_with("bad request: unknown variant") {
-        "The server is running an older version of SynCord that doesn't have this feature yet. \
-         Whoever runs the server needs to install the latest SynCord Server."
+        "The server is running an older version of Celerity that doesn't have this feature yet. \
+         Whoever runs the server needs to install the latest Celerity Server."
             .into()
     } else {
         message

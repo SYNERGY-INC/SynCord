@@ -2,7 +2,7 @@
 
 use iced::widget::{button, container, row, scrollable, space, text, text_input};
 use iced::{Background, Border, Color, Element, Font, Length, Theme, font};
-use syncord_proto::{AvatarRing, Profile};
+use celerity_proto::{AvatarRing, Profile};
 
 use crate::theme::{AppTheme, contrast_text, rgb, with_alpha};
 

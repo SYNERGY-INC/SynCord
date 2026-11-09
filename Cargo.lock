@@ -801,6 +801,129 @@ dependencies = [
 ]
 
 [[package]]
+name = "celerity-client"
+version = "0.6.0"
+dependencies = [
+ "arboard",
+ "axum",
+ "bytes",
+ "celerity-proto",
+ "celerity-server",
+ "celerity-stream",
+ "celerity-update",
+ "celerity-video",
+ "chrono",
+ "cpal",
+ "dirs 6.0.0",
+ "emojis",
+ "fontdb",
+ "futures",
+ "iced",
+ "iced_renderer",
+ "iced_wgpu",
+ "image",
+ "nnnoiseless",
+ "opus",
+ "reqwest",
+ "rfd",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tokio-util",
+ "toml 0.9.12+spec-1.1.0",
+ "tray-icon",
+ "webpki-roots 1.0.11",
+ "windows-sys 0.61.2",
+ "winresource",
+]
+
+[[package]]
+name = "celerity-proto"
+version = "0.6.0"
+dependencies = [
+ "chacha20poly1305",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "celerity-server"
+version = "0.6.0"
+dependencies = [
+ "argon2",
+ "axum",
+ "celerity-proto",
+ "celerity-update",
+ "celerity-video",
+ "futures",
+ "image",
+ "rand",
+ "rcgen",
+ "reqwest",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.28.0",
+ "tokio-util",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "winresource",
+]
+
+[[package]]
+name = "celerity-stream"
+version = "0.6.0"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "libc",
+ "objc2 0.6.5",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-screen-capture-kit",
+ "openh264-sys2",
+ "windows 0.62.2",
+ "x11rb",
+ "zune-jpeg 0.5.15",
+]
+
+[[package]]
+name = "celerity-update"
+version = "0.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "celerity-video"
+version = "0.6.0"
+dependencies = [
+ "cpal",
+ "image",
+ "openh264-sys2",
+ "symphonia-codec-aac",
+ "symphonia-core",
+]
+
+[[package]]
 name = "cfg-expr"
 version = "0.15.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5674,129 +5797,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 dependencies = [
  "futures-core",
-]
-
-[[package]]
-name = "syncord-client"
-version = "0.6.0"
-dependencies = [
- "arboard",
- "axum",
- "bytes",
- "chrono",
- "cpal",
- "dirs 6.0.0",
- "emojis",
- "fontdb",
- "futures",
- "iced",
- "iced_renderer",
- "iced_wgpu",
- "image",
- "nnnoiseless",
- "opus",
- "reqwest",
- "rfd",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "syncord-proto",
- "syncord-server",
- "syncord-stream",
- "syncord-update",
- "syncord-video",
- "sysinfo",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tokio-util",
- "toml 0.9.12+spec-1.1.0",
- "tray-icon",
- "webpki-roots 1.0.11",
- "windows-sys 0.61.2",
- "winresource",
-]
-
-[[package]]
-name = "syncord-proto"
-version = "0.6.0"
-dependencies = [
- "chacha20poly1305",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "syncord-server"
-version = "0.6.0"
-dependencies = [
- "argon2",
- "axum",
- "futures",
- "image",
- "rand",
- "rcgen",
- "reqwest",
- "rusqlite",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "syncord-proto",
- "syncord-update",
- "syncord-video",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite 0.28.0",
- "tokio-util",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "winresource",
-]
-
-[[package]]
-name = "syncord-stream"
-version = "0.6.0"
-dependencies = [
- "block2 0.6.2",
- "dispatch2",
- "libc",
- "objc2 0.6.5",
- "objc2-av-foundation",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-foundation 0.3.2",
- "objc2-screen-capture-kit",
- "openh264-sys2",
- "windows 0.62.2",
- "x11rb",
- "zune-jpeg 0.5.15",
-]
-
-[[package]]
-name = "syncord-update"
-version = "0.6.0"
-dependencies = [
- "base64 0.22.1",
- "ed25519-dalek",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "syncord-video"
-version = "0.6.0"
-dependencies = [
- "cpal",
- "image",
- "openh264-sys2",
- "symphonia-codec-aac",
- "symphonia-core",
 ]
 
 [[package]]

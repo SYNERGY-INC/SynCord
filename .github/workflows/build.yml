@@ -54,9 +54,9 @@ jobs:
         shell: bash
         run: |
           mkdir dist
-          cp target/release/syncord${{ matrix.ext }} dist/
-          cp target/release/syncord-server${{ matrix.ext }} dist/
+          cp target/release/celerity${{ matrix.ext }} dist/
+          cp target/release/celerity-server${{ matrix.ext }} dist/
       - uses: actions/upload-artifact@v4
         with:
-          name: syncord-${{ matrix.name }}
+          name: celerity-${{ matrix.name }}
           path: dist/

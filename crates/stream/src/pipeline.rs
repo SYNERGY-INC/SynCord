@@ -170,7 +170,7 @@ impl SenderShared {
 /// Encodes frames from a source into datagrams on a background thread.
 ///
 /// ```no_run
-/// use syncord_stream::{Sender, SenderConfig, Source};
+/// use celerity_stream::{Sender, SenderConfig, Source};
 /// let sender = Sender::start(
 ///     SenderConfig::camera(42),
 ///     Source::TestPattern { width: 640, height: 360, fps: 30 },
@@ -218,7 +218,7 @@ impl Sender {
         });
         let sh = shared.clone();
         let thread = std::thread::Builder::new()
-            .name("syncord-encode".into())
+            .name("celerity-encode".into())
             .spawn(move || encode_loop(sh, encoder, config, Box::new(on_packet)))
             .map_err(|e| format!("could not start encoder thread: {e}"))?;
         let mut sender = Sender {
@@ -243,7 +243,7 @@ impl Sender {
                 let stop = Arc::new(Mutex::new(false));
                 let (sh, stop2) = (sender.shared.clone(), stop.clone());
                 let t = std::thread::Builder::new()
-                    .name("syncord-pattern".into())
+                    .name("celerity-pattern".into())
                     .spawn(move || {
                         let mut f = I420Frame::new(width, height);
                         let interval = Duration::from_secs_f64(1.0 / fps.clamp(1, 120) as f64);
@@ -541,7 +541,7 @@ const MAX_QUEUED: usize = 8;
 /// Reassembles and decodes one stream on a background thread, keeping only the latest picture.
 ///
 /// ```no_run
-/// use syncord_stream::{Receiver, ReceiverConfig};
+/// use celerity_stream::{Receiver, ReceiverConfig};
 /// let rx = Receiver::new(ReceiverConfig::new(42));
 /// # let datagram = [0u8; 20];
 /// rx.push_packet(&datagram);              // from the network
@@ -568,7 +568,7 @@ impl Receiver {
             request_interval: config.keyframe_request_interval,
         });
         let sh = shared.clone();
-        let thread = std::thread::Builder::new().name("syncord-decode".into()).spawn(move || decode_loop(sh)).ok();
+        let thread = std::thread::Builder::new().name("celerity-decode".into()).spawn(move || decode_loop(sh)).ok();
         Receiver { shared, thread }
     }
 

@@ -1,7 +1,7 @@
 //! Update logic for emoji, reactions, direct messages and read markers.
 
 use iced::Task;
-use syncord_proto::{ClientMsg, Reaction, ServerMsg};
+use celerity_proto::{ClientMsg, Reaction, ServerMsg};
 
 use crate::app::{App, EmojiPicker, Message, Overlay, PickerTab, PickerTarget, View};
 use crate::media;
@@ -182,7 +182,7 @@ impl App {
         Task::none()
     }
 
-    fn has_reacted(&self, message_id: syncord_proto::MessageId, e: &str) -> bool {
+    fn has_reacted(&self, message_id: celerity_proto::MessageId, e: &str) -> bool {
         let Some(s) = &self.session else { return false };
         s.chans
             .values()

@@ -2,7 +2,7 @@
 
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input, toggler};
 use iced::{Alignment, Border, Element, Length, Task};
-use syncord_proto::{ClientMsg, EVERYONE_ROLE, Role, perms};
+use celerity_proto::{ClientMsg, EVERYONE_ROLE, Role, perms};
 
 use crate::app::{App, Message, RoleDraft, Session};
 use crate::style::{self, bold, label, semibold};
@@ -145,13 +145,13 @@ impl App {
     fn role_members<'a>(&'a self, s: &'a Session, role: &'a Role, editable: bool) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let mut people: Vec<&syncord_proto::User> = s.users.values().collect();
+        let mut people: Vec<&celerity_proto::User> = s.users.values().collect();
         people.sort_by_key(|u| u.name().to_lowercase());
         // Only the owner can change the owner's roles.
-        let changeable = |u: &syncord_proto::User| editable && (!u.is_owner || s.is_owner());
+        let changeable = |u: &celerity_proto::User| editable && (!u.is_owner || s.is_owner());
         let (members, others): (Vec<_>, Vec<_>) = people.into_iter().partition(|u| u.roles.contains(&role.id));
 
-        let person = |u: &'a syncord_proto::User, action: Option<(&'static str, Message)>| {
+        let person = |u: &'a celerity_proto::User, action: Option<(&'static str, Message)>| {
             let mut r = row![
                 self.avatar(u, 28.0),
                 column![

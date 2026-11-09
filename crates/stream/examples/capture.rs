@@ -1,10 +1,10 @@
 //! Lists devices, or captures from one and reports frame rate and CPU use.
 //!
 //! ```text
-//! cargo run --release -p syncord-stream --example capture                 # list
-//! cargo run --release -p syncord-stream --example capture -- screen [ID] [SECONDS] [FPS] [MAXW] [MAXH]
-//! cargo run --release -p syncord-stream --example capture -- camera [ID] [SECONDS] [FPS] [W] [H]
-//! cargo run --release -p syncord-stream --example capture -- send-screen [ID] [SECONDS] [FPS] [MAXW] [MAXH]
+//! cargo run --release -p celerity-stream --example capture                 # list
+//! cargo run --release -p celerity-stream --example capture -- screen [ID] [SECONDS] [FPS] [MAXW] [MAXH]
+//! cargo run --release -p celerity-stream --example capture -- camera [ID] [SECONDS] [FPS] [W] [H]
+//! cargo run --release -p celerity-stream --example capture -- send-screen [ID] [SECONDS] [FPS] [MAXW] [MAXH]
 //! ```
 //! `send-screen` runs the whole sender (capture + encode + packetize) and a receiver.
 //! The last captured frame is written to `capture-last.ppm`.
@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use syncord_stream::*;
+use celerity_stream::*;
 
 fn cpu_time() -> Option<f64> {
     let s = std::fs::read_to_string("/proc/self/stat").ok()?;

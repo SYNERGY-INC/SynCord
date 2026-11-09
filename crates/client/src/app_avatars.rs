@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use iced::widget::{container, image, space, stack};
 use iced::{Border, Color, Element, Length, Task};
-use syncord_proto::{AvatarRing, User};
+use celerity_proto::{AvatarRing, User};
 
 use crate::app::{App, Message};
 use crate::media::{self, Picture};
@@ -112,7 +112,7 @@ impl App {
         let dot_size = (size * 0.38).round();
         let status = self.session.as_ref().and_then(|s| self.status_of(s, u.id));
         let color = if online {
-            crate::view_people::status_color(t, status.or(Some(syncord_proto::Status::Online)))
+            crate::view_people::status_color(t, status.or(Some(celerity_proto::Status::Online)))
         } else {
             t.muted.0
         };

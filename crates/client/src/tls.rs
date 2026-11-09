@@ -1,6 +1,6 @@
 //! Encrypted connections to the server.
 //!
-//! SynCord servers make their own certificate, which no certificate authority
+//! Celerity servers make their own certificate, which no certificate authority
 //! has signed, so the app trusts a server the first time it connects and
 //! remembers its certificate's fingerprint (like SSH does). After that, a server
 //! showing a different certificate is refused: that would mean it was
@@ -17,7 +17,7 @@ use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 use sha2::{Digest, Sha256};
 
 /// Error text used when a remembered server shows a different certificate.
-pub const IDENTITY_CHANGED: &str = "syncord: server identity changed";
+pub const IDENTITY_CHANGED: &str = "celerity: server identity changed";
 
 /// SHA-256 of a certificate in the same form the server logs it (hex pairs joined by colons).
 pub fn fingerprint(cert: &[u8]) -> String {

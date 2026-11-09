@@ -2,7 +2,7 @@
 
 use iced::widget::{button, column, container, row, text};
 use iced::{Alignment, Border, Color, Element, Length};
-use syncord_proto::{User, UserId};
+use celerity_proto::{User, UserId};
 
 use crate::app::{App, Message};
 use crate::style::{self, semibold};

@@ -1,5 +1,5 @@
 [package]
-name = "syncord-proto"
+name = "celerity-proto"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

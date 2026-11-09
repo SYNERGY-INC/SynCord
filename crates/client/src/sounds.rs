@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use syncord_proto::voice::SAMPLE_RATE;
+use celerity_proto::voice::SAMPLE_RATE;
 
 /// Don't play the same kind of sound more often than this (a burst of messages makes one chime).
 const MIN_GAP_MS: u64 = 600;

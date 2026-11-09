@@ -1,4 +1,4 @@
-//! SynCord server library: the binary in `main.rs` is a thin wrapper so the
+//! Celerity server library: the binary in `main.rs` is a thin wrapper so the
 //! server can also be started from integration tests.
 
 pub mod calls;
@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::routing::get;
 use serde::{Deserialize, Serialize};
-use syncord_proto::UserId;
+use celerity_proto::UserId;
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,9 +61,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             bind: "0.0.0.0:7878".into(),
-            community_name: "SynCord".into(),
+            community_name: "Celerity".into(),
             invite_code: gateway::random_token(6),
-            database: "syncord.db".into(),
+            database: "celerity.db".into(),
             uploads: "uploads".into(),
             max_upload_mb: 1024,
             giphy_api_key: String::new(),
@@ -71,7 +71,7 @@ impl Default for Config {
             gif_api_base: String::new(),
             unsafe_allow_private_link_previews: false,
             auto_update: true,
-            update_url: syncord_update::MANIFEST_URL.into(),
+            update_url: celerity_update::MANIFEST_URL.into(),
         }
     }
 }
@@ -106,7 +106,7 @@ pub struct AppState {
     /// Calls going on in direct messages.
     pub calls: calls::Calls,
     /// Everyone's chosen status and activity (kept while the server runs).
-    pub presence: Mutex<HashMap<UserId, syncord_proto::PresenceInfo>>,
+    pub presence: Mutex<HashMap<UserId, celerity_proto::PresenceInfo>>,
     /// UDP port voice is served on (0 until [`start_udp`] runs).
     pub udp_port: AtomicU16,
     pub next_conn_id: AtomicU64,
@@ -140,28 +140,28 @@ impl AppState {
 
 impl AppState {
     /// Someone's status and activity (online with nothing going on, unless they said otherwise).
-    pub fn presence_of(&self, user: UserId) -> syncord_proto::PresenceInfo {
-        self.presence.lock().unwrap().get(&user).cloned().unwrap_or(syncord_proto::PresenceInfo {
+    pub fn presence_of(&self, user: UserId) -> celerity_proto::PresenceInfo {
+        self.presence.lock().unwrap().get(&user).cloned().unwrap_or(celerity_proto::PresenceInfo {
             user_id: user,
-            status: syncord_proto::Status::Online,
+            status: celerity_proto::Status::Online,
             activity: None,
         })
     }
 
     /// What everyone else is told about someone who's connected.
-    pub fn presence_msg(&self, user: UserId) -> syncord_proto::ServerMsg {
+    pub fn presence_msg(&self, user: UserId) -> celerity_proto::ServerMsg {
         let p = self.presence_of(user);
-        let invisible = p.status == syncord_proto::Status::Invisible;
-        syncord_proto::ServerMsg::Presence {
+        let invisible = p.status == celerity_proto::Status::Invisible;
+        celerity_proto::ServerMsg::Presence {
             user_id: user,
             online: !invisible,
-            status: if invisible { syncord_proto::Status::Online } else { p.status },
+            status: if invisible { celerity_proto::Status::Online } else { p.status },
             activity: if invisible { None } else { p.activity },
         }
     }
 
     /// Send an event to everyone (`None`) or only to the listed people.
-    pub fn broadcast(&self, msg: &syncord_proto::ServerMsg, to: Option<Arc<[UserId]>>) {
+    pub fn broadcast(&self, msg: &celerity_proto::ServerMsg, to: Option<Arc<[UserId]>>) {
         let json: Arc<str> = serde_json::to_string(msg).expect("serialize").into();
         // Err only means nobody is listening right now.
         let _ = self.events.send(Event { json, to });
@@ -180,20 +180,20 @@ pub async fn start_udp(state: &Arc<AppState>, addr: SocketAddr) -> std::io::Resu
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/", get(|| async { "SynCord server is running.\n" }))
+        .route("/", get(|| async { "Celerity server is running.\n" }))
         .route("/ws", get(gateway::upgrade))
         // Uploads are streamed to disk and size-checked as they arrive.
         .route(
-            syncord_proto::UPLOAD_PATH,
+            celerity_proto::UPLOAD_PATH,
             axum::routing::post(http::upload).layer(axum::extract::DefaultBodyLimit::disable()),
         )
-        .route(&format!("{}/{{id}}", syncord_proto::FILES_PATH), get(http::download))
+        .route(&format!("{}/{{id}}", celerity_proto::FILES_PATH), get(http::download))
         .route(
-            syncord_proto::PROFILE_IMAGE_PATH,
+            celerity_proto::PROFILE_IMAGE_PATH,
             axum::routing::post(http::upload_profile_image)
                 .layer(axum::extract::DefaultBodyLimit::max(http::MAX_PROFILE_IMAGE as usize)),
         )
-        .route(&format!("{}/{{id}}", syncord_proto::PROFILE_IMAGE_PATH), get(http::download_profile_image))
+        .route(&format!("{}/{{id}}", celerity_proto::PROFILE_IMAGE_PATH), get(http::download_profile_image))
         .with_state(state)
 }
 

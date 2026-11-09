@@ -1,6 +1,6 @@
 //! People: roles and permissions, blocking and ignoring, mentions and pings.
 
-use syncord_proto::{EVERYONE_ROLE, Message as ChatMessage, Role, RoleId, ServerMsg, User, UserId, perms};
+use celerity_proto::{EVERYONE_ROLE, Message as ChatMessage, Role, RoleId, ServerMsg, User, UserId, perms};
 
 use crate::app::{App, Session};
 
@@ -68,7 +68,7 @@ impl Session {
     }
 
     /// Unread pings in a channel.
-    pub fn mention_count(&self, channel: syncord_proto::ChannelId) -> u32 {
+    pub fn mention_count(&self, channel: celerity_proto::ChannelId) -> u32 {
         self.mention_counts.get(&channel).copied().unwrap_or(0)
     }
 
@@ -131,7 +131,7 @@ impl App {
 
     pub(crate) fn update_people(&mut self, message: crate::app::Message) -> iced::Task<crate::app::Message> {
         use crate::app::Message;
-        use syncord_proto::ClientMsg;
+        use celerity_proto::ClientMsg;
         let Some(s) = &self.session else { return iced::Task::none() };
         match message {
             Message::StartCall(user) => {
@@ -198,7 +198,7 @@ impl App {
             return iced::Task::none();
         }
         *s.mention_counts.entry(m.channel_id).or_default() += 1;
-        if self.settings.status == syncord_proto::Status::DoNotDisturb {
+        if self.settings.status == celerity_proto::Status::DoNotDisturb {
             return iced::Task::none(); // counted, but quietly
         }
         if self.settings.ping_sound && !self.deafened {
@@ -208,7 +208,7 @@ impl App {
     }
 
     /// Flash the taskbar button (Windows), bounce the dock icon (macOS) or mark the window
-    /// urgent (Linux) until SynCord is looked at.
+    /// urgent (Linux) until Celerity is looked at.
     pub(crate) fn request_attention(&mut self) -> iced::Task<crate::app::Message> {
         self.wants_attention = true;
         iced::window::latest()

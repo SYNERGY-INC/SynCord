@@ -4,7 +4,7 @@
 use iced::keyboard::{Key, Modifiers, key};
 use iced::widget::{Id, button, column, container, operation, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length, Task};
-use syncord_proto::{ChannelId, ChannelKind, UserId};
+use celerity_proto::{ChannelId, ChannelKind, UserId};
 
 use crate::app::{App, Message, Overlay, PickerTarget, Session};
 use crate::style::{self, bold, card, label, semibold};

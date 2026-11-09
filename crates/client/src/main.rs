@@ -1,4 +1,4 @@
-//! SynCord desktop client.
+//! Celerity desktop client.
 
 // Hide the console window on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -49,6 +49,7 @@ use app::App;
 fn main() -> iced::Result {
     // HTTPS (for servers behind a proxy like Caddy) uses the same small crypto library as the WebSocket.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    settings::adopt_legacy_folder();
     // Already running (maybe in the tray)? Bring that copy to the front instead.
     if !tray::claim_single_instance() {
         return Ok(());
@@ -69,21 +70,21 @@ fn main() -> iced::Result {
         .title(App::title)
         .theme(App::iced_theme)
         .subscription(App::subscription)
-        // The X button may hide SynCord to the tray instead (see App::update).
+        // The X button may hide Celerity to the tray instead (see App::update).
         .exit_on_close_request(false)
         .window(iced::window::Settings {
             size: iced::Size::new(1280.0, 800.0),
             min_size: Some(iced::Size::new(940.0, 560.0)),
             icon: iced::window::icon::from_rgba(
-                include_bytes!("../../../packaging/icons/syncord-64.rgba").to_vec(),
+                include_bytes!("../../../packaging/icons/celerity-64.rgba").to_vec(),
                 64,
                 64,
             )
             .ok(),
-            // Lets Linux desktops match the window to syncord.desktop (and its icon).
+            // Lets Linux desktops match the window to celerity.desktop (and its icon).
             #[cfg(target_os = "linux")]
             platform_specific: iced::window::settings::PlatformSpecific {
-                application_id: "syncord".into(),
+                application_id: "celerity".into(),
                 ..Default::default()
             },
             ..Default::default()

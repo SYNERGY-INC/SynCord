@@ -1,5 +1,5 @@
 //! Cameras and screen shares in calls. The video itself (capture, H.264, packets)
-//! is the `syncord-stream` crate; this is the plumbing around it:
+//! is the `celerity-stream` crate; this is the plumbing around it:
 //!
 //! ```text
 //! camera / screen -> stream::Sender --packets--> send() -> sealed, out the call's UDP socket
@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use iced::Task;
 use iced::widget::image::Handle;
-use syncord_proto::voice::{Direction, Key, Packet, Token, open_video, seal_video};
-use syncord_proto::{ClientMsg, UserId, VideoKind};
-use syncord_stream as stream;
+use celerity_proto::voice::{Direction, Key, Packet, Token, open_video, seal_video};
+use celerity_proto::{ClientMsg, UserId, VideoKind};
+use celerity_stream as stream;
 
 use crate::app::{App, Message};
 use crate::net::Connection;

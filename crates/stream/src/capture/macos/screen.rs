@@ -63,7 +63,7 @@ impl ScreenDelegate {
     }
 }
 
-const PERMISSION: &str = "screen recording permission needed: allow SynCord in System Settings > Privacy & Security > Screen Recording, then restart SynCord";
+const PERMISSION: &str = "screen recording permission needed: allow Celerity in System Settings > Privacy & Security > Screen Recording, then restart Celerity";
 
 fn content() -> Result<Retained<SCShareableContent>, String> {
     if !CGPreflightScreenCaptureAccess() {
@@ -192,7 +192,7 @@ pub(crate) fn run_screen(id: &str, config: ScreenConfig, sink: Sink, ready: Read
         handler: FrameHandler::new(sink, config.fps, config.max_width, config.max_height),
         stopped: stopped.clone(),
     });
-    let queue = dispatch2::DispatchQueue::new("syncord.screen", None);
+    let queue = dispatch2::DispatchQueue::new("celerity.screen", None);
     let stream = unsafe {
         let cfg = SCStreamConfiguration::new();
         cfg.setWidth(tw as usize);

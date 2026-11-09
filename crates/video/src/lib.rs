@@ -1,4 +1,4 @@
-//! Inline video for SynCord: probe, poster frames and (with the `playback` feature) a small
+//! Inline video for Celerity: probe, poster frames and (with the `playback` feature) a small
 //! player with audio, for H.264 video in MP4/MOV files.
 //!
 //! Everything is pure Rust plus the OpenH264 decoder, which `openh264-sys2` compiles from its

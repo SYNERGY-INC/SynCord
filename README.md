@@ -1,15 +1,18 @@
-# SynCord
+# Celerity
 
 A lightweight, self-hosted chat app for you and your friends, written entirely in Rust.
 It has text and voice channels and looks and feels like the chat apps you're used to, but it's a
 native program instead of a web browser in disguise, so it's tiny, and every customization
 feature is free.
 
-![SynCord main window](docs/screenshot.png)
+> Celerity used to be called **SynCord**. Apps and servers from then update to Celerity by
+> themselves and keep their settings, accounts, messages and invite codes.
+
+![Celerity main window](docs/screenshot.png)
 
 ## Why
 
-| | SynCord | Typical Electron chat app |
+| | Celerity | Typical Electron chat app |
 |---|---|---|
 | Client memory (one server, pictures on screen) | **~30–45 MB** (low memory mode) | 300 MB to 1 GB+ |
 | Client memory (in a voice call) | **+2 MB** | higher still |
@@ -32,7 +35,7 @@ off in **Settings → Appearance** for GPU rendering.
   server so your friends' addresses aren't shared with every website
 - **Statuses**: Online, Idle (automatic after 10 minutes away), Do Not Disturb (no sounds or
   pings) and Invisible, plus "Playing ..." / "Watching ..." / "Listening to ..." that you type or
-  that SynCord fills in from the game you're running (Steam, Epic, GOG, Riot and Xbox games)
+  that Celerity fills in from the game you're running (Steam, Epic, GOG, Riot and Xbox games)
 - **Replies**, **markdown** (bold, italic, code blocks, quotes, lists...) and **pinned messages**
 - Links ask before opening, showing the real website (and can remember trusted sites)
 - Undo/redo and a right-click menu in the message box
@@ -40,7 +43,7 @@ off in **Settings → Appearance** for GPU rendering.
   to jump to it in the conversation
 - Clickable profile cards
 - **Closes to the tray** on Windows and Mac (optional), so messages and calls still reach you;
-  starting SynCord again brings back the running copy
+  starting Celerity again brings back the running copy
 - **Right-click anyone** for Profile, Message, Start a Call, Roles, Ignore, Block, Copy Username/ID
 - **Profile customization**: display name, pronouns, custom status, bio, name/avatar colour,
   **profile picture and banner** (pictures or animated GIFs, cropped Discord-style), banner colour,
@@ -133,10 +136,10 @@ Send that link to your friends. The release page explains which file each person
 
 | | Everyone (to chat) | The host PC (to run the server) |
 |---|---|---|
-| **Windows** | `SynCord-Setup-x.y.z.exe` | `SynCord-Server-Setup-x.y.z.exe` |
-| **Mac** | `SynCord-x.y.z-macOS.dmg` (Intel and Apple Silicon) | `SynCord-Server-x.y.z-macOS.zip` |
-| **Ubuntu / Debian** | `syncord_x.y.z_amd64.deb` | `syncord-server_x.y.z_amd64.deb` |
-| **Other Linux** | `syncord-x.y.z-linux-x86_64.tar.gz` | `syncord-server-x.y.z-linux-x86_64.tar.gz` |
+| **Windows** | `Celerity-Setup-x.y.z.exe` | `Celerity-Server-Setup-x.y.z.exe` |
+| **Mac** | `Celerity-x.y.z-macOS.dmg` (Intel and Apple Silicon) | `Celerity-Server-x.y.z-macOS.zip` |
+| **Ubuntu / Debian** | `celerity_x.y.z_amd64.deb` | `celerity-server_x.y.z_amd64.deb` |
+| **Other Linux** | `celerity-x.y.z-linux-x86_64.tar.gz` | `celerity-server-x.y.z-linux-x86_64.tar.gz` |
 
 - The **Windows server installer** does the whole hosting setup: it starts the server with Windows,
   opens the firewall and shows the invite code. On Ubuntu/Debian the server `.deb` sets up a
@@ -144,16 +147,16 @@ Send that link to your friends. The release page explains which file each person
 - The apps aren't signed with paid certificates. **Windows** may say *"Windows protected your PC"*
   (click **More info → Run anyway**), and **macOS** needs you to allow the app the first time
   (macOS 15+: **System Settings → Privacy & Security → Open Anyway**; older: right-click → **Open**).
-- **Phones and tablets** aren't supported yet. SynCord is a desktop app for now.
+- **Phones and tablets** aren't supported yet. Celerity is a desktop app for now.
 
 ### Automatic updates
 
-SynCord keeps itself up to date:
+Celerity keeps itself up to date:
 
 - **The app** checks for a new release a few seconds after it opens and every few hours after
-  that, downloads it in the background, then shows a popup: *Updating SynCord to x.y.z in 10
+  that, downloads it in the background, then shows a popup: *Updating Celerity to x.y.z in 10
   seconds*. It installs on its own and reopens (or click **Update now**; **Later** installs it the
-  next time you open SynCord). If you're in a voice call, it waits until you leave.
+  next time you open Celerity). If you're in a voice call, it waits until you leave.
   - Windows and Mac update completely by themselves.
   - Linux: the portable `.tar.gz` copy updates itself; the `.deb` package shows a download button
     (installing system packages needs your password).
@@ -171,7 +174,7 @@ Apps and servers from before v0.3.0 don't have the updater, so install v0.3.0 by
 Change `version` in `Cargo.toml` and add a section for it to `CHANGELOG.md`, push, then on GitHub
 open **Actions → Release → Run workflow**. It builds every installer, tests the Windows ones on a
 real Windows machine, signs everything, and publishes a release named after the version. Every
-SynCord app and server then updates itself.
+Celerity app and server then updates itself.
 
 Signing needs the private release key saved as a repository secret named `SYNCORD_UPDATE_KEY`
 (Settings → Secrets and variables → Actions). Keep a backup of that key somewhere safe: without
@@ -194,23 +197,23 @@ The programs end up in `target/release/`.
 
 ### 1. Start the server
 
-Put `syncord-server` (`syncord-server.exe` on Windows) in its own folder, for example
-`C:\SynCord`, and run it once. It creates two files next to itself:
+Put `celerity-server` (`celerity-server.exe` on Windows) in its own folder, for example
+`C:\Celerity`, and run it once. It creates two files next to itself:
 
-- `syncord-server.toml`: the settings
-- `syncord.db`: the database that holds all accounts, channels and messages
+- `celerity-server.toml`: the settings
+- `celerity.db`: the database that holds all accounts, channels and messages
 - `uploads/`: pictures and files people send
 
-(With the Windows installer they're in `C:\ProgramData\SynCord Server` instead.)
+(With the Windows installer they're in `C:\ProgramData\Celerity Server` instead.)
 
 The console prints the **invite code** your friends need to sign up. Open
-`syncord-server.toml` to change it or to rename the server:
+`celerity-server.toml` to change it or to rename the server:
 
 ```toml
 bind = "0.0.0.0:7878"          # listen on port 7878 on every network card
 community_name = "The Hangout" # shown at the top of the channel list
 invite_code = "pick-something" # needed to create an account; "" lets anyone sign up
-database = "syncord.db"
+database = "celerity.db"
 uploads = "uploads"            # folder for pictures and files people send
 max_upload_mb = 1024           # biggest file people can send (1 GB)
 auto_update = true             # install new server versions by itself (Windows)
@@ -219,7 +222,7 @@ klipy_api_key = ""
 ```
 
 Restart the server after editing. To check it's running, open <http://localhost:7878> on that
-PC. It should say *SynCord server is running.*
+PC. It should say *Celerity server is running.*
 
 Big files take up disk space on the server PC; lower `max_upload_mb` if that's a worry.
 
@@ -234,7 +237,7 @@ one service:
 - **KLIPY**: sign up at <https://partner.klipy.com/>, create an app, and copy its API key.
 
 Paste the key into the settings file, for example `giphy_api_key = "abc123..."`, save, and
-restart the server (on Windows: Start menu → *SynCord Server* → *Restart server*, or restart the
+restart the server (on Windows: Start menu → *Celerity Server* → *Restart server*, or restart the
 PC). The GIF tab in everyone's emoji picker now has a search box. If both keys are set, GIPHY is
 used.
 
@@ -251,7 +254,7 @@ private, encrypted network, so there's no router setup and nothing exposed to th
    Or install it on the server PC only and [share that machine](https://tailscale.com/kb/1084/sharing)
    with your friends' accounts.
 2. Find the server PC's Tailscale address (it looks like `100.x.y.z`) in the Tailscale app.
-3. Everyone types that address into SynCord's **Server address** box.
+3. Everyone types that address into Celerity's **Server address** box.
 
 #### Option B: Port forwarding
 
@@ -261,17 +264,17 @@ private, encrypted network, so there's no router setup and nothing exposed to th
 2. Allow the port through the firewall. On Windows, run these in an admin PowerShell:
 
    ```powershell
-   New-NetFirewallRule -DisplayName "SynCord" -Direction Inbound -Protocol TCP -LocalPort 7878 -Action Allow
+   New-NetFirewallRule -DisplayName "Celerity" -Direction Inbound -Protocol TCP -LocalPort 7878 -Action Allow
    ```
 
    ```powershell
-   New-NetFirewallRule -DisplayName "SynCord voice" -Direction Inbound -Protocol UDP -LocalPort 7878 -Action Allow
+   New-NetFirewallRule -DisplayName "Celerity voice" -Direction Inbound -Protocol UDP -LocalPort 7878 -Action Allow
    ```
 3. Friends use your home's public IP address (search "what is my IP" on the server PC).
 
 > **Heads up:** with plain port forwarding, traffic (including passwords) is not encrypted.
 > Tailscale avoids this. If you'd rather use port forwarding, put a reverse proxy such as
-> [Caddy](https://caddyserver.com) in front of SynCord with a domain name. Caddy gets an HTTPS
+> [Caddy](https://caddyserver.com) in front of Celerity with a domain name. Caddy gets an HTTPS
 > certificate automatically, and friends then connect with `wss://your.domain`. Voice then
 > travels through the same encrypted connection.
 
@@ -281,22 +284,22 @@ On the same Wi-Fi as the server you can always use its local IP (e.g. `192.168.1
 
 **Windows:** open *Task Scheduler* and choose **Create Task**:
 - *Triggers*: **At startup**
-- *Actions*: **Start a program**, pointing to `C:\SynCord\syncord-server.exe`, with
-  *Start in* set to `C:\SynCord`
+- *Actions*: **Start a program**, pointing to `C:\Celerity\celerity-server.exe`, with
+  *Start in* set to `C:\Celerity`
 - *General*: tick **Run whether user is logged on or not**
 
-**Linux:** create `/etc/systemd/system/syncord.service`:
+**Linux:** create `/etc/systemd/system/celerity.service`:
 
 ```ini
 [Unit]
-Description=SynCord chat server
+Description=Celerity chat server
 After=network-online.target
 
 [Service]
-WorkingDirectory=/opt/syncord
-ExecStart=/opt/syncord/syncord-server
+WorkingDirectory=/opt/celerity
+ExecStart=/opt/celerity/celerity-server
 Restart=always
-User=syncord
+User=celerity
 
 [Install]
 WantedBy=multi-user.target
@@ -305,18 +308,18 @@ WantedBy=multi-user.target
 Then run:
 
 ```bash
-sudo systemctl enable --now syncord
+sudo systemctl enable --now celerity
 ```
 
-**Docker / CasaOS:** every release publishes a server image, `ghcr.io/bxpo/syncord-server`.
+**Docker / CasaOS:** every release publishes a server image, `ghcr.io/bxpo/celerity-server`.
 
 - **CasaOS:** App Store → **+** → *Install a customized app* → *Import*, and paste in
   [`docker-compose.yml`](docker-compose.yml). Settings, database and uploads are kept in
-  `/DATA/AppData/syncord`; the invite code is in `syncord-server.toml` there.
+  `/DATA/AppData/celerity`; the invite code is in `celerity-server.toml` there.
 - **Docker:**
 
   ```bash
-  docker run -d --name syncord-server --restart unless-stopped -p 7878:7878/tcp -p 7878:7878/udp -v ./data:/data ghcr.io/bxpo/syncord-server:latest
+  docker run -d --name celerity-server --restart unless-stopped -p 7878:7878/tcp -p 7878:7878/udp -v ./data:/data ghcr.io/bxpo/celerity-server:latest
   ```
 
 To update, pull the new image and recreate the container (in CasaOS, update the app). The server
@@ -324,34 +327,34 @@ in a container doesn't update itself; it writes a line in its log when a new ver
 
 ### 4. Create accounts
 
-Open `syncord`, click **Register**, enter the server address, a username, a password and the
+Open `celerity`, click **Register**, enter the server address, a username, a password and the
 invite code. **The first account created becomes the server owner**, so the host should
 register first. Only the owner can create and delete channels.
 
 ### Server troubleshooting
 
 **Is it running?** On the server PC, open <http://localhost:7878> in a browser. It should say
-*SynCord server is running.*
+*Celerity server is running.*
 
 **Windows server installer:**
 - If setup finds a problem it says what it was, and writes the details to
-  `C:\ProgramData\SynCord Server\setup.log`.
-- Start menu → **SynCord Server → Run server in a window (troubleshooting)** runs the server in a
+  `C:\ProgramData\Celerity Server\setup.log`.
+- Start menu → **Celerity Server → Run server in a window (troubleshooting)** runs the server in a
   window so you can read any error. If it says the port is already in use, the server is already
   running in the background, which is good.
-- The server's own log is `C:\ProgramData\SynCord Server\syncord-server.log`.
+- The server's own log is `C:\ProgramData\Celerity Server\celerity-server.log`.
 - **Firewall:** if another antivirus or firewall manages your PC's firewall instead of Windows (Norton,
-  McAfee, Bitdefender and so on), allow `syncord-server.exe` in that program.
+  McAfee, Bitdefender and so on), allow `celerity-server.exe` in that program.
 - **Starting it by hand:** open PowerShell **as administrator** and run:
 
   ```powershell
-  & "C:\Program Files\SynCord Server\syncord-server.exe" "C:\ProgramData\SynCord Server\syncord-server.toml"
+  & "C:\Program Files\Celerity Server\celerity-server.exe" "C:\ProgramData\Celerity Server\celerity-server.toml"
   ```
 
   It runs until you close that window.
 
-**Linux service:** check `sudo systemctl status syncord-server`, and see the log with
-`sudo journalctl -u syncord-server`.
+**Linux service:** check `sudo systemctl status celerity-server`, and see the log with
+`sudo journalctl -u celerity-server`.
 
 ### Voice tips
 
@@ -361,14 +364,14 @@ register first. Only the owner can create and delete channels.
   sensitivity: the bar should turn green when you talk and stay yellow when you're quiet.
 - The **Voice Connected** box shows **direct (UDP)** or **relayed (TCP)**. Relayed works fine; if
   you'd like the lower delay, open UDP port 7878 as described above.
-- **macOS** asks for microphone permission the first time you join a call. If you start SynCord
+- **macOS** asks for microphone permission the first time you join a call. If you start Celerity
   from Terminal, the permission is granted to Terminal.
 
 ### Backups
 
-Everything lives in `syncord.db` and the `uploads` folder. Stop the server and copy both (plus
-any `syncord.db-wal` / `syncord.db-shm` files) somewhere safe. On Windows they're in
-`C:\ProgramData\SynCord Server`.
+Everything lives in `celerity.db` and the `uploads` folder. Stop the server and copy both (plus
+any `celerity.db-wal` / `celerity.db-shm` files) somewhere safe. On Windows they're in
+`C:\ProgramData\Celerity Server`.
 
 ---
 
@@ -385,9 +388,9 @@ what your friends will see. Changes reach everyone the moment you save.
 **Settings → Appearance** has the built-in themes. To make your own:
 
 1. Open the themes folder:
-   - Windows: `%APPDATA%\syncord\themes`
-   - macOS: `~/Library/Application Support/syncord/themes`
-   - Linux: `~/.config/syncord/themes`
+   - Windows: `%APPDATA%\celerity\themes`
+   - macOS: `~/Library/Application Support/celerity/themes`
+   - Linux: `~/.config/celerity/themes`
 2. Copy `example.toml`, give it a new `name`, and change any colours.
 3. Press **Reload themes**.
 

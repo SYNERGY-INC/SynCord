@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use syncord_proto::{ChannelKind, Embed, Message, ServerMsg, UserId};
+use celerity_proto::{ChannelKind, Embed, Message, ServerMsg, UserId};
 use tracing::debug;
 
 use crate::{AppState, db, embeds, http};

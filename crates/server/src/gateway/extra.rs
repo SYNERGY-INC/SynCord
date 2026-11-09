@@ -1,7 +1,7 @@
 //! Requests added in 0.5: roles, blocking and profile pictures.
 
 use super::*;
-use syncord_proto::{MAX_PINS, MessageKind};
+use celerity_proto::{MAX_PINS, MessageKind};
 
 impl Connection {
     /// Handle a 0.5 request; `None` if `msg` isn't one of them.
@@ -239,8 +239,8 @@ impl Connection {
                 self.send(&ServerMsg::Around { channel_id, message_id, messages, reached_start }).await;
             }
             ClientMsg::SetPresence { status, activity } => {
-                let activity = activity.and_then(syncord_proto::Activity::sanitized);
-                let info = syncord_proto::PresenceInfo { user_id: me, status, activity };
+                let activity = activity.and_then(celerity_proto::Activity::sanitized);
+                let info = celerity_proto::PresenceInfo { user_id: me, status, activity };
                 let changed = self.state.presence.lock().unwrap().insert(me, info.clone()) != Some(info);
                 if changed {
                     // Going invisible looks like going offline; coming back looks like coming online.

@@ -1,5 +1,5 @@
 //! Headless playback check / benchmark:
-//! `cargo run --release -p syncord-video --features playback --example play -- clip.mp4 [max_side]`
+//! `cargo run --release -p celerity-video --features playback --example play -- clip.mp4 [max_side]`
 //!
 //! Plays the file to the end polling `frame()` at ~60 Hz like a UI would, then prints how many
 //! distinct frames were shown, the worst frame lag behind the clock and (on Linux) peak RSS.
@@ -28,15 +28,15 @@ fn main() {
 
     println!("RSS before open: {:?} KB", rss_kb("VmRSS:"));
     let t = Instant::now();
-    let info = syncord_video::probe(&path).unwrap_or_else(|e| panic!("probe: {e}"));
+    let info = celerity_video::probe(&path).unwrap_or_else(|e| panic!("probe: {e}"));
     println!("probe: {info:?} in {:?}", t.elapsed());
     let t = Instant::now();
-    let (_, img) = syncord_video::poster(&path, max_side).unwrap();
+    let (_, img) = celerity_video::poster(&path, max_side).unwrap();
     println!("poster: {}x{} in {:?}", img.width(), img.height(), t.elapsed());
     drop(img);
     println!("RSS after poster: {:?} KB (peak {:?} KB)", rss_kb("VmRSS:"), rss_kb("VmHWM:"));
 
-    let player = syncord_video::Player::open(&path, max_side).unwrap();
+    let player = celerity_video::Player::open(&path, max_side).unwrap();
     while player.frame().is_none() {
         std::thread::sleep(Duration::from_millis(5));
     }

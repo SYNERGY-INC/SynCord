@@ -1,15 +1,15 @@
 [package]
-name = "syncord-client"
+name = "celerity-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "syncord"
+name = "celerity"
 path = "src/main.rs"
 
 [dependencies]
-syncord-proto.workspace = true
+celerity-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -38,9 +38,9 @@ fontdb = "0.23"
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 emojis = "0.9"
-syncord-update.workspace = true
-syncord-video = { workspace = true, features = ["playback"] }
-syncord-stream = { workspace = true }
+celerity-update.workspace = true
+celerity-video = { workspace = true, features = ["playback"] }
+celerity-stream = { workspace = true }
 
 # The tray icon (Linux would need GTK libraries for it, so there closing just quits).
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
@@ -51,7 +51,7 @@ tray-icon = "0.26"
 windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
-syncord-server = { path = "../server" }
+celerity-server = { path = "../server" }
 axum = "0.8"
 
 [build-dependencies]

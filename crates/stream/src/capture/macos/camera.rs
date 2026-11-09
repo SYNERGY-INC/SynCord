@@ -73,7 +73,7 @@ pub(crate) fn list_cameras() -> Result<Vec<DeviceInfo>, String> {
 
 /// Asks for camera permission if needed (blocks until the user answers).
 fn ensure_permission() -> Result<(), String> {
-    let denied = "camera access is off for SynCord: allow it in System Settings > Privacy & Security > Camera";
+    let denied = "camera access is off for Celerity: allow it in System Settings > Privacy & Security > Camera";
     match unsafe { AVCaptureDevice::authorizationStatusForMediaType(video()) } {
         AVAuthorizationStatus::Authorized => Ok(()),
         AVAuthorizationStatus::NotDetermined => {
@@ -150,7 +150,7 @@ pub(crate) fn run_camera(id: &str, config: CameraConfig, sink: Sink, ready: Read
     let output = unsafe { AVCaptureVideoDataOutput::new() };
     let (tw, th) = fit_size(mode.width, mode.height, config.width, config.height);
     let delegate = CameraDelegate::new(FrameHandler::new(sink, config.fps, config.width, config.height));
-    let queue = dispatch2::DispatchQueue::new("syncord.camera", None);
+    let queue = dispatch2::DispatchQueue::new("celerity.camera", None);
     unsafe {
         session.beginConfiguration();
         if !session.canAddInput(&input) {

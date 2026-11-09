@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=SynCord
+Name=Celerity
 GenericName=Chat
 Comment=Text and voice chat with your friends
-Exec=syncord
-Icon=syncord
+Exec=celerity
+Icon=celerity
 Terminal=false
 Categories=Network;Chat;InstantMessaging;
 Keywords=chat;voice;messaging;
-StartupWMClass=syncord
+StartupWMClass=celerity

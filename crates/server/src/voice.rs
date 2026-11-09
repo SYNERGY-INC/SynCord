@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use rand::Rng;
-use syncord_proto::voice::{
+use celerity_proto::voice::{
     Direction, Key, MAX_PACKET, Packet, ReplayWindow, Token, open, open_video, seal, seal_video,
 };
-use syncord_proto::{ChannelId, UserId, VideoKind, VoiceState};
+use celerity_proto::{ChannelId, UserId, VideoKind, VoiceState};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn cameras_go_to_everyone_screens_to_watchers() {
-        use syncord_proto::voice::{open_video, seal_video};
+        use celerity_proto::voice::{open_video, seal_video};
         let v = Voice::default();
         let mut keys = Vec::new();
         let mut rxs = Vec::new();

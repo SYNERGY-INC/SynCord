@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use syncord_proto::voice::{Direction, FRAME_SAMPLES, Key, Packet, open};
+use celerity_proto::voice::{Direction, FRAME_SAMPLES, Key, Packet, open};
 
 use super::dsp::level_db;
 use super::jitter::{JitterBuffer, Pop};

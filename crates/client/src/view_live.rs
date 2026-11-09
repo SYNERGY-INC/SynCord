@@ -3,7 +3,7 @@
 
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, text, toggler};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding};
-use syncord_proto::{ChannelId, User, UserId, VideoKind, VoiceState};
+use celerity_proto::{ChannelId, User, UserId, VideoKind, VoiceState};
 
 use crate::app::{App, Message, Session};
 use crate::icons;
@@ -262,8 +262,8 @@ impl App {
                 let mut items = column![].spacing(6);
                 for sc in screens {
                     let kind = match sc.kind {
-                        syncord_stream::ScreenKind::Display => "Screen",
-                        syncord_stream::ScreenKind::Window => "Window",
+                        celerity_stream::ScreenKind::Display => "Screen",
+                        celerity_stream::ScreenKind::Window => "Window",
                     };
                     items = items.push(
                         button(

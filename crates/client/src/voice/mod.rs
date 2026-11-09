@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use syncord_proto::voice::{Direction, FRAME_SAMPLES, Key, Packet, Token, seal};
+use celerity_proto::voice::{Direction, FRAME_SAMPLES, Key, Packet, Token, seal};
 
 use crate::net::Connection;
 use dsp::{CaptureProcessor, CaptureSettings};
@@ -115,7 +115,7 @@ impl VoiceEngine {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         {
             let shared = shared.clone();
-            threads.push(spawn("syncord-audio", move || {
+            threads.push(spawn("celerity-audio", move || {
                 let input = devices::start_input(config.input_device.as_deref(), chunks_tx);
                 let output = devices::start_output(config.output_device.as_deref(), shared.mixer.clone());
                 let result = match (&input, &output) {
@@ -166,7 +166,7 @@ impl VoiceEngine {
                 if let Some(sock) = &udp {
                     let shared = shared.clone();
                     let sock = sock.try_clone().expect("clone udp socket");
-                    threads.push(spawn("syncord-voice-udp", move || udp_loop(sock, token, shared)));
+                    threads.push(spawn("celerity-voice-udp", move || udp_loop(sock, token, shared)));
                 }
                 let udp = udp.and_then(|s| s.try_clone().ok()).map(Arc::new);
                 // Video goes out the same way (same socket, so the server sees one address).
@@ -201,7 +201,7 @@ impl VoiceEngine {
         };
 
         let capture_shared = shared.clone();
-        threads.push(spawn("syncord-capture", move || capture_loop(chunks_rx, capture_shared, sender)));
+        threads.push(spawn("celerity-capture", move || capture_loop(chunks_rx, capture_shared, sender)));
 
         Ok(Self { shared, threads, video_out })
     }
@@ -352,8 +352,8 @@ fn udp_loop(sock: UdpSocket, token: Token, shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
-    use syncord_proto::voice::{FRAME_SAMPLES, token_from_hex};
-    use syncord_proto::{ChannelKind, ClientMsg, ServerMsg};
+    use celerity_proto::voice::{FRAME_SAMPLES, token_from_hex};
+    use celerity_proto::{ChannelKind, ClientMsg, ServerMsg};
 
     use super::dsp::{CaptureSettings, level_db};
     use super::*;
@@ -403,7 +403,7 @@ mod tests {
             if let Some(Event::Received(msg)) = events.next().await
                 && let ServerMsg::VoiceReady { token, udp_port, key, ssrc, .. } = *msg
             {
-                let key = syncord_proto::voice::key_from_hex(&key.expect("a voice key")).unwrap();
+                let key = celerity_proto::voice::key_from_hex(&key.expect("a voice key")).unwrap();
                 return (conn, token_from_hex(&token).unwrap(), key, udp_port, events, ssrc);
             }
         }
@@ -438,7 +438,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn encrypted_audio_flows_both_ways_over_udp_and_websocket() {
-        use syncord_server::{AppState, Config, db::Db, router, start_udp};
+        use celerity_server::{AppState, Config, db::Db, router, start_udp};
         let _ = rustls::crypto::ring::default_provider().install_default();
         let config = Config { invite_code: "x".into(), ..Config::default() };
         let state = AppState::new(config, Db::open_in_memory().unwrap());
@@ -446,10 +446,10 @@ mod tests {
         let address = listener.local_addr().unwrap().to_string();
         start_udp(&state, "127.0.0.1:0".parse().unwrap()).await.unwrap();
         // The real server setup: encrypted and plain connections on one port.
-        let dir = std::env::temp_dir().join(format!("syncord-voice-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("celerity-voice-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (tls, _) = syncord_server::tls::load_or_create(&dir).unwrap();
-        let dual = syncord_server::tls::DualListener::new(listener, tls).unwrap();
+        let (tls, _) = celerity_server::tls::load_or_create(&dir).unwrap();
+        let dual = celerity_server::tls::DualListener::new(listener, tls).unwrap();
         tokio::spawn(async move { axum::serve(dual, router(state)).await.unwrap() });
 
         // Alice only uses the WebSocket; her incoming audio lands in her sink's mixer.
@@ -515,19 +515,19 @@ mod tests {
     /// WebSocket, through the real server, to Bob's app over UDP, and decode there.
     #[tokio::test(flavor = "multi_thread")]
     async fn video_flows_through_the_server() {
-        use syncord_proto::VideoKind;
-        use syncord_server::{AppState, Config, db::Db, router, start_udp};
-        use syncord_stream as stream;
+        use celerity_proto::VideoKind;
+        use celerity_server::{AppState, Config, db::Db, router, start_udp};
+        use celerity_stream as stream;
         let _ = rustls::crypto::ring::default_provider().install_default();
         let config = Config { invite_code: "x".into(), ..Config::default() };
         let state = AppState::new(config, Db::open_in_memory().unwrap());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
         start_udp(&state, "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let dir = std::env::temp_dir().join(format!("syncord-video-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("celerity-video-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (tls, _) = syncord_server::tls::load_or_create(&dir).unwrap();
-        let dual = syncord_server::tls::DualListener::new(listener, tls).unwrap();
+        let (tls, _) = celerity_server::tls::load_or_create(&dir).unwrap();
+        let dual = celerity_server::tls::DualListener::new(listener, tls).unwrap();
         tokio::spawn(async move { axum::serve(dual, router(state)).await.unwrap() });
 
         let (alice_conn, alice_token, alice_key, _, mut alice_events, alice_ssrc) =
@@ -557,7 +557,7 @@ mod tests {
             conn: alice_conn.clone(),
             counters: Arc::default(),
         });
-        alice_conn.send(syncord_proto::ClientMsg::SetVideo { camera: true, screen: true });
+        alice_conn.send(celerity_proto::ClientMsg::SetVideo { camera: true, screen: true });
         tokio::time::sleep(Duration::from_millis(200)).await;
         let pattern = |w, h| stream::Source::TestPattern { width: w, height: h, fps: 30 };
         let cam = Arc::new(crate::live::start_sender_for_test(
@@ -587,7 +587,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(screen.frame().is_none(), "not watching yet");
         let started = Instant::now();
-        bob_conn.send(syncord_proto::ClientMsg::WatchStream { user_id: 1, watching: true });
+        bob_conn.send(celerity_proto::ClientMsg::WatchStream { user_id: 1, watching: true });
         wait_for(|| screen.frame().is_some_and(|f| f.width == 640)).await;
         assert!(started.elapsed() < Duration::from_secs(2), "the keyframe came on request");
 

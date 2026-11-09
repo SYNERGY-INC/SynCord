@@ -3,7 +3,7 @@
 
 use iced::widget::{button, column, container, pin, row, stack, text};
 use iced::{Alignment, Element, Length, Point, Task};
-use syncord_proto::{ChannelId, ChannelKind, ClientMsg, UserId, perms};
+use celerity_proto::{ChannelId, ChannelKind, ClientMsg, UserId, perms};
 
 use crate::app::{App, Message};
 use crate::style::{self, card};

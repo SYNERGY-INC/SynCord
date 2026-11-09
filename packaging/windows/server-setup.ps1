@@ -1,4 +1,4 @@
-# Sets up SynCord Server: firewall rule, start-with-Windows task, and starts it.
+# Sets up Celerity Server: firewall rule, start-with-Windows task, and starts it.
 # Run by the installer as administrator. Each step is independent and has a
 # fallback, so one problem (for example another antivirus managing the
 # firewall) doesn't stop the rest. Everything is logged to setup.log.
@@ -12,8 +12,8 @@ param(
     [Parameter(Mandatory)] [string] $DataDir
 )
 $ErrorActionPreference = 'Continue'
-$taskName = 'SynCord Server'
-$config = Join-Path $DataDir 'syncord-server.toml'
+$taskName = 'Celerity Server'
+$config = Join-Path $DataDir 'celerity-server.toml'
 $problems = 0
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
@@ -23,7 +23,7 @@ function Log([string] $msg) {
     Write-Output $line
     Add-Content -Path $log -Value $line -ErrorAction SilentlyContinue
 }
-Log "---- Setting up SynCord Server ($Exe) on $([Environment]::OSVersion.VersionString), PowerShell $($PSVersionTable.PSVersion)"
+Log "---- Setting up Celerity Server ($Exe) on $([Environment]::OSVersion.VersionString), PowerShell $($PSVersionTable.PSVersion)"
 
 # 1. Let normal users edit the settings file (it holds the invite code and server name).
 & icacls.exe $DataDir /grant '*S-1-5-32-545:(OI)(CI)M' /T /Q 2>&1 | Out-Null
@@ -52,7 +52,7 @@ function Esc([string] $s) { [Security.SecurityElement]::Escape($s) }
 $xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>SynCord chat server</Description></RegistrationInfo>
+  <RegistrationInfo><Description>Celerity chat server</Description></RegistrationInfo>
   <Triggers><BootTrigger><Enabled>true</Enabled></BootTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
   <Settings>
@@ -81,7 +81,7 @@ try {
     Log "Register-ScheduledTask failed: $($_.Exception.Message)"
 }
 if (-not $task) {
-    $xmlFile = Join-Path $env:TEMP 'syncord-server-task.xml'
+    $xmlFile = Join-Path $env:TEMP 'celerity-server-task.xml'
     $xml | Out-File -FilePath $xmlFile -Encoding Unicode
     $out = & schtasks.exe /Create /TN $taskName /XML $xmlFile /F 2>&1
     $task = ($LASTEXITCODE -eq 0)
@@ -110,7 +110,7 @@ $running = $false
 for ($i = 0; $i -lt 20 -and -not $running; $i++) {
     try {
         $reply = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$port/"
-        $running = $reply.Content -match 'SynCord'
+        $running = $reply.Content -match 'Celerity'
     } catch { Start-Sleep -Milliseconds 500 }
 }
 if ($running) {
@@ -118,7 +118,7 @@ if ($running) {
 } else {
     $problems += 8
     Log "WARN: the server isn't answering on port $port"
-    $serverLog = Join-Path $DataDir 'syncord-server.log'
+    $serverLog = Join-Path $DataDir 'celerity-server.log'
     if (Test-Path $serverLog) { Get-Content $serverLog -Tail 5 | ForEach-Object { Log "  server log: $_" } }
 }
 Log "Done (problems: $problems)"

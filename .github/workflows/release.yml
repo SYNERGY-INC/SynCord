@@ -36,12 +36,12 @@ jobs:
       - run: packaging/linux/build-packages.sh "${{ needs.version.outputs.version }}" target/release dist
       - name: Smoke test the packages
         run: |
-          sudo apt-get install -y ./dist/syncord_*_amd64.deb ./dist/syncord-server_*_amd64.deb
-          mkdir -p /tmp/srv && (syncord-server /tmp/srv/syncord-server.toml > /tmp/srv/log 2>&1 &)
+          sudo apt-get install -y ./dist/celerity_*_amd64.deb ./dist/celerity-server_*_amd64.deb
+          mkdir -p /tmp/srv && (celerity-server /tmp/srv/celerity-server.toml > /tmp/srv/log 2>&1 &)
           sleep 3
-          curl -fsS http://127.0.0.1:7878/ | grep -q "SynCord server is running"
-          grep -q invite_code /tmp/srv/syncord-server.toml
-          test -f /usr/share/applications/syncord.desktop
+          curl -fsS http://127.0.0.1:7878/ | grep -q "Celerity server is running"
+          grep -q invite_code /tmp/srv/celerity-server.toml
+          test -f /usr/share/applications/celerity.desktop
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux
@@ -62,8 +62,8 @@ jobs:
         with:
           name: windows-binaries
           path: |
-            target/release/syncord.exe
-            target/release/syncord-server.exe
+            target/release/celerity.exe
+            target/release/celerity-server.exe
 
   windows-installers:
     needs: [version, windows-build]
@@ -80,8 +80,8 @@ jobs:
           v="${{ needs.version.outputs.version }}"
           mkdir -p dist
           cd packaging/windows
-          makensis -WX -DVERSION="$v" -DBIN_DIR="$GITHUB_WORKSPACE/bin" -DOUT_FILE="$GITHUB_WORKSPACE/dist/SynCord-Setup-$v.exe" syncord.nsi
-          makensis -WX -DVERSION="$v" -DBIN_DIR="$GITHUB_WORKSPACE/bin" -DOUT_FILE="$GITHUB_WORKSPACE/dist/SynCord-Server-Setup-$v.exe" syncord-server.nsi
+          makensis -WX -DVERSION="$v" -DBIN_DIR="$GITHUB_WORKSPACE/bin" -DOUT_FILE="$GITHUB_WORKSPACE/dist/Celerity-Setup-$v.exe" celerity.nsi
+          makensis -WX -DVERSION="$v" -DBIN_DIR="$GITHUB_WORKSPACE/bin" -DOUT_FILE="$GITHUB_WORKSPACE/dist/Celerity-Server-Setup-$v.exe" celerity-server.nsi
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
@@ -102,50 +102,95 @@ jobs:
           $v = '${{ needs.version.outputs.version }}'
 
           # App installer (per-user)
-          Start-Process "dist\SynCord-Setup-$v.exe" -ArgumentList '/S' -Wait
-          $app = "$env:LOCALAPPDATA\Programs\SynCord"
-          if (-not (Test-Path "$app\SynCord.exe")) { throw 'SynCord.exe was not installed' }
-          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\SynCord.lnk")) { throw 'No Start menu shortcut' }
+          Start-Process "dist\Celerity-Setup-$v.exe" -ArgumentList '/S' -Wait
+          $app = "$env:LOCALAPPDATA\Programs\Celerity"
+          if (-not (Test-Path "$app\Celerity.exe")) { throw 'Celerity.exe was not installed' }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Celerity.lnk")) { throw 'No Start menu shortcut' }
           Start-Process "$app\Uninstall.exe" -ArgumentList '/S', "_?=$app" -Wait
-          if (Test-Path "$app\SynCord.exe") { throw 'Uninstall left SynCord.exe behind' }
+          if (Test-Path "$app\Celerity.exe") { throw 'Uninstall left Celerity.exe behind' }
 
           # Server installer (admin): startup task, firewall rule, running server.
           # Installed twice to also cover upgrading over an existing install.
-          $data = "$env:ProgramData\SynCord Server"
+          $data = "$env:ProgramData\Celerity Server"
           foreach ($round in 1, 2) {
-            Start-Process "dist\SynCord-Server-Setup-$v.exe" -ArgumentList '/S' -Wait
+            Start-Process "dist\Celerity-Server-Setup-$v.exe" -ArgumentList '/S' -Wait
             Write-Host "---- setup.log after install $round"
             Get-Content "$data\setup.log" | Select-Object -Last 12
             $last = Get-Content "$data\setup.log" | Select-Object -Last 1
             if ($last -notmatch 'Done \(problems: 0\)') { throw "Setup reported problems on install $round" }
           }
-          $task = Get-ScheduledTask -TaskName 'SynCord Server'
+          $task = Get-ScheduledTask -TaskName 'Celerity Server'
           if ($task.Settings.ExecutionTimeLimit -ne 'PT0S') { throw "Task time limit is $($task.Settings.ExecutionTimeLimit)" }
           if ($task.Principal.UserId -notin @('SYSTEM', 'S-1-5-18', 'NT AUTHORITY\SYSTEM')) { throw "Task runs as $($task.Principal.UserId)" }
-          Get-NetFirewallRule -DisplayName 'SynCord Server' | Out-Null
-          $config = "$data\syncord-server.toml"
+          Get-NetFirewallRule -DisplayName 'Celerity Server' | Out-Null
+          $config = "$data\celerity-server.toml"
           if (-not (Select-String -Path $config -Pattern 'invite_code' -Quiet)) { throw 'No settings file' }
           $reply = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7878/).Content
-          if ($reply -notmatch 'SynCord server is running') { throw "Unexpected reply: $reply" }
-          if (-not (Test-Path "$data\syncord.db")) { throw 'Database not next to settings' }
-          if (-not (Select-String -Path "$data\syncord-server.log" -Pattern 'invite code' -Quiet)) { throw 'No server log' }
-          $menu = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\SynCord Server"
+          if ($reply -notmatch 'Celerity server is running') { throw "Unexpected reply: $reply" }
+          if (-not (Test-Path "$data\celerity.db")) { throw 'Database not next to settings' }
+          if (-not (Select-String -Path "$data\celerity-server.log" -Pattern 'invite code' -Quiet)) { throw 'No server log' }
+          $menu = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Celerity Server"
           if (-not (Test-Path "$menu\Run server in a window (troubleshooting).lnk")) { throw 'Missing troubleshooting shortcut' }
           Write-Host "Server is up: $reply"
 
           # Running a second copy must fail with a clear message, not silently.
           Set-Content "$env:TEMP\empty.txt" ''
-          $p = Start-Process -FilePath "$env:ProgramFiles\SynCord Server\syncord-server.exe" -ArgumentList "`"$config`"" `
+          $p = Start-Process -FilePath "$env:ProgramFiles\Celerity Server\celerity-server.exe" -ArgumentList "`"$config`"" `
             -RedirectStandardInput "$env:TEMP\empty.txt" -RedirectStandardError "$env:TEMP\second.txt" `
             -RedirectStandardOutput "$env:TEMP\second-out.txt" -NoNewWindow -Wait -PassThru
           $out = Get-Content "$env:TEMP\second.txt" -Raw
           if ($p.ExitCode -ne 1 -or $out -notmatch 'already in use') { throw "Unexpected result from a second copy ($($p.ExitCode)): $out" }
 
-          $dir = "$env:ProgramFiles\SynCord Server"
+          $dir = "$env:ProgramFiles\Celerity Server"
           Start-Process "$dir\Uninstall.exe" -ArgumentList '/S', "_?=$dir" -Wait
-          if (Get-ScheduledTask -TaskName 'SynCord Server' -ErrorAction SilentlyContinue) { throw 'Startup task not removed' }
-          if (Get-Process syncord-server -ErrorAction SilentlyContinue) { throw 'Server still running' }
+          if (Get-ScheduledTask -TaskName 'Celerity Server' -ErrorAction SilentlyContinue) { throw 'Startup task not removed' }
+          if (Get-Process celerity-server -ErrorAction SilentlyContinue) { throw 'Server still running' }
           Write-Host 'Windows installers OK'
+      - name: Upgrade from SynCord 0.6.0 (the old name)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = '${{ needs.version.outputs.version }}'
+          gh release download v0.6.0 --repo $env:GITHUB_REPOSITORY -p 'SynCord-Setup-0.6.0.exe' -p 'SynCord-Server-Setup-0.6.0.exe' -D old
+          Remove-Item -Recurse -Force "$env:ProgramData\Celerity Server" -ErrorAction SilentlyContinue
+
+          # App: SynCord's files and entries are replaced; its settings move over on first start.
+          Start-Process 'old\SynCord-Setup-0.6.0.exe' -ArgumentList '/S' -Wait
+          $old = "$env:LOCALAPPDATA\Programs\SynCord"
+          if (-not (Test-Path "$old\SynCord.exe")) { throw 'SynCord 0.6.0 did not install' }
+          New-Item -ItemType Directory -Force "$env:APPDATA\syncord" | Out-Null
+          Set-Content "$env:APPDATA\syncord\settings.toml" "username = `"upgrade-test`""
+          Start-Process "dist\Celerity-Setup-$v.exe" -ArgumentList '/S' -Wait
+          if (Test-Path "$old\SynCord.exe") { throw 'SynCord.exe was left behind' }
+          if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\SynCord.lnk") { throw 'SynCord shortcut left behind' }
+          if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\SynCord') { throw 'SynCord still listed in installed apps' }
+          $app = "$env:LOCALAPPDATA\Programs\Celerity\Celerity.exe"
+          if (-not (Test-Path $app)) { throw 'Celerity.exe was not installed' }
+          $p = Start-Process $app -PassThru
+          Start-Sleep 8
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not (Select-String -Path "$env:APPDATA\celerity\settings.toml" -Pattern 'upgrade-test' -Quiet)) { throw 'Settings did not move to Celerity' }
+
+          # Server: same invite code, messages and certificate; SynCord's task and folder are gone.
+          Start-Process 'old\SynCord-Server-Setup-0.6.0.exe' -ArgumentList '/S' -Wait
+          $oldData = "$env:ProgramData\SynCord Server"
+          $invite = (Select-String -Path "$oldData\syncord-server.toml" -Pattern '^invite_code').Line
+          if (-not $invite) { throw 'SynCord 0.6.0 server did not start' }
+          $cert = Get-FileHash "$oldData\syncord-tls-cert.pem"
+          Start-Process "dist\Celerity-Server-Setup-$v.exe" -ArgumentList '/S' -Wait
+          $data = "$env:ProgramData\Celerity Server"
+          Get-Content "$data\setup.log" | Select-Object -Last 8
+          if (Test-Path $oldData) { throw 'SynCord data folder was not moved' }
+          if ((Select-String -Path "$data\celerity-server.toml" -Pattern '^invite_code').Line -ne $invite) { throw 'Invite code changed' }
+          if (-not (Test-Path "$data\syncord.db")) { throw 'Messages were not kept' }
+          if ((Get-FileHash "$data\syncord-tls-cert.pem").Hash -ne $cert.Hash) { throw 'Certificate changed' }
+          if (Get-ScheduledTask -TaskName 'SynCord Server' -ErrorAction SilentlyContinue) { throw 'SynCord startup task left behind' }
+          if (Test-Path "$env:ProgramFiles\SynCord Server\syncord-server.exe") { throw 'SynCord server program left behind' }
+          $reply = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7878/).Content
+          if ($reply -notmatch 'Celerity server is running') { throw "Unexpected reply: $reply" }
+          Write-Host 'Upgrade from SynCord OK'
 
   macos:
     needs: version
@@ -157,11 +202,16 @@ jobs:
       - run: packaging/macos/build-dmg.sh "${{ needs.version.outputs.version }}" dist
       - name: Check the app bundle
         run: |
-          hdiutil attach dist/SynCord-*-macOS.dmg -mountpoint /tmp/syncord-dmg -nobrowse
-          lipo -archs /tmp/syncord-dmg/SynCord.app/Contents/MacOS/SynCord | grep -q 'x86_64 arm64'
-          plutil -lint /tmp/syncord-dmg/SynCord.app/Contents/Info.plist
-          codesign --verify --deep --strict /tmp/syncord-dmg/SynCord.app
-          hdiutil detach /tmp/syncord-dmg
+          hdiutil attach dist/Celerity-*-macOS.dmg -mountpoint /tmp/celerity-dmg -nobrowse
+          lipo -archs /tmp/celerity-dmg/Celerity.app/Contents/MacOS/Celerity | grep -q 'x86_64 arm64'
+          plutil -lint /tmp/celerity-dmg/Celerity.app/Contents/Info.plist
+          codesign --verify --deep --strict /tmp/celerity-dmg/Celerity.app
+          hdiutil detach /tmp/celerity-dmg
+          # The copy for SynCord's updater: the same app, named SynCord.app.
+          hdiutil attach dist/Celerity-*-macOS-update-from-SynCord.dmg -mountpoint /tmp/legacy-dmg -nobrowse
+          codesign --verify --deep --strict /tmp/legacy-dmg/SynCord.app
+          test -x /tmp/legacy-dmg/SynCord.app/Contents/MacOS/Celerity
+          hdiutil detach /tmp/legacy-dmg
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
@@ -194,7 +244,7 @@ jobs:
         with:
           tag_name: v${{ needs.version.outputs.version }}
           target_commitish: ${{ github.sha }}
-          name: SynCord ${{ needs.version.outputs.version }}
+          name: Celerity ${{ needs.version.outputs.version }}
           body_path: notes.md
           make_latest: true
           fail_on_unmatched_files: true
@@ -215,16 +265,16 @@ jobs:
         with:
           context: .
           load: true
-          tags: syncord-server:test
+          tags: celerity-server:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke test the image
         run: |
           mkdir -p /tmp/data
-          docker run -d --name srv -p 7878:7878/tcp -p 7878:7878/udp -v /tmp/data:/data syncord-server:test
+          docker run -d --name srv -p 7878:7878/tcp -p 7878:7878/udp -v /tmp/data:/data celerity-server:test
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:7878/ > /tmp/reply && break; sleep 1; done
-          grep -q "SynCord server is running" /tmp/reply
-          sudo grep -q invite_code /tmp/data/syncord-server.toml
+          grep -q "Celerity server is running" /tmp/reply
+          sudo grep -q invite_code /tmp/data/celerity-server.toml
           # Stopping must be quick and clean (Docker sends SIGTERM).
           start=$(date +%s); docker stop -t 20 srv; end=$(date +%s)
           docker logs srv 2>&1 | tail -5
@@ -237,8 +287,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/syncord-server"
-          for tag in latest "${{ needs.version.outputs.version }}"; do
-            docker tag syncord-server:test "$image:$tag"
-            docker push "$image:$tag"
+          owner="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          # Also under the old name, so servers set up as syncord-server keep updating.
+          for image in "$owner/celerity-server" "$owner/syncord-server"; do
+            for tag in latest "${{ needs.version.outputs.version }}"; do
+              docker tag celerity-server:test "$image:$tag"
+              docker push "$image:$tag"
+            done
           done

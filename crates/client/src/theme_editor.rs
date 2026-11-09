@@ -87,7 +87,7 @@ pub fn from_toml(s: &str) -> Result<AppTheme, String> {
 pub fn to_css(t: &AppTheme) -> String {
     let mut t = t.clone();
     let mut out = String::from(
-        "/* SynCord theme. Colours can be #RRGGBB, #RRGGBBAA, rgb(r, g, b) or rgba(r, g, b, a). */\n:root {\n",
+        "/* Celerity theme. Colours can be #RRGGBB, #RRGGBBAA, rgb(r, g, b) or rgba(r, g, b, a). */\n:root {\n",
     );
     out.push_str(&format!("  --name: \"{}\";\n", t.name.replace('"', "'")));
     for key in COLOURS {
@@ -270,7 +270,7 @@ impl App {
                 };
                 let stem = file_stem(&theme.name);
                 let body = match ed.format {
-                    ThemeFormat::Toml => format!("# SynCord theme, made in the theme editor.\n{}", ed.content.text()),
+                    ThemeFormat::Toml => format!("# Celerity theme, made in the theme editor.\n{}", ed.content.text()),
                     ThemeFormat::Css => ed.content.text(),
                 };
                 let path = dir.join(format!("{stem}.{}", ed.format.extension()));

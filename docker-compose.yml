@@ -1,28 +1,29 @@
 # Import this in CasaOS: App Store > "+" > Install a customized app > Import.
-# The image is published by the Release workflow (ghcr.io/bxpo/syncord-server);
+# The image is published by the Release workflow (ghcr.io/bxpo/celerity-server);
 # to update, pull the new image (in CasaOS: the app's "Check then update").
-name: syncord
+name: celerity
 services:
-  syncord-server:
-    image: ghcr.io/bxpo/syncord-server:latest
-    container_name: syncord-server
+  celerity-server:
+    image: ghcr.io/bxpo/celerity-server:latest
+    container_name: celerity-server
     restart: unless-stopped
     ports:
       - "7878:7878/tcp"   # chat
       - "7878:7878/udp"   # voice
     volumes:
+      # Kept from when Celerity was called SynCord, so an existing server keeps its data.
       - /DATA/AppData/syncord:/data
     x-casaos:
       architectures: [amd64]
-      main: syncord-server
+      main: celerity-server
       category: Chat
       author: bxpo
       developer: bxpo
-      icon: https://raw.githubusercontent.com/bxpo/SynCord/HEAD/packaging/icons/syncord-256.png
+      icon: https://raw.githubusercontent.com/bxpo/SynCord/HEAD/packaging/icons/celerity-256.png
       title:
-        en_us: SynCord
+        en_us: Celerity
       tagline:
         en_us: Lightweight self-hosted chat and voice server
       description:
-        en_us: SynCord server. The invite code is in /DATA/AppData/syncord/syncord-server.toml.
+        en_us: Celerity server. The invite code is in /DATA/AppData/syncord/celerity-server.toml.
       port_map: "7878"

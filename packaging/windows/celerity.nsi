@@ -1,6 +1,6 @@
-; SynCord app installer (per-user, no admin rights needed).
+; Celerity app installer (per-user, no admin rights needed).
 ;
-; Build:  makensis -DVERSION=0.1.0 -DBIN_DIR=<folder with syncord.exe> -DOUT_FILE=<setup.exe> syncord.nsi
+; Build:  makensis -DVERSION=0.1.0 -DBIN_DIR=<folder with celerity.exe> -DOUT_FILE=<setup.exe> celerity.nsi
 
 Unicode true
 !include "MUI2.nsh"
@@ -10,13 +10,13 @@ Unicode true
   !error "Pass -DVERSION=x.y.z"
 !endif
 !ifndef BIN_DIR
-  !error "Pass -DBIN_DIR=<folder containing syncord.exe>"
+  !error "Pass -DBIN_DIR=<folder containing celerity.exe>"
 !endif
 !ifndef OUT_FILE
-  !define OUT_FILE "SynCord-Setup-${VERSION}.exe"
+  !define OUT_FILE "Celerity-Setup-${VERSION}.exe"
 !endif
 
-!define APP "SynCord"
+!define APP "Celerity"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP}"
 
 Name "${APP}"
@@ -34,8 +34,8 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "MIT licensed"
 
-!define MUI_ICON "..\icons\syncord.ico"
-!define MUI_UNICON "..\icons\syncord.ico"
+!define MUI_ICON "..\icons\celerity.ico"
+!define MUI_UNICON "..\icons\celerity.ico"
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TEXT "This will install ${APP} ${VERSION}, a lightweight chat app with text and voice channels.$\r$\n$\r$\nYou'll need the server address and an invite code from whoever runs your server.$\r$\n$\r$\nClick Next to continue."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP}.exe"
@@ -56,8 +56,23 @@ Section "${APP}" SecApp
   nsExec::Exec 'taskkill /IM "${APP}.exe" /F'
   Sleep 300
 
+  ; Celerity used to be called SynCord: take an installed SynCord's place. (Settings,
+  ; themes and trusted servers move over when Celerity first starts.)
+  nsExec::Exec 'taskkill /IM "SynCord.exe" /F'
+  ReadRegStr $0 HKCU "Software\SynCord" "InstallDir"
+  StrCmp $0 "" no_syncord
+    Sleep 300
+    Delete "$0\SynCord.exe"
+    Delete "$0\Uninstall.exe"
+    RMDir "$0"
+  no_syncord:
+  Delete "$SMPROGRAMS\SynCord.lnk"
+  Delete "$DESKTOP\SynCord.lnk"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SynCord"
+  DeleteRegKey HKCU "Software\SynCord"
+
   SetOutPath "$INSTDIR"
-  File "/oname=${APP}.exe" "${BIN_DIR}\syncord.exe"
+  File "/oname=${APP}.exe" "${BIN_DIR}\celerity.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\${APP}.exe"
 
@@ -78,7 +93,7 @@ Section "Desktop shortcut" SecDesktop
   CreateShortcut "$DESKTOP\${APP}.lnk" "$INSTDIR\${APP}.exe"
 SectionEnd
 
-; Automatic updates run this installer with /S /RELAUNCH: reopen SynCord when done.
+; Automatic updates run this installer with /S /RELAUNCH: reopen Celerity when done.
 Function .onInstSuccess
   ${GetParameters} $0
   ClearErrors
@@ -102,5 +117,5 @@ Section "Uninstall"
   Delete "$DESKTOP\${APP}.lnk"
   DeleteRegKey HKCU "${UNINST_KEY}"
   DeleteRegKey HKCU "Software\${APP}"
-  ; Your settings and themes in %APPDATA%\syncord are left alone.
+  ; Your settings and themes in %APPDATA%\celerity are left alone.
 SectionEnd

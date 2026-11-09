@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use futures::{SinkExt, Stream, StreamExt};
-use syncord_proto::{ClientMsg, ServerMsg};
+use celerity_proto::{ClientMsg, ServerMsg};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -268,17 +268,17 @@ mod tests {
     use super::server_url;
 
     async fn start(encrypted: bool) -> (String, Option<String>, std::path::PathBuf) {
-        use syncord_server::{AppState, Config, db::Db, router};
+        use celerity_server::{AppState, Config, db::Db, router};
         let _ = rustls::crypto::ring::default_provider().install_default();
         let state = AppState::new(Config::default(), Db::open_in_memory().unwrap());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let dir =
-            std::env::temp_dir().join(format!("syncord-net-test-{}-{}", std::process::id(), address.replace(':', "-")));
+            std::env::temp_dir().join(format!("celerity-net-test-{}-{}", std::process::id(), address.replace(':', "-")));
         std::fs::create_dir_all(&dir).unwrap();
         if encrypted {
-            let (tls, print) = syncord_server::tls::load_or_create(&dir).unwrap();
-            let dual = syncord_server::tls::DualListener::new(listener, tls).unwrap();
+            let (tls, print) = celerity_server::tls::load_or_create(&dir).unwrap();
+            let dual = celerity_server::tls::DualListener::new(listener, tls).unwrap();
             tokio::spawn(async move { axum::serve(dual, router(state)).await.unwrap() });
             (address, Some(print), dir)
         } else {

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use serde_json::Value;
-use syncord_proto::{GifResult, UserId};
+use celerity_proto::{GifResult, UserId};
 
 use crate::Config;
 
@@ -54,7 +54,7 @@ impl GifSearch {
                 Kind::Klipy => format!("https://api.klipy.com/api/v1/{key}/gifs"),
             }
         };
-        Some(Self { kind, key, base, http: syncord_update::client(), full_urls: Mutex::new(HashMap::new()) })
+        Some(Self { kind, key, base, http: celerity_update::client(), full_urls: Mutex::new(HashMap::new()) })
     }
 
     pub fn name(&self) -> &'static str {
@@ -84,7 +84,7 @@ impl GifSearch {
                 Kind::Klipy => {
                     q.append_pair("per_page", &RESULTS.to_string())
                         .append_pair("page", "1")
-                        .append_pair("customer_id", &format!("syncord-{user}"))
+                        .append_pair("customer_id", &format!("celerity-{user}"))
                         .append_pair("content_filter", "medium");
                 }
             }

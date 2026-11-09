@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced::widget::{Id, button, column, container, mouse_area, operation, pin, responsive, stack, text, text_editor};
 use iced::{Element, Length, Point, Task};
-use syncord_proto::{Message as ChatMessage, MessageId};
+use celerity_proto::{Message as ChatMessage, MessageId};
 
 use crate::app::{App, Message, PickerTarget};
 use crate::style::{self, card};
@@ -138,11 +138,11 @@ impl App {
         let mine = m.author_id == s.me;
         // Roles decide who may tidy up server channels (direct messages: only your own).
         let can_delete =
-            mine || (s.can(syncord_proto::perms::MANAGE_MESSAGES) && s.channels.iter().any(|c| c.id == m.channel_id));
+            mine || (s.can(celerity_proto::perms::MANAGE_MESSAGES) && s.channels.iter().any(|c| c.id == m.channel_id));
         let has_text = !m.content.is_empty();
         // Pinning: Manage messages in server channels, anyone in a DM.
         let in_server = s.channels.iter().any(|c| c.id == m.channel_id);
-        let can_pin = m.kind.is_normal() && (!in_server || s.can(syncord_proto::perms::MANAGE_MESSAGES));
+        let can_pin = m.kind.is_normal() && (!in_server || s.can(celerity_proto::perms::MANAGE_MESSAGES));
         let pin_state = can_pin.then_some(m.pinned);
 
         // Clicking anywhere else closes the menu.
@@ -250,7 +250,7 @@ impl App {
     }
 
     /// The line above a reply showing who and what it answers.
-    pub(crate) fn reply_preview<'a>(&'a self, r: &'a syncord_proto::ReplyRef) -> Element<'a, Message> {
+    pub(crate) fn reply_preview<'a>(&'a self, r: &'a celerity_proto::ReplyRef) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs() * 0.82;
         let s = self.session.as_ref();

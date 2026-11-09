@@ -16,7 +16,7 @@ pub struct Settings {
     /// Multiplier applied to the theme's font size.
     pub text_scale: f32,
     pub show_members: bool,
-    /// UI font family ("" for the built-in Inter). Applied when SynCord starts.
+    /// UI font family ("" for the built-in Inter). Applied when Celerity starts.
     pub ui_font: String,
     /// Font file imported by the user (kept in the settings folder).
     pub font_file: Option<PathBuf>,
@@ -48,7 +48,7 @@ pub struct Settings {
     pub server_sound: bool,
     /// Play a sound when people join or leave your voice channel.
     pub voice_sounds: bool,
-    /// Flash the taskbar icon for every new message (mentions always flash) while SynCord isn't focused.
+    /// Flash the taskbar icon for every new message (mentions always flash) while Celerity isn't focused.
     pub flash_taskbar: bool,
     /// Volume of notification sounds (0.0 to 1.0).
     pub sound_volume: f32,
@@ -68,13 +68,13 @@ pub struct Settings {
     /// Play a sound when someone mentions you.
     pub ping_sound: bool,
     pub video_volume: f32,
-    /// The X button hides SynCord to the tray (Windows and macOS) instead of quitting.
+    /// The X button hides Celerity to the tray (Windows and macOS) instead of quitting.
     pub close_to_tray: bool,
 
     // Status
-    pub status: syncord_proto::Status,
+    pub status: celerity_proto::Status,
     /// "Playing ..." typed by you (wins over a detected game).
-    pub custom_activity: Option<syncord_proto::Activity>,
+    pub custom_activity: Option<celerity_proto::Activity>,
     /// Show the game you're playing (found from where it's installed).
     pub detect_games: bool,
     pub video_muted: bool,
@@ -88,7 +88,7 @@ pub struct Settings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FavoriteGif {
     pub server: String,
-    pub attachment: syncord_proto::Attachment,
+    pub attachment: celerity_proto::Attachment,
 }
 
 impl Default for Settings {
@@ -125,7 +125,7 @@ impl Default for Settings {
             ping_sound: true,
             video_volume: 0.8,
             close_to_tray: true,
-            status: syncord_proto::Status::Online,
+            status: celerity_proto::Status::Online,
             custom_activity: None,
             detect_games: true,
             camera: None,
@@ -136,7 +136,34 @@ impl Default for Settings {
 }
 
 fn path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("syncord").join("settings.toml"))
+    dirs::config_dir().map(|d| d.join("celerity").join("settings.toml"))
+}
+
+/// Celerity used to be called SynCord: bring its settings, themes, fonts and trusted
+/// servers along the first time Celerity starts.
+pub fn adopt_legacy_folder() {
+    let Some(config) = dirs::config_dir() else { return };
+    let (old, new) = (config.join("syncord"), config.join("celerity"));
+    if new.exists() || !old.is_dir() {
+        return;
+    }
+    if std::fs::rename(&old, &new).is_err() {
+        // Somewhere a rename can't reach: copy instead and leave the old folder be.
+        let _ = copy_dir(&old, &new);
+    }
+}
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)?.flatten() {
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 impl Settings {
@@ -179,7 +206,7 @@ impl Settings {
         self.favorite_gifs.iter().filter(|f| f.server == self.server)
     }
 
-    pub fn user_volume(&self, user: syncord_proto::UserId) -> f32 {
+    pub fn user_volume(&self, user: celerity_proto::UserId) -> f32 {
         self.user_volumes.get(&user.to_string()).copied().unwrap_or(1.0)
     }
 

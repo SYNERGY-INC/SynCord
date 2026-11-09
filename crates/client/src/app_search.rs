@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use iced::widget::{Id, button, column, container, operation, row, scrollable, space, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task};
-use syncord_proto::{ChannelId, ChannelKind, ClientMsg, Message as ChatMessage, MessageId, SearchHas, SearchQuery};
+use celerity_proto::{ChannelId, ChannelKind, ClientMsg, Message as ChatMessage, MessageId, SearchHas, SearchQuery};
 
 use crate::app::{App, Message, Session};
 use crate::style::{self, bold, card, semibold};
@@ -418,7 +418,7 @@ impl App {
     pub(crate) fn pins_panel<'a>(&'a self, s: &'a Session, pins: &'a Pins) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let can_unpin = s.direct(pins.channel).is_some() || s.can(syncord_proto::perms::MANAGE_MESSAGES);
+        let can_unpin = s.direct(pins.channel).is_some() || s.can(celerity_proto::perms::MANAGE_MESSAGES);
         let header = row![
             text("Pinned Messages").size(fs * 0.95).font(bold()).color(t.header.0).width(Length::Fill),
             button(crate::icons::icon(&crate::icons::CLOSE, fs, t.muted.0))

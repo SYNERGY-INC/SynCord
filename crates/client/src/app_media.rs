@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use iced::Task;
-use syncord_proto::{Attachment, MAX_ATTACHMENTS};
+use celerity_proto::{Attachment, MAX_ATTACHMENTS};
 
 use crate::app::{App, Clip, Download, Message, Overlay, PendingUpload, UploadState};
 use crate::media::{self, Picture, Source};
@@ -113,7 +113,7 @@ impl App {
     }
 
     /// Milliseconds into the animation for a GIF in message `message_id`.
-    pub(crate) fn animation_ms(&self, message_id: Option<syncord_proto::MessageId>) -> u64 {
+    pub(crate) fn animation_ms(&self, message_id: Option<celerity_proto::MessageId>) -> u64 {
         let playing = self.settings.autoplay_gifs || message_id.is_none() || self.hovered == message_id;
         if playing { self.now.saturating_duration_since(self.anim_epoch).as_millis() as u64 } else { 0 }
     }

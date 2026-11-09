@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use syncord_proto::{ChannelId, ChannelKind, MessageId, MessageKind, ServerMsg, UserId};
+use celerity_proto::{ChannelId, ChannelKind, MessageId, MessageKind, ServerMsg, UserId};
 use tracing::warn;
 
 use crate::{AppState, db};

@@ -12,8 +12,8 @@ use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use rand::Rng;
-use syncord_proto::voice::token_to_hex;
-use syncord_proto::{
+use celerity_proto::voice::token_to_hex;
+use celerity_proto::{
     Channel, ChannelId, ChannelKind, ClientMsg, DirectChannel, EVERYONE_ROLE, HISTORY_PAGE, MAX_ATTACHMENTS,
     MAX_MESSAGE_LEN, MAX_REACTIONS, MAX_ROLES, Message, Ready, Role, RoleId, ServerMsg, Status, User, UserId,
     clean_voice_channel_name, normalize_channel_name, perms, valid_reaction,
@@ -642,7 +642,7 @@ impl Connection {
                         ssrc: joined.state.ssrc,
                         token: token_to_hex(&joined.token),
                         udp_port,
-                        key: joined.key.as_ref().map(syncord_proto::voice::key_to_hex),
+                        key: joined.key.as_ref().map(celerity_proto::voice::key_to_hex),
                     })
                     .await;
                     // Moving out of a private call: its members see you leave.
@@ -686,7 +686,7 @@ impl Connection {
                     // A new viewer needs a keyframe to start from.
                     if self.state.voice.watch(me, user_id, watching) {
                         self.broadcast_to(
-                            &ServerMsg::KeyframeRequest { kind: syncord_proto::VideoKind::Screen },
+                            &ServerMsg::KeyframeRequest { kind: celerity_proto::VideoKind::Screen },
                             Some(Arc::from([user_id])),
                         );
                     }

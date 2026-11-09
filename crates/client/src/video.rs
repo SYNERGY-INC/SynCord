@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use iced::widget::image::Handle;
 use iced::widget::{button, center, column, container, image, row, slider, space, stack, text};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Task};
-use syncord_proto::Attachment;
-use syncord_video::Player;
+use celerity_proto::Attachment;
+use celerity_video::Player;
 
 use crate::app::{App, Message};
 use crate::icons::{self, icon};
@@ -44,7 +44,7 @@ pub struct ActiveVideo {
 
 /// Downloaded videos live here; only the one being watched is kept.
 fn cache_dir() -> PathBuf {
-    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("syncord").join("videos")
+    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("celerity").join("videos")
 }
 
 /// Forget videos from earlier runs (they can be big).

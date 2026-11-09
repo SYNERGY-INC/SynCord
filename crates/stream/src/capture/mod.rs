@@ -165,7 +165,7 @@ impl Capture {
         sink: impl FnMut(&I420Frame) + Send + 'static,
     ) -> Result<Capture, String> {
         let id = id.to_string();
-        Capture::spawn("syncord-camera", Box::new(sink), move |sink, ready, stop| {
+        Capture::spawn("celerity-camera", Box::new(sink), move |sink, ready, stop| {
             platform::run_camera(&id, config, sink, ready, stop)
         })
     }
@@ -178,7 +178,7 @@ impl Capture {
     ) -> Result<Capture, String> {
         let id = id.to_string();
         let config = ScreenConfig { fps: config.fps.clamp(1, 60), ..config };
-        Capture::spawn("syncord-screen", Box::new(sink), move |sink, ready, stop| {
+        Capture::spawn("celerity-screen", Box::new(sink), move |sink, ready, stop| {
             platform::run_screen(&id, config, sink, ready, stop)
         })
     }

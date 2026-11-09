@@ -3,7 +3,7 @@
 
 use iced::widget::text_editor::{self, Action, Binding, Edit, KeyPress, Motion, Status};
 use iced::{Task, keyboard};
-use syncord_proto::{RoleId, UserId, perms};
+use celerity_proto::{RoleId, UserId, perms};
 
 use crate::app::{App, Message, Session};
 use crate::emoji;
@@ -176,7 +176,7 @@ impl App {
     /// Show `<@id>` as `@Name` for editing, remembering how to turn it back.
     pub(crate) fn decode_mentions(&self, text: &str) -> (String, Vec<(String, String)>) {
         let Some(s) = &self.session else { return (text.to_string(), Vec::new()) };
-        let (users, roles, _) = syncord_proto::parse_mentions(text);
+        let (users, roles, _) = celerity_proto::parse_mentions(text);
         let mut out = text.to_string();
         let mut pairs = Vec::new();
         for id in users {
@@ -316,7 +316,7 @@ fn mention_suggestions(s: &Session, query: &str, limit: usize) -> Vec<Suggestion
         }
     }
     if !in_dm {
-        for r in s.roles.iter().filter(|r| r.id != syncord_proto::EVERYONE_ROLE) {
+        for r in s.roles.iter().filter(|r| r.id != celerity_proto::EVERYONE_ROLE) {
             if r.name.to_lowercase().starts_with(&q) {
                 starts.push(Suggestion::Role(r.id));
             }

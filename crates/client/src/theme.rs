@@ -172,7 +172,7 @@ pub fn builtin() -> Vec<AppTheme> {
 
 /// Folder where custom theme files live.
 pub fn themes_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("syncord").join("themes"))
+    dirs::config_dir().map(|d| d.join("celerity").join("themes"))
 }
 
 /// Built-in themes followed by any valid user themes. Also writes an example
