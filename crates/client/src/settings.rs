@@ -42,6 +42,10 @@ pub struct Settings {
     /// Sounds quieter than this (dBFS) aren't sent.
     pub input_sensitivity: f32,
     pub noise_suppression: bool,
+    pub echo_cancellation: bool,
+    /// Push to talk instead of sending when you speak, with this key (see voice::ptt).
+    pub push_to_talk: bool,
+    pub ptt_key: String,
     /// Volume for each person, keyed by user id.
     pub user_volumes: HashMap<String, f32>,
 
@@ -124,6 +128,9 @@ impl Default for Settings {
             output_volume: 1.0,
             input_sensitivity: -50.0,
             noise_suppression: true,
+            echo_cancellation: true,
+            push_to_talk: false,
+            ptt_key: "Backquote".into(),
             user_volumes: HashMap::new(),
             dm_sound: true,
             server_sound: true,
@@ -242,6 +249,8 @@ impl Settings {
             output_volume: self.output_volume,
             sensitivity_db: self.input_sensitivity,
             noise_suppression: self.noise_suppression,
+            echo_cancellation: self.echo_cancellation,
+            push_to_talk: (self.push_to_talk && !self.ptt_key.is_empty()).then(|| self.ptt_key.clone()),
         }
     }
 

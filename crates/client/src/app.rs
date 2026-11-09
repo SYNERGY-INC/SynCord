@@ -160,6 +160,12 @@ pub enum Message {
     OutputVolume(f32),
     Sensitivity(f32),
     ToggleNoiseSuppression(bool),
+    ToggleEchoCancellation(bool),
+    TogglePushToTalk(bool),
+    /// Settings: the next key (or mouse side button) pressed becomes the push-to-talk key.
+    RecordPttKey,
+    /// A key or mouse side button went down or up (by position name, see voice::ptt).
+    PhysicalKey(String, bool),
     ToggleMicTest,
     UserVolume(UserId, f32),
     /// Left mouse button down on someone in voice (a click opens their profile, a drag moves them).
@@ -759,6 +765,15 @@ pub struct App {
     /// Messages shown as soon as you send them, until the server's copy arrives (local,
     /// negative ids): when they were sent, and whether sending failed.
     pub outbox: HashMap<MessageId, (Instant, bool)>,
+    /// Waiting for a key to use for push to talk.
+    pub recording_ptt: bool,
+    /// When your microphone last picked up talking while you're muted (for the reminder).
+    pub muted_talking: Option<Instant>,
+    talking_ticks: u32,
+    /// Connection to the call: ping and the share of audio lost lately (percent).
+    pub link_quality: Option<(Option<u32>, f32)>,
+    /// Packets heard and missed at the last measurement, and when.
+    quality_mark: Option<(u64, u64, Instant)>,
     /// The taskbar icon was flashed and hasn't been cleared yet.
     pub(crate) wants_attention: bool,
     /// Message the next one you send replies to.
@@ -895,6 +910,11 @@ impl App {
             new_since: None,
             unread_bar: false,
             outbox: HashMap::new(),
+            recording_ptt: false,
+            muted_talking: None,
+            talking_ticks: 0,
+            link_quality: None,
+            quality_mark: None,
             voice_drag: None,
             voice_hover: None,
             overlay: None,
@@ -1048,6 +1068,37 @@ impl App {
             _ => None,
         })];
         subs.push(iced::window::close_requests().map(Message::CloseRequested));
+        // Push to talk while Celerity is in front (and choosing its key).
+        if self.settings.push_to_talk || self.recording_ptt {
+            subs.push(iced::event::listen_with(|event, _status, _window| {
+                use iced::mouse::{Button, Event as Mouse};
+                let code = |physical: keyboard::key::Physical| match physical {
+                    keyboard::key::Physical::Code(code) => Some(format!("{code:?}")),
+                    _ => None,
+                };
+                match event {
+                    iced::Event::Keyboard(keyboard::Event::KeyPressed { physical_key, .. }) => {
+                        code(physical_key).map(|c| Message::PhysicalKey(c, true))
+                    }
+                    iced::Event::Keyboard(keyboard::Event::KeyReleased { physical_key, .. }) => {
+                        code(physical_key).map(|c| Message::PhysicalKey(c, false))
+                    }
+                    iced::Event::Mouse(Mouse::ButtonPressed(Button::Back)) => {
+                        Some(Message::PhysicalKey("Mouse4".into(), true))
+                    }
+                    iced::Event::Mouse(Mouse::ButtonReleased(Button::Back)) => {
+                        Some(Message::PhysicalKey("Mouse4".into(), false))
+                    }
+                    iced::Event::Mouse(Mouse::ButtonPressed(Button::Forward)) => {
+                        Some(Message::PhysicalKey("Mouse5".into(), true))
+                    }
+                    iced::Event::Mouse(Mouse::ButtonReleased(Button::Forward)) => {
+                        Some(Message::PhysicalKey("Mouse5".into(), false))
+                    }
+                    _ => None,
+                }
+            }));
+        }
         if self.session.is_some() {
             subs.push(iced::time::every(crate::presence::CHECK_EVERY).map(|_| Message::PresenceTick));
         }
@@ -1667,6 +1718,28 @@ impl App {
                     }
                 }
                 self.speaking = speaking;
+                // Talking while muted: remind them (after half a second of it).
+                let loud = status.input_level_db > self.settings.input_sensitivity + 6.0;
+                if self.muted && !self.deafened && self.voice.is_some() && loud {
+                    self.talking_ticks += 1;
+                    if self.talking_ticks >= 5 {
+                        self.muted_talking = Some(Instant::now());
+                    }
+                } else {
+                    self.talking_ticks = 0;
+                }
+                // Connection to the call, every couple of seconds.
+                let now = Instant::now();
+                match self.quality_mark {
+                    Some((heard, missed, at)) if now.duration_since(at) >= Duration::from_secs(2) => {
+                        let (h, m) = (status.heard.saturating_sub(heard), status.missed.saturating_sub(missed));
+                        let loss = if h + m > 0 { m as f32 * 100.0 / (h + m) as f32 } else { 0.0 };
+                        self.link_quality = Some((status.ping_ms, loss));
+                        self.quality_mark = Some((status.heard, status.missed, now));
+                    }
+                    None => self.quality_mark = Some((status.heard, status.missed, now)),
+                    _ => {}
+                }
                 self.voice_status = status;
             }
             Message::InputDevice(name) => {
@@ -1694,6 +1767,30 @@ impl App {
             Message::ToggleNoiseSuppression(v) => {
                 self.settings.noise_suppression = v;
                 self.save_and_apply_voice_config();
+            }
+            Message::ToggleEchoCancellation(v) => {
+                self.settings.echo_cancellation = v;
+                self.save_and_apply_voice_config();
+            }
+            Message::TogglePushToTalk(v) => {
+                self.settings.push_to_talk = v;
+                self.save_and_apply_voice_config();
+            }
+            Message::RecordPttKey => self.recording_ptt = !self.recording_ptt,
+            Message::PhysicalKey(name, down) => {
+                if self.recording_ptt && down {
+                    self.recording_ptt = false;
+                    if name != "Escape" && crate::voice::ptt::supported(&name) {
+                        self.settings.ptt_key = name;
+                        self.save_and_apply_voice_config();
+                    } else if name != "Escape" {
+                        self.notice = Some(
+                            "That key can't be used for push to talk. Try a letter, F-key or mouse side button.".into(),
+                        );
+                    }
+                } else if name == self.settings.ptt_key {
+                    crate::voice::ptt::set_in_window(down);
+                }
             }
             Message::ToggleDmSound(v) => {
                 self.settings.dm_sound = v;
@@ -2092,6 +2189,9 @@ impl App {
 
     fn stop_voice(&mut self) {
         self.stop_live();
+        self.link_quality = None;
+        self.quality_mark = None;
+        self.muted_talking = None;
         self.voice = None;
         *self.voice_sink.lock().unwrap() = None;
         self.speaking.clear();

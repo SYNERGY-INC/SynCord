@@ -36,6 +36,11 @@ struct Inner {
 
 pub struct Mixer {
     inner: Mutex<Inner>,
+    /// What's played, for the echo canceller.
+    pub far_end: std::sync::Arc<super::echo::FarEnd>,
+    /// Audio frames that arrived in time, and ones that were missing (for the connection meter).
+    pub heard: std::sync::atomic::AtomicU64,
+    pub missed: std::sync::atomic::AtomicU64,
     /// Key for opening encrypted audio from the server.
     key: Mutex<Option<Key>>,
 }
@@ -53,6 +58,9 @@ impl Default for Mixer {
                 mixed: vec![0.0; FRAME_SAMPLES],
             }),
             key: Mutex::new(None),
+            far_end: Default::default(),
+            heard: Default::default(),
+            missed: Default::default(),
         }
     }
 }
@@ -113,7 +121,10 @@ impl Mixer {
         let mut written = 0;
         while written < out.len() {
             if inner.pending_pos >= inner.pending.len() {
-                inner.mix_frame();
+                let (heard, missed) = inner.mix_frame();
+                self.heard.fetch_add(heard, std::sync::atomic::Ordering::Relaxed);
+                self.missed.fetch_add(missed, std::sync::atomic::Ordering::Relaxed);
+                self.far_end.push(&inner.pending);
             }
             let available = &inner.pending[inner.pending_pos..];
             let n = available.len().min(out.len() - written);
@@ -136,16 +147,24 @@ impl Mixer {
 }
 
 impl Inner {
-    fn mix_frame(&mut self) {
+    /// Mix the next 20 ms. Returns how many speakers' frames arrived, and how many were missing.
+    fn mix_frame(&mut self) -> (u64, u64) {
+        let (mut heard, mut missed) = (0, 0);
         self.mixed.iter_mut().for_each(|x| *x = 0.0);
         self.streams.retain(|_, s| s.last_packet.elapsed() < FORGET_AFTER);
 
         for (ssrc, stream) in self.streams.iter_mut() {
             let n = match stream.jitter.pop() {
                 Pop::Idle => continue,
-                Pop::Packet(p) => stream.decoder.decode_float(&p, &mut self.decoded, false),
+                Pop::Packet(p) => {
+                    heard += 1;
+                    stream.decoder.decode_float(&p, &mut self.decoded, false)
+                }
                 // An empty packet asks Opus to conceal the gap smoothly.
-                Pop::Lost => stream.decoder.decode_float(&[], &mut self.decoded, false),
+                Pop::Lost => {
+                    missed += 1;
+                    stream.decoder.decode_float(&[], &mut self.decoded, false)
+                }
             };
             let Ok(n) = n else { continue };
             let samples = &self.decoded[..n.min(FRAME_SAMPLES)];
@@ -166,6 +185,7 @@ impl Inner {
         if self.mixed.len() != FRAME_SAMPLES {
             self.mixed.resize(FRAME_SAMPLES, 0.0);
         }
+        (heard, missed)
     }
 }
 

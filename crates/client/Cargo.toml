@@ -24,6 +24,8 @@ dirs = "6"
 cpal = "0.18"
 opus = "0.4"
 nnnoiseless = { version = "0.5", default-features = false }
+# Echo cancellation (pure Rust port of WebRTC's AEC3), so speakers don't echo back through the mic.
+sonora = "0.3"
 # Images, GIFs, uploads, emoji
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "stream"] }
@@ -49,6 +51,10 @@ celerity-stream = { workspace = true }
 tray-icon = "0.26"
 
 # Time since the last key press or mouse move anywhere on the computer (for going idle).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# Push to talk asks the X server whether the key is held (works while another app is in front).
+x11rb = "0.13"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_System_Registry"] }
 

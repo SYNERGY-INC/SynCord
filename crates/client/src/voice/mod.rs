@@ -11,8 +11,10 @@
 
 pub mod devices;
 pub mod dsp;
+pub mod echo;
 pub mod jitter;
 pub mod mixer;
+pub mod ptt;
 
 use std::net::{ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -43,6 +45,10 @@ pub struct VoiceConfig {
     /// Voice gate threshold in dBFS; quieter sounds aren't sent.
     pub sensitivity_db: f32,
     pub noise_suppression: bool,
+    /// Take what the speakers play back out of the microphone.
+    pub echo_cancellation: bool,
+    /// Only send while this key is held (see `ptt`), instead of when you speak.
+    pub push_to_talk: Option<String>,
 }
 
 /// Packet counters for one voice session. They outlive the engine (which restarts when
@@ -71,6 +77,11 @@ pub struct Status {
     /// ssrcs of people currently heard.
     pub speaking: Vec<u32>,
     pub problem: Option<String>,
+    /// Round trip to the server over UDP, once measured.
+    pub ping_ms: Option<u32>,
+    /// Audio packets heard and missed since the call started.
+    pub heard: u64,
+    pub missed: u64,
 }
 
 struct Shared {
@@ -81,6 +92,8 @@ struct Shared {
     input_level: AtomicU32,
     transmitting: AtomicBool,
     udp_ok: Arc<AtomicBool>,
+    /// Smoothed UDP round trip in ms (u32::MAX until measured).
+    ping_ms: AtomicU32,
     problem: Mutex<Option<String>>,
     mixer: Arc<Mixer>,
 }
@@ -96,6 +109,8 @@ impl VoiceEngine {
     pub fn start(config: VoiceConfig, link: Link, muted: bool, deafened: bool) -> Result<Self, String> {
         let mixer = Arc::new(Mixer::default());
         mixer.set_volume(config.output_volume);
+        // The mic test plays your own voice back on purpose: nothing to cancel there.
+        let cancel_echo = !matches!(link, Link::Loopback);
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
             muted: AtomicBool::new(muted),
@@ -104,6 +119,7 @@ impl VoiceEngine {
             input_level: AtomicU32::new((-100f32).to_bits()),
             transmitting: AtomicBool::new(false),
             udp_ok: Arc::new(AtomicBool::new(false)),
+            ping_ms: AtomicU32::new(u32::MAX),
             problem: Mutex::new(None),
             mixer: mixer.clone(),
         });
@@ -201,7 +217,7 @@ impl VoiceEngine {
         };
 
         let capture_shared = shared.clone();
-        threads.push(spawn("celerity-capture", move || capture_loop(chunks_rx, capture_shared, sender)));
+        threads.push(spawn("celerity-capture", move || capture_loop(chunks_rx, capture_shared, sender, cancel_echo)));
 
         Ok(Self { shared, threads, video_out })
     }
@@ -245,6 +261,9 @@ impl VoiceEngine {
             udp: self.shared.udp_ok.load(Ordering::Relaxed),
             speaking: self.shared.mixer.speaking(),
             problem: self.shared.problem.lock().unwrap().clone(),
+            ping_ms: Some(self.shared.ping_ms.load(Ordering::Relaxed)).filter(|p| *p != u32::MAX),
+            heard: self.shared.mixer.heard.load(Ordering::Relaxed),
+            missed: self.shared.mixer.missed.load(Ordering::Relaxed),
         }
     }
 }
@@ -265,7 +284,7 @@ fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
     std::thread::Builder::new().name(name.into()).spawn(f).expect("spawn audio thread")
 }
 
-fn capture_loop(chunks: mpsc::Receiver<Vec<f32>>, shared: Arc<Shared>, mut send: PacketSender) {
+fn capture_loop(chunks: mpsc::Receiver<Vec<f32>>, shared: Arc<Shared>, mut send: PacketSender, cancel_echo: bool) {
     let mut processor = match CaptureProcessor::new() {
         Ok(p) => p,
         Err(e) => {
@@ -274,6 +293,10 @@ fn capture_loop(chunks: mpsc::Receiver<Vec<f32>>, shared: Arc<Shared>, mut send:
         }
     };
     let mut buffer: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 4);
+    // Made the first time it's wanted (it's switchable during a call).
+    let mut echo: Option<echo::EchoCanceller3> = None;
+    // Push to talk keeps sending a moment after the key is let go (so words don't get cut).
+    let mut ptt_held_at: Option<Instant> = None;
 
     while !shared.stop.load(Ordering::Relaxed) {
         match chunks.recv_timeout(Duration::from_millis(100)) {
@@ -283,14 +306,29 @@ fn capture_loop(chunks: mpsc::Receiver<Vec<f32>>, shared: Arc<Shared>, mut send:
         }
         while buffer.len() >= FRAME_SAMPLES {
             let mut frame: Vec<f32> = buffer.drain(..FRAME_SAMPLES).collect();
+            let wants_echo = cancel_echo && shared.config.lock().unwrap().echo_cancellation;
+            if wants_echo {
+                echo.get_or_insert_with(echo::EchoCanceller3::new).process(&shared.mixer.far_end, &mut frame);
+            } else {
+                echo = None;
+            }
             let settings = {
                 let c = shared.config.lock().unwrap();
+                let ptt = c.push_to_talk.as_deref().map(|key| {
+                    if ptt::is_down(key) {
+                        ptt_held_at = Some(Instant::now());
+                    }
+                    ptt_held_at.is_some_and(|t| t.elapsed() < Duration::from_millis(250))
+                });
                 CaptureSettings {
                     gain: c.input_gain,
-                    threshold_db: c.sensitivity_db,
+                    // Holding the key sends everything (no voice gate).
+                    threshold_db: if ptt == Some(true) { -100.0 } else { c.sensitivity_db },
                     noise_suppression: c.noise_suppression,
                     // Deafening also mutes, like most voice apps.
-                    muted: shared.muted.load(Ordering::Relaxed) || shared.deafened.load(Ordering::Relaxed),
+                    muted: shared.muted.load(Ordering::Relaxed)
+                        || shared.deafened.load(Ordering::Relaxed)
+                        || ptt == Some(false),
                 }
             };
             let out = processor.process(&mut frame, settings);
@@ -334,7 +372,16 @@ fn udp_loop(sock: UdpSocket, token: Token, shared: Arc<Shared>) {
         }
         match sock.recv(&mut buf) {
             Ok(n) => match Packet::parse(&buf[..n]) {
-                Some(Packet::Ack) => last_ack = Some(Instant::now()),
+                Some(Packet::Ack) => {
+                    last_ack = Some(Instant::now());
+                    // The answer to the last hello: how long the round trip took.
+                    if let Some(sent) = last_hello.filter(|t| t.elapsed() < Duration::from_secs(2)) {
+                        let now = sent.elapsed().as_millis().min(5000) as u32;
+                        let old = shared.ping_ms.load(Ordering::Relaxed);
+                        let smooth = if old == u32::MAX { now } else { (old * 3 + now) / 4 };
+                        shared.ping_ms.store(smooth, Ordering::Relaxed);
+                    }
+                }
                 Some(Packet::AudioDown { .. } | Packet::SealedDown { .. }) => shared.mixer.push_packet(&buf[..n]),
                 Some(Packet::VideoDown { .. }) => {
                     crate::live::deliver(&buf[..n]);
@@ -371,10 +418,13 @@ mod tests {
                 output_volume: 1.0,
                 sensitivity_db: -60.0,
                 noise_suppression: false,
+                echo_cancellation: true,
+                push_to_talk: None,
             }),
             input_level: AtomicU32::new(0),
             transmitting: AtomicBool::new(false),
             udp_ok: Arc::new(AtomicBool::new(false)),
+            ping_ms: AtomicU32::new(u32::MAX),
             problem: Mutex::new(None),
             mixer: Arc::new(Mixer::default()),
         })

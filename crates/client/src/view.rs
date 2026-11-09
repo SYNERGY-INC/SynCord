@@ -685,9 +685,30 @@ impl App {
         };
 
         let timer = self.voice.as_ref().map(|v| crate::app::format_duration(v.since.elapsed())).unwrap_or_default();
+        // The bars show the connection: green, yellow when it's laggy or losing audio, red when bad.
+        let (bars, quality) = match self.link_quality {
+            Some((ping, loss)) if connected => {
+                let ping_ms = ping.unwrap_or(0);
+                let c = if ping_ms > 250 || loss > 8.0 {
+                    t.danger.0
+                } else if ping_ms > 120 || loss > 2.0 {
+                    rgb(0xF0B232)
+                } else {
+                    t.online.0
+                };
+                let ping = ping.map(|p| format!("Ping {p} ms")).unwrap_or_else(|| "Ping unknown (relayed)".into());
+                (c, format!("{ping} · {loss:.1}% audio lost"))
+            }
+            _ => (color, "Measuring the connection...".into()),
+        };
+        let signal = iced::widget::tooltip(
+            icons::icon(&icons::SIGNAL, fs, bars),
+            container(text(quality).size(fs * 0.8).color(t.header.0)).padding([5, 9]).style(card(t.floating.0, 6.0)),
+            iced::widget::tooltip::Position::Top,
+        );
         let mut info = column![
             row![
-                icons::icon(&icons::SIGNAL, fs, color),
+                signal,
                 text(title).size(fs * 0.9).font(bold()).color(color),
                 text(timer).size(fs * 0.75).color(t.muted.0),
             ]
@@ -712,6 +733,23 @@ impl App {
         .width(Length::Fill);
         if let Some(problem) = &self.voice_status.problem {
             info = info.push(text(problem.clone()).size(fs * 0.7).color(rgb(0xF0B232)));
+        }
+        // Talking while muted: a reminder that unmutes when clicked.
+        if self.muted && self.muted_talking.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3)) {
+            let danger = t.danger.0;
+            info = info.push(
+                button(
+                    row![
+                        icons::icon(&icons::MIC_OFF, fs * 0.8, Color::WHITE),
+                        text("You're muted. Click to unmute.").size(fs * 0.75).font(semibold()).color(Color::WHITE)
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([3, 8])
+                .on_press(Message::ToggleMute)
+                .style(style::solid_button(danger, 6.0)),
+            );
         }
 
         let content = row![
@@ -1996,9 +2034,42 @@ impl App {
                 .label("Noise suppression (removes fans, keyboards and background hum)")
                 .on_toggle(Message::ToggleNoiseSuppression)
                 .text_size(fs),
-            text("Tip: use headphones so others don't hear themselves echo through your mic.")
-                .size(fs * 0.8)
-                .color(t.muted.0),
+            toggler(st.echo_cancellation)
+                .label("Echo cancellation (others don't hear themselves through your speakers)")
+                .on_toggle(Message::ToggleEchoCancellation)
+                .text_size(fs),
+            divider(t.hover.0),
+            label(t, "Input mode", fs),
+            toggler(st.push_to_talk)
+                .label("Push to talk (only send while a key is held; works in games too)")
+                .on_toggle(Message::TogglePushToTalk)
+                .text_size(fs),
+            row![
+                text("Push to talk key").size(fs * 0.9).color(t.text.0),
+                button(
+                    text(if self.recording_ptt {
+                        "Press a key or mouse side button...".to_string()
+                    } else {
+                        crate::voice::ptt::label(&st.ptt_key)
+                    })
+                    .size(fs * 0.9)
+                    .font(semibold())
+                )
+                .padding([6, 14])
+                .on_press(Message::RecordPttKey)
+                .style(style::solid_button(if self.recording_ptt { t.accent.0 } else { t.hover.0 }, t.radius * 0.6)),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+            text(if cfg!(target_os = "macos") {
+                "On macOS, push to talk in other apps needs Input Monitoring for Celerity (System Settings > Privacy & Security)."
+            } else if cfg!(windows) {
+                "Works while other programs are in front, as long as they don't run as administrator."
+            } else {
+                "Works in other apps on X11; on Wayland only while Celerity is in front."
+            })
+            .size(fs * 0.8)
+            .color(t.muted.0),
             divider(t.hover.0),
             label(t, "Notifications", fs),
             toggler(st.desktop_notifications)
