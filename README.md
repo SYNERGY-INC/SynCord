@@ -202,7 +202,8 @@ Put `celerity-server` (`celerity-server.exe` on Windows) in its own folder, for 
 
 - `celerity-server.toml`: the settings
 - `celerity.db`: the database that holds all accounts, channels and messages
-- `uploads/`: pictures and files people send
+- `uploads/`: pictures and files people send, and the server's emoji, stickers and sounds
+- `backups/`: a copy of the database from each of the last 7 days (see [Backups](#backups))
 
 (With the Windows installer they're in `C:\ProgramData\Celerity Server` instead.)
 
@@ -217,9 +218,14 @@ database = "celerity.db"
 uploads = "uploads"            # folder for pictures and files people send
 max_upload_mb = 1024           # biggest file people can send (1 GB)
 auto_update = true             # install new server versions by itself (Windows)
+backups = true                 # copy the database into backups/ once a day
+public_address = ""            # e.g. "chat.example.com:7878", used in invite links
 giphy_api_key = ""             # for GIF search, see below
 klipy_api_key = ""
 ```
+
+Settings files from older versions get the new settings added automatically the first time the
+new server starts.
 
 Restart the server after editing. To check it's running, open <http://localhost:7878> on that
 PC. It should say *Celerity server is running.*
@@ -314,8 +320,9 @@ sudo systemctl enable --now celerity
 **Docker / CasaOS:** every release publishes a server image, `ghcr.io/bxpo/celerity-server`.
 
 - **CasaOS:** App Store → **+** → *Install a customized app* → *Import*, and paste in
-  [`docker-compose.yml`](docker-compose.yml). Settings, database and uploads are kept in
-  `/DATA/AppData/celerity`; the invite code is in `celerity-server.toml` there.
+  [`docker-compose.yml`](docker-compose.yml). Settings, database, backups and uploads are kept in
+  `/DATA/AppData/syncord` (the name from before Celerity was renamed, so existing servers keep
+  their data); the invite code is in `celerity-server.toml` there.
 - **Docker:**
 
   ```bash
@@ -325,11 +332,63 @@ sudo systemctl enable --now celerity
 To update, pull the new image and recreate the container (in CasaOS, update the app). The server
 in a container doesn't update itself; it writes a line in its log when a new version is out.
 
+**Automatic updates with Docker (optional):** [`docker-compose.yml`](docker-compose.yml) includes
+a [Watchtower](https://github.com/nicholas-fedor/watchtower) service that's off unless you ask for
+it. Turned on, it checks for a new Celerity image every day at 04:00 and restarts Celerity on it
+(your data stays in the volume). It only updates containers labelled
+`com.centurylinklabs.watchtower.enable=true`, which in this file is just Celerity, so your other
+containers are left alone. Turn it on with:
+
+```bash
+docker compose --profile autoupdate up -d
+```
+
+and off again with `docker compose stop watchtower`. A restart drops everyone from voice for a
+few seconds, so 04:00 is a good time for it. In CasaOS, use the app's *Check then update* instead.
+
 ### 4. Create accounts
 
 Open `celerity`, click **Register**, enter the server address, a username, a password and the
 invite code. **The first account created becomes the server owner**, so the host should
-register first. Only the owner can create and delete channels.
+register first. Only the owner can create and delete channels, until they hand out roles.
+
+#### Invite links
+
+Instead of sharing the server-wide invite code, the owner (and anyone with a role that has
+**Create invites**) can make invite links, in the app or on the [admin page](#the-admin-page).
+A link can stop working after a while or after a number of uses, and can be revoked at any time.
+It looks like `celerity://join/chat.example.com:7878/AbC123xyz0`: clicking it opens Celerity
+with the server and invite filled in. The server also serves a small web page for each invite,
+`http://<server>:7878/invite/<token>`, with an **Open in Celerity** button and a download link,
+for places where `celerity://` links aren't clickable. The token itself also works in the app's
+invite box. The old invite code keeps working alongside invite links.
+
+Links use the address you connected to when you made them. If friends reach the server under a
+different name (a domain, or a Tailscale name), put it in `public_address` in the settings file.
+
+#### Kicking and banning
+
+People with **Kick members** can remove someone ranked below them: they're signed out and can
+come back by registering again with their username, password and a new invite. **Ban members**
+removes them for good, until someone unbans them. Their old messages stay. Both work in the app
+and on the admin page.
+
+### The admin page
+
+Open `http://<server>:7878/admin` in a browser (on the server PC: <http://localhost:7878/admin>)
+and sign in with the **owner's or an administrator's** Celerity username and password. It shows:
+
+- who's online right now,
+- how much space the database and uploads take, and how much is left on the disk,
+- invite links (make new ones, revoke old ones),
+- every member, with **Kick** and **Ban** for people ranked below you, and the banned list,
+- the recent [backups](#backups), with a **Back up now** button.
+
+The page also works over the server's encrypted connection: `https://<server>:7878/admin`. Your
+browser will warn that the certificate is self-made the first time; that's expected. If you open
+the server to the internet, prefer the `https://` address or a reverse proxy, since the plain
+`http://` address sends your password unencrypted. Failed sign-ins are limited to five every 15
+minutes per address.
 
 ### Server troubleshooting
 
@@ -369,9 +428,19 @@ register first. Only the owner can create and delete channels.
 
 ### Backups
 
-Everything lives in `celerity.db` and the `uploads` folder. Stop the server and copy both (plus
-any `celerity.db-wal` / `celerity.db-shm` files) somewhere safe. On Windows they're in
+Everything lives in `celerity.db` and the `uploads` folder. On Windows they're in
 `C:\ProgramData\Celerity Server`.
+
+**The database is backed up by itself.** Once a day (and when the server starts, if there's no
+backup from today yet) the server copies the database into a `backups` folder next to it, as
+`backups/celerity-YYYY-MM-DD.db`, while it keeps running. The newest 7 are kept and older ones are
+deleted. The admin page lists them and has a **Back up now** button. To turn this off, set
+`backups = false` in the settings file. To restore one, stop the server, replace `celerity.db`
+with the backup (and delete any `celerity.db-wal` / `celerity.db-shm` files), and start it again.
+
+**Uploaded files are not included**: they can be huge. Copy the `uploads` folder yourself now and
+then. Also keep a copy of the backups somewhere other than the server PC: they don't help if its
+disk dies.
 
 ---
 

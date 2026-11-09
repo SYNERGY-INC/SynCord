@@ -247,7 +247,26 @@ impl Connection {
             }
             ClientMsg::Search(query) => {
                 let q = query.clone();
-                let (results, more) = db.call(move |c| db::search(c, me, &q)).await?;
+                let old_app = self.protocol < celerity_proto::PROTOCOL_VERSION;
+                let (results, more) = db
+                    .call(move |c| {
+                        let (mut results, more) = db::search(c, me, &q)?;
+                        // Apps older than 0.7 don't know threads and groups, so they couldn't open those results.
+                        if old_app {
+                            let mut keep = Vec::with_capacity(results.len());
+                            for m in results {
+                                if matches!(
+                                    db::channel_kind(c, m.channel_id)?,
+                                    Some(ChannelKind::Text | ChannelKind::Direct)
+                                ) {
+                                    keep.push(m);
+                                }
+                            }
+                            results = keep;
+                        }
+                        Ok((results, more))
+                    })
+                    .await?;
                 self.send(&ServerMsg::SearchResults { query, results, more }).await;
             }
             ClientMsg::FetchAround { channel_id, message_id } => {
