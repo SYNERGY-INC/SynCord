@@ -1,7 +1,7 @@
 //! Video in calls: the camera and screen buttons, the tiles people's video
 //! shows in, the call view for server voice channels, and the screen picker.
 
-use iced::widget::{button, column, container, image, mouse_area, row, scrollable, space, text, toggler};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, space, text, toggler};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding};
 use syncord_proto::{ChannelId, User, UserId, VideoKind, VoiceState};
 
@@ -117,7 +117,7 @@ impl App {
         } else if let Some(p) = picture {
             // Faces fill their tile; screens show whole.
             let fit = if kind == VideoKind::Camera { ContentFit::Cover } else { ContentFit::Contain };
-            image(p.handle.clone()).content_fit(fit).width(Length::Fill).height(Length::Fill).into()
+            crate::video_tile::video_tile(p, fit).into()
         } else {
             container(text("Loading video...").size(fs * 0.85).color(with_alpha(Color::WHITE, 0.7)))
                 .center(Length::Fill)

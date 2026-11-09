@@ -32,6 +32,7 @@ mod tls;
 mod tray;
 mod updater;
 mod video;
+mod video_tile;
 mod view;
 mod view_extras;
 mod view_live;

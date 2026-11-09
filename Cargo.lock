@@ -5690,6 +5690,8 @@ dependencies = [
  "fontdb",
  "futures",
  "iced",
+ "iced_renderer",
+ "iced_wgpu",
  "image",
  "nnnoiseless",
  "opus",

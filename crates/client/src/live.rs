@@ -149,10 +149,7 @@ impl std::fmt::Debug for Started {
 }
 
 /// One video's latest picture.
-pub struct Picture {
-    serial: u64,
-    pub handle: Handle,
-}
+pub type Picture = crate::video_tile::VideoFrame;
 
 /// What the screen share picker shows.
 #[derive(Debug, Clone, PartialEq)]
@@ -448,10 +445,20 @@ impl App {
             }
         }
         for (key, f) in fresh {
-            if self.live.pictures.get(&key).is_some_and(|p| p.serial == f.serial) {
-                continue;
-            }
-            let picture = Picture { serial: f.serial, handle: handle_of(&f) };
+            // The same identity for a video's whole life keeps its texture.
+            let stream = match self.live.pictures.get(&key) {
+                Some(p) if p.serial == f.serial => continue,
+                Some(p) => p.stream.clone(),
+                None => Arc::new(()),
+            };
+            let picture = Picture {
+                stream,
+                serial: f.serial,
+                width: f.width,
+                height: f.height,
+                handle: handle_of(&f),
+                rgba: f.rgba,
+            };
             self.live.pictures.insert(key, picture);
         }
     }
