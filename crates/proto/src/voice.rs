@@ -15,8 +15,9 @@
 //! ```
 //!
 //! Video (cameras and screen shares) is always sealed; `kind` says which of the
-//! sender's two videos a packet belongs to (see [`crate::VideoKind`]), and the
-//! rest is one `celerity-stream` datagram, which the server never looks inside.
+//! sender's streams a packet belongs to (see [`crate::VideoKind`]: camera, screen,
+//! or since 0.7 the screen share's sound as Opus frames), and the rest is one
+//! `celerity-stream` datagram (or Opus frame), which the server never looks inside.
 //!
 //! Sealed packets are encrypted and authenticated with ChaCha20-Poly1305 using a
 //! per-session key that the server hands out over the (encrypted) WebSocket.
@@ -192,6 +193,39 @@ pub fn open_video(key: &Key, direction: Direction, counter: u64, sealed: &[u8]) 
     (!plain.is_empty()).then_some((kind, plain))
 }
 
+/// Decrypt one video packet in place, without allocating: `buf` holds the sealed bytes and
+/// afterwards holds the packet's kind byte followed by its data. Returns the kind.
+pub fn open_video_in_place(
+    key: &Key,
+    direction: Direction,
+    counter: u64,
+    buf: &mut Vec<u8>,
+) -> Option<crate::VideoKind> {
+    use chacha20poly1305::aead::{AeadInPlace, KeyInit};
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new(key.into());
+    cipher.decrypt_in_place(&nonce_for(direction, true, counter), b"", buf).ok()?;
+    let kind = crate::VideoKind::from_u8(*buf.first()?)?;
+    (buf.len() > 1).then_some(kind)
+}
+
+/// Write a whole server-to-client VIDEO packet into `out` (replacing what's there), sealing
+/// `kind` and `data` for one listener. Reusing `out` keeps the relay free of allocations.
+pub fn encode_video_down(key: &Key, counter: u64, ssrc: u32, kind: crate::VideoKind, data: &[u8], out: &mut Vec<u8>) {
+    use chacha20poly1305::aead::{AeadInPlace, KeyInit};
+    out.clear();
+    out.push(VIDEO_DOWN);
+    out.extend_from_slice(&ssrc.to_be_bytes());
+    out.extend_from_slice(&counter.to_be_bytes());
+    let start = out.len();
+    out.push(kind.to_u8());
+    out.extend_from_slice(data);
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new(key.into());
+    let tag = cipher
+        .encrypt_in_place_detached(&nonce_for(Direction::Down, true, counter), b"", &mut out[start..])
+        .expect("encrypting in memory can't fail");
+    out.extend_from_slice(&tag);
+}
+
 /// Remembers which packet counters were seen recently, so replayed packets are
 /// refused while packets that merely arrive a little out of order still count.
 #[derive(Debug, Clone, Copy, Default)]
@@ -320,6 +354,24 @@ mod tests {
         assert_eq!(open_video(&key, Direction::Down, 4, &sealed), None);
         let down = Packet::VideoDown { ssrc: 5, counter: 1, sealed: &sealed }.encode();
         assert!(matches!(Packet::parse(&down), Some(Packet::VideoDown { ssrc: 5, counter: 1, .. })));
+    }
+
+    #[test]
+    fn in_place_video_matches_the_allocating_version() {
+        use crate::VideoKind;
+        let key: Key = [5; 32];
+        let data = [1u8, 2, 3, 4, 5];
+        let mut out = vec![0xEE; 3]; // leftovers are replaced
+        encode_video_down(&key, 9, 77, VideoKind::ScreenAudio, &data, &mut out);
+        let sealed = seal_video(&key, Direction::Down, 9, VideoKind::ScreenAudio, &data);
+        assert_eq!(out, Packet::VideoDown { ssrc: 77, counter: 9, sealed: &sealed }.encode());
+        let Some(Packet::VideoDown { counter, sealed, .. }) = Packet::parse(&out) else { panic!() };
+        let mut buf = sealed.to_vec();
+        assert_eq!(open_video_in_place(&key, Direction::Down, counter, &mut buf), Some(VideoKind::ScreenAudio));
+        assert_eq!(&buf[1..], &data);
+        let mut bad = sealed.to_vec();
+        bad[0] ^= 1;
+        assert_eq!(open_video_in_place(&key, Direction::Down, counter, &mut bad), None);
     }
 
     #[test]

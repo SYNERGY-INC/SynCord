@@ -35,6 +35,9 @@ use tokio::sync::Semaphore;
 
 use crate::media;
 
+mod rich;
+pub use rich::{Providers, RichMeta};
+
 /// User agent sent with every request. Some sites (YouTube, X/Twitter) only
 /// include OpenGraph tags for agents that look like a link-preview bot.
 pub const USER_AGENT: &str =
@@ -105,6 +108,8 @@ pub struct Preview {
     pub has_video: bool,
     /// The URL itself was a picture or GIF: show it big, with no text card.
     pub is_media: bool,
+    /// Extra details for YouTube, X/Twitter and Spotify links.
+    pub rich: Option<RichMeta>,
 }
 
 /// A picture that was downloaded and checked to be a readable image.
@@ -132,6 +137,8 @@ pub struct Fetcher {
     limits: Limits,
     cache: Mutex<Cache>,
     decode: Semaphore,
+    /// Where YouTube, X/Twitter and Spotify are asked for details.
+    providers: Providers,
 }
 
 impl Default for Fetcher {
@@ -158,6 +165,12 @@ impl Fetcher {
         self
     }
 
+    /// Ask other addresses for YouTube, X/Twitter and Spotify details (tests use a local server).
+    pub fn with_providers(mut self, providers: Providers) -> Self {
+        self.providers = providers;
+        self
+    }
+
     fn build(allow_private: bool) -> Self {
         // reqwest is built without a bundled crypto provider; the binary installs
         // ring at start-up, but make sure one is there either way.
@@ -179,6 +192,7 @@ impl Fetcher {
             limits: Limits::default(),
             cache: Mutex::new(Cache::default()),
             decode: Semaphore::new(DECODE_SLOTS),
+            providers: Providers::default(),
         }
     }
 
@@ -201,6 +215,14 @@ impl Fetcher {
     }
 
     async fn fetch_uncached(&self, url: Url) -> Result<Option<Preview>, String> {
+        if let Some(link) = rich::detect(&url) {
+            match self.fetch_rich(&link, &url).await {
+                Ok(Some(p)) => return Ok(Some(p)),
+                Ok(None) => {}
+                // Fall back to the page itself.
+                Err(e) => tracing::debug!("no rich preview for {url}: {e}"),
+            }
+        }
         let page = tokio::time::timeout(self.limits.page_timeout, self.load_page(url))
             .await
             .map_err(|_| "the site took too long to answer".to_string())??;
@@ -218,6 +240,7 @@ impl Fetcher {
                     kind: None,
                     has_video: false,
                     is_media: true,
+                    rich: None,
                 }))
             }
             Page::Html { url, meta } => {
@@ -250,6 +273,7 @@ impl Fetcher {
                     kind: meta.kind,
                     has_video: meta.has_video,
                     is_media: false,
+                    rich: None,
                 }))
             }
         }
@@ -716,6 +740,10 @@ struct PageMeta {
     has_video: bool,
     /// Charset declared in the page (`<meta charset>` or `http-equiv`).
     charset: Option<String>,
+    /// Length of a video or song (`itemprop="duration"`, `music:duration`, YouTube's `lengthSeconds`).
+    duration_secs: Option<u32>,
+    /// `music:musician_description` (Spotify's artist).
+    musician: Option<String>,
 }
 
 /// Decode a page's bytes: UTF-8 normally, Latin-1/Windows-1252 when declared so.
@@ -796,7 +824,7 @@ fn scan_meta(html: &str, page_url: &Url) -> PageMeta {
                 {
                     charset.get_or_insert(cs.trim().trim_matches(['"', '\'', ';']).to_string());
                 }
-                let key = attr("property").or_else(|| attr("name"));
+                let key = attr("property").or_else(|| attr("name")).or_else(|| attr("itemprop"));
                 if let (Some(key), Some(content)) = (key, content) {
                     let content = content.trim();
                     if !content.is_empty() {
@@ -839,6 +867,15 @@ fn scan_meta(html: &str, page_url: &Url) -> PageMeta {
         kind: get(&["og:type"]).and_then(|s| clean(&s, 64)),
         has_video: get(&["og:video", "og:video:url", "og:video:secure_url"]).is_some(),
         charset,
+        duration_secs: get(&["duration"])
+            .and_then(|d| rich::parse_iso_duration(&d))
+            .or_else(|| get(&["music:duration", "video:duration"]).and_then(|d| d.trim().parse().ok()))
+            .or_else(|| {
+                // YouTube puts the length in its page data rather than a tag.
+                let at = html.find("\"lengthSeconds\":\"")? + "\"lengthSeconds\":\"".len();
+                html[at..].split('"').next()?.parse().ok()
+            }),
+        musician: get(&["music:musician_description"]).and_then(|s| clean(&s, MAX_SITE_NAME)),
     }
 }
 

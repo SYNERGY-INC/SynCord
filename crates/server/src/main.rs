@@ -12,7 +12,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use celerity_server::{AppState, Config, db, router, start_cleanup, start_udp};
+use celerity_server::tls::Peer;
+use celerity_server::{AppState, Config, db, router, start_background, start_udp};
 use tracing::{error, info, warn};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
@@ -72,6 +73,22 @@ fn upgrade_settings(path: &Path, mut text: String) -> String {
              # (developers.giphy.com) or KLIPY (partner.klipy.com), then restart the server.\n\
              giphy_api_key = \"\"\n\
              klipy_api_key = \"\"\n",
+        );
+    }
+    // 0.7: daily backups, on unless the owner turns them off.
+    if !text.lines().any(|l| l.trim_start().starts_with("backups")) {
+        text.push_str(
+            "\n# Copy the database into a \"backups\" folder next to it once a day; the newest 7 are kept.\n\
+             # Uploaded files aren't included: back up the uploads folder yourself.\n\
+             backups = true\n",
+        );
+        info!("turned on daily database backups (backups = true)");
+    }
+    if !text.lines().any(|l| l.trim_start().starts_with("public_address")) {
+        text.push_str(
+            "\n# The address friends use to reach this server (for example \"chat.example.com:7878\"), used in\n\
+             # invite links. Leave empty to use whatever address the person making the link connected to.\n\
+             public_address = \"\"\n",
         );
     }
     if text != original
@@ -186,8 +203,8 @@ async fn main() {
     };
 
     let state = AppState::new(config, db);
-    let app = router(state.clone());
-    start_cleanup(state.clone());
+    let app = router(state.clone()).into_make_service_with_connect_info::<Peer>();
+    start_background(state.clone());
     celerity_server::update::start(state.clone());
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
@@ -213,6 +230,7 @@ async fn main() {
     } else {
         info!("invite code for new accounts: {}", state.config.invite_code);
     }
+    info!("admin page: http://localhost:{}/admin (sign in as the owner or an administrator)", addr.port());
 
     let stopped = async {
         stop_requested().await;

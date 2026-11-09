@@ -2,7 +2,7 @@
 //! group and keeps memory use tiny; all calls run on tokio's blocking pool.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use celerity_proto::{
@@ -12,9 +12,18 @@ use celerity_proto::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod expressions;
+mod members;
+mod social;
+pub use expressions::*;
+pub use members::*;
+pub use social::*;
+
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    /// The database file (`None` for the in-memory databases tests use).
+    path: Option<PathBuf>,
 }
 
 pub type DbResult<T> = Result<T, rusqlite::Error>;
@@ -133,7 +142,88 @@ CREATE TABLE IF NOT EXISTS read_states (
     last_read  INTEGER NOT NULL,
     PRIMARY KEY (user_id, channel_id)
 );
+
+CREATE TABLE IF NOT EXISTS categories (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS channel_roles (
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    role_id    INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (channel_id, role_id)
+);
+
+CREATE TABLE IF NOT EXISTS category_roles (
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    role_id     INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (category_id, role_id)
+);
+
+CREATE TABLE IF NOT EXISTS invites (
+    token      TEXT PRIMARY KEY,
+    created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    max_uses   INTEGER,
+    uses       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS emojis (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    file       TEXT NOT NULL,
+    mime       TEXT NOT NULL,
+    animated   INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stickers (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    file       TEXT NOT NULL,
+    mime       TEXT NOT NULL,
+    animated   INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sounds (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    emoji       TEXT,
+    file        TEXT NOT NULL,
+    mime        TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    size        INTEGER NOT NULL,
+    created_by  INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    option     INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (message_id, option, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS identity_keys (
+    user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    agreement_key TEXT NOT NULL,
+    signing_key   TEXT NOT NULL,
+    signature     TEXT NOT NULL DEFAULT '',
+    updated_at    INTEGER NOT NULL
+);
 "#;
+
+/// Columns `row_to_message` reads, in order.
+const MESSAGE_COLUMNS: &str = "id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at, sticker, encrypted, poll";
+
+/// Database layout version, kept in SQLite's `user_version`. 7 is the 0.7 layout.
+const SCHEMA_VERSION: i64 = 7;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -143,6 +233,8 @@ pub fn now_ms() -> i64 {
 pub struct Credentials {
     pub id: UserId,
     pub password_hash: String,
+    /// [`MEMBER`], [`KICKED`] or [`BANNED`].
+    pub removed: i64,
 }
 
 impl Db {
@@ -150,7 +242,7 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
-        let db = Self { conn: Arc::new(Mutex::new(conn)) };
+        let db = Self { conn: Arc::new(Mutex::new(conn)), path: Some(path.to_path_buf()) };
         db.seed()?;
         Ok(db)
     }
@@ -160,9 +252,14 @@ impl Db {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
-        let db = Self { conn: Arc::new(Mutex::new(conn)) };
+        let db = Self { conn: Arc::new(Mutex::new(conn)), path: None };
         db.seed()?;
         Ok(db)
+    }
+
+    /// The database file, if it isn't an in-memory one.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     fn seed(&self) -> DbResult<()> {
@@ -212,19 +309,50 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         ("messages", "kind", "ALTER TABLE messages ADD COLUMN kind TEXT"),
         ("messages", "reply_to", "ALTER TABLE messages ADD COLUMN reply_to INTEGER"),
         ("messages", "pinned_at", "ALTER TABLE messages ADD COLUMN pinned_at INTEGER"),
+        // 0.7: categories, threads, groups, polls, stickers, encrypted messages, kicks and bans.
+        ("channels", "category_id", "ALTER TABLE channels ADD COLUMN category_id INTEGER"),
+        (
+            "channels",
+            "parent_id",
+            "ALTER TABLE channels ADD COLUMN parent_id INTEGER REFERENCES channels(id) ON DELETE CASCADE",
+        ),
+        ("channels", "parent_message_id", "ALTER TABLE channels ADD COLUMN parent_message_id INTEGER"),
+        ("channels", "owner_id", "ALTER TABLE channels ADD COLUMN owner_id INTEGER"),
+        ("channels", "archived", "ALTER TABLE channels ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "poll", "ALTER TABLE messages ADD COLUMN poll TEXT"),
+        ("messages", "sticker", "ALTER TABLE messages ADD COLUMN sticker TEXT"),
+        ("messages", "encrypted", "ALTER TABLE messages ADD COLUMN encrypted TEXT"),
+        ("users", "removed", "ALTER TABLE users ADD COLUMN removed INTEGER NOT NULL DEFAULT 0"),
     ] {
         if conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 0")).is_err() {
             conn.execute_batch(ddl)?;
         }
     }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS channels_by_parent ON channels(parent_id);
+         CREATE INDEX IF NOT EXISTS channels_by_parent_message ON channels(parent_message_id);",
+    )?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 7 {
+        // Playing soundboard sounds is on for everyone, like the other everyday permissions.
+        conn.execute(
+            "UPDATE roles SET permissions = permissions | ?1 WHERE id = ?2",
+            params![perms::USE_SOUNDBOARD as i64, EVERYONE_ROLE],
+        )?;
+    }
+    if version < SCHEMA_VERSION {
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    }
     Ok(())
 }
 
-fn kind_to_i64(kind: ChannelKind) -> i64 {
+pub(crate) fn kind_to_i64(kind: ChannelKind) -> i64 {
     match kind {
         ChannelKind::Text => 0,
         ChannelKind::Voice => 1,
         ChannelKind::Direct => 2,
+        ChannelKind::Group => 3,
+        ChannelKind::Thread => 4,
     }
 }
 
@@ -232,20 +360,32 @@ fn kind_from_i64(v: i64) -> ChannelKind {
     match v {
         1 => ChannelKind::Voice,
         2 => ChannelKind::Direct,
+        3 => ChannelKind::Group,
+        4 => ChannelKind::Thread,
         _ => ChannelKind::Text,
     }
 }
 
 // ---- Queries (synchronous, called inside `Db::call`) ----
 
+/// `users.removed`: still a member, kicked, or banned.
+pub const MEMBER: i64 = 0;
+pub const KICKED: i64 = 1;
+pub const BANNED: i64 = 2;
+
+const USER_COLUMNS: &str = "id, username, profile, is_owner, removed";
+
 fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
     let profile_json: String = row.get(2)?;
+    let removed: i64 = row.get(4)?;
     Ok(User {
         id: row.get(0)?,
         username: row.get(1)?,
         profile: serde_json::from_str(&profile_json).unwrap_or_default(),
         is_owner: row.get(3)?,
         roles: Vec::new(),
+        removed: removed != MEMBER,
+        banned: removed == BANNED,
     })
 }
 
@@ -260,7 +400,15 @@ pub fn create_user(conn: &Connection, username: &str, password_hash: &str, is_ow
         "INSERT INTO users (username, password_hash, profile, is_owner, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![username, password_hash, serde_json::to_string(&profile).unwrap(), is_owner, now_ms()],
     )?;
-    Ok(User { id: conn.last_insert_rowid(), username: username.to_owned(), profile, is_owner, roles: Vec::new() })
+    Ok(User {
+        id: conn.last_insert_rowid(),
+        username: username.to_owned(),
+        profile,
+        is_owner,
+        roles: Vec::new(),
+        removed: false,
+        banned: false,
+    })
 }
 
 /// Pick a pleasant default accent colour from the username.
@@ -271,15 +419,15 @@ fn color_for(username: &str) -> u32 {
 }
 
 pub fn credentials(conn: &Connection, username: &str) -> DbResult<Option<Credentials>> {
-    conn.query_row("SELECT id, password_hash FROM users WHERE username = ?1", params![username], |r| {
-        Ok(Credentials { id: r.get(0)?, password_hash: r.get(1)? })
+    conn.query_row("SELECT id, password_hash, removed FROM users WHERE username = ?1", params![username], |r| {
+        Ok(Credentials { id: r.get(0)?, password_hash: r.get(1)?, removed: r.get(2)? })
     })
     .optional()
 }
 
 pub fn get_user(conn: &Connection, id: UserId) -> DbResult<Option<User>> {
     let user = conn
-        .query_row("SELECT id, username, profile, is_owner FROM users WHERE id = ?1", params![id], row_to_user)
+        .query_row(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1"), params![id], row_to_user)
         .optional()?;
     Ok(match user {
         Some(mut u) => {
@@ -291,7 +439,7 @@ pub fn get_user(conn: &Connection, id: UserId) -> DbResult<Option<User>> {
 }
 
 pub fn all_users(conn: &Connection) -> DbResult<Vec<User>> {
-    let mut stmt = conn.prepare_cached("SELECT id, username, profile, is_owner FROM users ORDER BY id")?;
+    let mut stmt = conn.prepare_cached(&format!("SELECT {USER_COLUMNS} FROM users ORDER BY id"))?;
     let mut users: Vec<User> = stmt.query_map([], row_to_user)?.collect::<DbResult<_>>()?;
     let mut roles: HashMap<UserId, Vec<RoleId>> = HashMap::new();
     let mut stmt = conn.prepare_cached("SELECT user_id, role_id FROM user_roles ORDER BY role_id")?;
@@ -327,6 +475,9 @@ pub fn delete_session(conn: &Connection, token: &str) -> DbResult<()> {
     Ok(())
 }
 
+const CHANNEL_COLUMNS: &str = "id, name, topic, position, kind,
+    (SELECT MAX(m.id) FROM messages m WHERE m.channel_id = channels.id), category_id";
+
 fn row_to_channel(r: &rusqlite::Row<'_>) -> rusqlite::Result<Channel> {
     Ok(Channel {
         id: r.get(0)?,
@@ -335,17 +486,40 @@ fn row_to_channel(r: &rusqlite::Row<'_>) -> rusqlite::Result<Channel> {
         position: r.get(3)?,
         kind: kind_from_i64(r.get(4)?),
         last_message_id: r.get(5)?,
+        category_id: r.get(6)?,
+        allowed_roles: Vec::new(),
     })
 }
 
-/// Text and voice channels (not direct messages).
+/// Text and voice channels (not direct messages, groups or threads), whoever may see them.
 pub fn all_channels(conn: &Connection) -> DbResult<Vec<Channel>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, name, topic, position, kind,
-                (SELECT MAX(m.id) FROM messages m WHERE m.channel_id = channels.id)
-         FROM channels WHERE kind IN (0, 1) ORDER BY position, id",
-    )?;
-    stmt.query_map([], row_to_channel)?.collect()
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {CHANNEL_COLUMNS} FROM channels WHERE kind IN (0, 1) ORDER BY position, id"
+    ))?;
+    let mut channels: Vec<Channel> = stmt.query_map([], row_to_channel)?.collect::<DbResult<_>>()?;
+    let mut roles = channel_role_lists(conn)?;
+    for c in &mut channels {
+        c.allowed_roles = roles.remove(&c.id).unwrap_or_default();
+    }
+    Ok(channels)
+}
+
+/// One text or voice channel.
+pub fn get_channel(conn: &Connection, id: ChannelId) -> DbResult<Option<Channel>> {
+    let channel = conn
+        .query_row(
+            &format!("SELECT {CHANNEL_COLUMNS} FROM channels WHERE id = ?1 AND kind IN (0, 1)"),
+            params![id],
+            row_to_channel,
+        )
+        .optional()?;
+    Ok(match channel {
+        Some(mut c) => {
+            c.allowed_roles = channel_roles(conn, id)?;
+            Some(c)
+        }
+        None => None,
+    })
 }
 
 /// The channel's kind, or `None` if it doesn't exist.
@@ -353,13 +527,20 @@ pub fn channel_kind(conn: &Connection, id: ChannelId) -> DbResult<Option<Channel
     conn.query_row("SELECT kind FROM channels WHERE id = ?1", params![id], |r| r.get(0).map(kind_from_i64)).optional()
 }
 
-/// The channel's kind if `user` may see it: everyone sees server channels,
-/// only the two members see a direct conversation.
+/// The channel's kind if `user` may see it: server channels unless they're limited to roles
+/// the user doesn't have, threads if their channel is visible, and direct messages and
+/// groups only for their members.
 pub fn accessible_kind(conn: &Connection, user: UserId, id: ChannelId) -> DbResult<Option<ChannelKind>> {
-    match channel_kind(conn, id)? {
-        Some(ChannelKind::Direct) => Ok(is_direct_member(conn, id, user)?.then_some(ChannelKind::Direct)),
-        other => Ok(other),
-    }
+    let kind = channel_kind(conn, id)?;
+    Ok(match kind {
+        Some(ChannelKind::Direct | ChannelKind::Group) => is_direct_member(conn, id, user)?.then_some(kind).flatten(),
+        Some(ChannelKind::Thread) => match thread_parent(conn, id)? {
+            Some(parent) if can_see_channel(conn, user, parent)? => kind,
+            _ => None,
+        },
+        Some(_) => can_see_channel(conn, user, id)?.then_some(kind).flatten(),
+        None => None,
+    })
 }
 
 pub fn create_channel(conn: &Connection, name: &str, topic: &str, kind: ChannelKind) -> DbResult<Channel> {
@@ -375,6 +556,8 @@ pub fn create_channel(conn: &Connection, name: &str, topic: &str, kind: ChannelK
         position,
         kind,
         last_message_id: None,
+        category_id: None,
+        allowed_roles: Vec::new(),
     })
 }
 
@@ -382,10 +565,18 @@ pub fn text_channel_count(conn: &Connection) -> DbResult<i64> {
     conn.query_row("SELECT COUNT(*) FROM channels WHERE kind = 0", [], |r| r.get(0))
 }
 
-/// Deletes the channel; returns ids of attachment files to remove from disk.
+/// Deletes the channel (and its threads); returns ids of attachment files to remove from disk.
 pub fn delete_channel(conn: &Connection, id: ChannelId) -> DbResult<Option<Vec<String>>> {
-    let files = string_column(conn, "SELECT id FROM attachments WHERE channel_id = ?1", id)?;
-    let deleted = conn.execute("DELETE FROM channels WHERE id = ?1", params![id])? > 0;
+    let files = string_column(
+        conn,
+        "SELECT id FROM attachments WHERE channel_id = ?1 OR channel_id IN (SELECT id FROM channels WHERE parent_id = ?1)",
+        id,
+    )?;
+    let tx = conn.unchecked_transaction()?;
+    // Threads go too (also done by the foreign key, but not on databases made before 0.7).
+    tx.execute("DELETE FROM channels WHERE parent_id = ?1", params![id])?;
+    let deleted = tx.execute("DELETE FROM channels WHERE id = ?1", params![id])? > 0;
+    tx.commit()?;
     Ok(deleted.then_some(files))
 }
 
@@ -407,7 +598,7 @@ pub fn is_direct_member(conn: &Connection, channel: ChannelId, user: UserId) -> 
 }
 
 pub fn direct_members(conn: &Connection, channel: ChannelId) -> DbResult<Vec<UserId>> {
-    let mut stmt = conn.prepare_cached("SELECT user_id FROM direct_members WHERE channel_id = ?1")?;
+    let mut stmt = conn.prepare_cached("SELECT user_id FROM direct_members WHERE channel_id = ?1 ORDER BY rowid")?;
     stmt.query_map(params![channel], |r| r.get(0))?.collect()
 }
 
@@ -418,6 +609,7 @@ pub fn directs_for(conn: &Connection, user: UserId) -> DbResult<Vec<DirectChanne
                 (SELECT MAX(m.id) FROM messages m WHERE m.channel_id = me.channel_id) AS last
          FROM direct_members me
          JOIN direct_members other ON other.channel_id = me.channel_id AND other.user_id != me.user_id
+         JOIN channels c ON c.id = me.channel_id AND c.kind = 2
          WHERE me.user_id = ?1
          ORDER BY COALESCE(last, 0) DESC",
     )?;
@@ -434,6 +626,7 @@ pub fn open_direct(conn: &Connection, a: UserId, b: UserId) -> DbResult<(Channel
         .query_row(
             "SELECT x.channel_id FROM direct_members x
              JOIN direct_members y ON y.channel_id = x.channel_id
+             JOIN channels c ON c.id = x.channel_id AND c.kind = 2
              WHERE x.user_id = ?1 AND y.user_id = ?2",
             params![a, b],
             |r| r.get(0),
@@ -645,6 +838,7 @@ fn fill_extras(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
         mentions.entry(mid).or_default().push(user);
     }
 
+    let mut threads = thread_summaries(conn, channel, lo, hi)?;
     for m in msgs.iter_mut() {
         m.attachments = by_message.remove(&m.id).unwrap_or_default();
         m.reactions = reactions.remove(&m.id).unwrap_or_default();
@@ -652,12 +846,22 @@ fn fill_extras(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
         if let Some(r) = &m.reply {
             m.reply = Some(reply_ref(conn, r.message_id)?);
         }
+        m.thread = threads.remove(&m.id);
+        if let Some(poll) = &mut m.poll {
+            fill_poll(conn, m.id, poll)?;
+        }
     }
     Ok(())
 }
 
 fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
+    let json = |i: usize| -> rusqlite::Result<Option<String>> { r.get(i) };
     Ok(Message {
+        sticker: json(10)?.and_then(|s| serde_json::from_str(&s).ok()),
+        encrypted: json(11)?.and_then(|s| serde_json::from_str(&s).ok()),
+        // Votes are filled in by `fill_extras`.
+        poll: json(12)?.and_then(|s| serde_json::from_str(&s).ok()),
+        thread: None,
         id: r.get(0)?,
         channel_id: r.get(1)?,
         author_id: r.get(2)?,
@@ -697,10 +901,10 @@ pub fn pin_count(conn: &Connection, channel_id: ChannelId) -> DbResult<usize> {
 
 /// A channel's pinned messages, most recently pinned first.
 pub fn pins(conn: &Connection, channel_id: ChannelId) -> DbResult<Vec<Message>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {MESSAGE_COLUMNS}
          FROM messages WHERE channel_id = ?1 AND pinned_at IS NOT NULL ORDER BY pinned_at DESC LIMIT ?2",
-    )?;
+    ))?;
     let mut msgs: Vec<Message> =
         stmt.query_map(params![channel_id, MAX_PINS as i64], row_to_message)?.collect::<Result<_, _>>()?;
     fill_extras(conn, &mut msgs)?;
@@ -751,6 +955,15 @@ pub enum SendError {
     BadAttachment,
 }
 
+/// What a message carries besides text and files (0.7).
+#[derive(Debug, Clone, Default)]
+pub struct MessageExtras {
+    pub sticker: Option<celerity_proto::Sticker>,
+    pub encrypted: Option<celerity_proto::EncryptedPayload>,
+    /// The poll as asked for (no votes yet).
+    pub poll: Option<celerity_proto::Poll>,
+}
+
 /// Store a message and attach previously uploaded files to it, all or nothing.
 pub fn insert_message(
     conn: &Connection,
@@ -759,6 +972,19 @@ pub fn insert_message(
     content: &str,
     attachment_ids: &[String],
     reply_to: Option<MessageId>,
+) -> DbResult<Result<Message, SendError>> {
+    insert_message_with(conn, channel_id, author_id, content, attachment_ids, reply_to, MessageExtras::default())
+}
+
+/// [`insert_message`] for a sticker, poll or encrypted message.
+pub fn insert_message_with(
+    conn: &Connection,
+    channel_id: ChannelId,
+    author_id: UserId,
+    content: &str,
+    attachment_ids: &[String],
+    reply_to: Option<MessageId>,
+    extras: MessageExtras,
 ) -> DbResult<Result<Message, SendError>> {
     let tx = conn.unchecked_transaction()?;
     let created_at = now_ms();
@@ -772,8 +998,18 @@ pub fn insert_message(
         None => None,
     };
     tx.execute(
-        "INSERT INTO messages (channel_id, author_id, content, created_at, reply_to) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![channel_id, author_id, content, created_at, reply_to],
+        "INSERT INTO messages (channel_id, author_id, content, created_at, reply_to, sticker, encrypted, poll)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            channel_id,
+            author_id,
+            content,
+            created_at,
+            reply_to,
+            extras.sticker.as_ref().map(|s| serde_json::to_string(s).unwrap()),
+            extras.encrypted.as_ref().map(|e| serde_json::to_string(e).unwrap()),
+            extras.poll.as_ref().map(|p| serde_json::to_string(p).unwrap()),
+        ],
     )?;
     let id = tx.last_insert_rowid();
     let mut attachments = Vec::new();
@@ -806,16 +1042,16 @@ pub fn insert_message(
         kind: MessageKind::Normal,
         reply,
         pinned: false,
+        thread: None,
+        poll: extras.poll,
+        sticker: extras.sticker,
+        encrypted: extras.encrypted,
     }))
 }
 
 pub fn get_message(conn: &Connection, id: MessageId) -> DbResult<Option<Message>> {
     let msg = conn
-        .query_row(
-            "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at FROM messages WHERE id = ?1",
-            params![id],
-            row_to_message,
-        )
+        .query_row(&format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1"), params![id], row_to_message)
         .optional()?;
     Ok(match msg {
         Some(mut m) => {
@@ -840,11 +1076,11 @@ pub fn delete_message(conn: &Connection, id: MessageId) -> DbResult<Vec<String>>
 
 /// Returns up to [`HISTORY_PAGE`] messages older than `before`, oldest first.
 pub fn history(conn: &Connection, channel_id: ChannelId, before: Option<MessageId>) -> DbResult<Vec<Message>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at FROM messages
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages
          WHERE channel_id = ?1 AND (?2 IS NULL OR id < ?2)
          ORDER BY id DESC LIMIT ?3",
-    )?;
+    ))?;
     let mut msgs: Vec<Message> =
         stmt.query_map(params![channel_id, before, HISTORY_PAGE as i64], row_to_message)?.collect::<DbResult<_>>()?;
     msgs.reverse();
@@ -872,13 +1108,18 @@ fn fill_mixed(conn: &Connection, msgs: &mut [Message]) -> DbResult<()> {
 }
 
 /// Messages `user` can see that match, newest first (one page, plus whether there are more).
+/// Encrypted messages are left out: the server can't read them.
 pub fn search(conn: &Connection, user: UserId, q: &SearchQuery) -> DbResult<(Vec<Message>, bool)> {
-    let mut sql = String::from(
-        "SELECT id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at FROM messages m
-         WHERE (m.channel_id IN (SELECT id FROM channels WHERE kind = 0)
-                OR m.channel_id IN (SELECT channel_id FROM direct_members WHERE user_id = ?))",
+    let searchable = searchable_channels(conn, user)?;
+    if searchable.is_empty() {
+        return Ok((Vec::new(), false));
+    }
+    let marks = vec!["?"; searchable.len()].join(",");
+    let mut sql = format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages m
+         WHERE m.channel_id IN ({marks}) AND m.encrypted IS NULL",
     );
-    let mut args: Vec<rusqlite::types::Value> = vec![user.into()];
+    let mut args: Vec<rusqlite::types::Value> = searchable.into_iter().map(Into::into).collect();
     for w in q.words.iter().filter(|w| !w.trim().is_empty()).take(8) {
         // LIKE wildcards in the search are matched literally.
         let escaped = w.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
@@ -923,7 +1164,7 @@ pub fn search(conn: &Connection, user: UserId, q: &SearchQuery) -> DbResult<(Vec
 
 /// Up to 40 messages before `id` and 5 after it (so it shows near the bottom), oldest first.
 pub fn around(conn: &Connection, channel_id: ChannelId, id: MessageId) -> DbResult<(Vec<Message>, bool)> {
-    let cols = "id, channel_id, author_id, content, created_at, edited_at, embeds, kind, reply_to, pinned_at";
+    let cols = MESSAGE_COLUMNS;
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {cols} FROM messages WHERE channel_id = ?1 AND id <= ?2 ORDER BY id DESC LIMIT 41"
     ))?;
@@ -1105,14 +1346,12 @@ pub fn blocked_between(conn: &Connection, a: UserId, b: UserId) -> DbResult<bool
 pub fn resolve_mentions(conn: &Connection, author: UserId, channel: ChannelId, content: &str) -> DbResult<Vec<UserId>> {
     let (users, roles, everyone) = parse_mentions(content);
     let mut out: Vec<UserId> = Vec::new();
-    let members: Option<Vec<UserId>> = match channel_kind(conn, channel)? {
-        Some(ChannelKind::Direct) => Some(direct_members(conn, channel)?),
-        _ => None,
-    };
-    let everyone = everyone && (members.is_some() || access(conn, author)?.can(perms::MENTION_EVERYONE));
-    let all: Vec<UserId> = match &members {
-        Some(m) => m.clone(),
-        None => all_users(conn)?.into_iter().map(|u| u.id).collect(),
+    let private = matches!(channel_kind(conn, channel)?, Some(ChannelKind::Direct | ChannelKind::Group));
+    let everyone = everyone && (private || access(conn, author)?.can(perms::MENTION_EVERYONE));
+    // Only people who can see the channel get pinged (private channels, threads in them, DMs).
+    let all: Vec<UserId> = match channel_audience(conn, channel)? {
+        Some(m) => m,
+        None => all_users(conn)?.into_iter().filter(|u| !u.removed).map(|u| u.id).collect(),
     };
     for id in all {
         let roles_of = if roles.is_empty() { Vec::new() } else { user_roles(conn, id)? };
@@ -1147,8 +1386,17 @@ pub fn mention_counts(conn: &Connection, user: UserId) -> DbResult<Vec<MentionCo
          WHERE m.user_id = ?1 AND m.message_id > COALESCE(r.last_read, 0)
          GROUP BY m.channel_id",
     )?;
-    stmt.query_map(params![user], |r| Ok(MentionCount { channel_id: r.get(0)?, count: r.get::<_, i64>(1)? as u32 }))?
-        .collect()
+    let counts: Vec<MentionCount> = stmt
+        .query_map(params![user], |r| Ok(MentionCount { channel_id: r.get(0)?, count: r.get::<_, i64>(1)? as u32 }))?
+        .collect::<DbResult<_>>()?;
+    // Pings in channels they can no longer see don't count.
+    let mut visible = Vec::with_capacity(counts.len());
+    for c in counts {
+        if accessible_kind(conn, user, c.channel_id)?.is_some() {
+            visible.push(c);
+        }
+    }
+    Ok(visible)
 }
 
 // ---- Link previews
@@ -1264,6 +1512,48 @@ mod tests {
         migrate(&conn).unwrap(); // idempotent
         let chans = all_channels(&conn).unwrap();
         assert_eq!(chans[0].kind, ChannelKind::Text);
+    }
+
+    #[test]
+    fn upgrades_a_0_6_database() {
+        let dir = std::env::temp_dir().join(format!("celerity-migrate-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("celerity.db");
+        // Make a database, then wind it back to how 0.6 left it.
+        {
+            let db = Db::open(&path).unwrap();
+            let c = db.lock();
+            create_user(&c, "alice", "x", true).unwrap();
+            let ch = all_channels(&c).unwrap()[0].id;
+            insert_message(&c, ch, 1, "old message", &[], None).unwrap().unwrap();
+            c.execute_batch(
+                "ALTER TABLE messages DROP COLUMN poll; ALTER TABLE messages DROP COLUMN sticker;
+                 ALTER TABLE messages DROP COLUMN encrypted; ALTER TABLE users DROP COLUMN removed;
+                 DROP INDEX channels_by_parent; DROP INDEX channels_by_parent_message;
+                 ALTER TABLE channels DROP COLUMN category_id; ALTER TABLE channels DROP COLUMN parent_message_id;
+                 ALTER TABLE channels DROP COLUMN owner_id; ALTER TABLE channels DROP COLUMN archived;
+                 PRAGMA user_version = 0;",
+            )
+            .unwrap();
+            let old = (perms::DEFAULT & !perms::USE_SOUNDBOARD) as i64;
+            c.execute("UPDATE roles SET permissions = ?1 WHERE id = ?2", params![old, EVERYONE_ROLE]).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let c = db.lock();
+        let everyone = get_role(&c, EVERYONE_ROLE).unwrap().unwrap();
+        assert!(everyone.permissions & perms::USE_SOUNDBOARD != 0, "the new everyday permission is turned on");
+        assert!(!all_users(&c).unwrap()[0].removed);
+        let ch = all_channels(&c).unwrap()[0].clone();
+        assert_eq!(ch.category_id, None);
+        assert_eq!(history(&c, ch.id, None).unwrap()[0].content, "old message");
+        // Turning it off again sticks: the upgrade only happens once.
+        c.execute("UPDATE roles SET permissions = 0 WHERE id = ?1", params![EVERYONE_ROLE]).unwrap();
+        drop(c);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(get_role(&db.lock(), EVERYONE_ROLE).unwrap().unwrap().permissions, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn att(id: &str) -> Attachment {

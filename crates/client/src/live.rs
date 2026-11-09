@@ -193,7 +193,7 @@ impl Live {
     pub fn sending(&self, kind: VideoKind) -> bool {
         match kind {
             VideoKind::Camera => self.camera.is_some(),
-            VideoKind::Screen => self.screen.is_some(),
+            VideoKind::Screen | VideoKind::ScreenAudio => self.screen.is_some(),
         }
     }
 }
@@ -296,7 +296,7 @@ impl App {
                     Err(e) => {
                         self.notice = Some(match kind {
                             VideoKind::Camera => format!("Couldn't start your camera: {e}"),
-                            VideoKind::Screen => format!("Couldn't share your screen: {e}"),
+                            VideoKind::Screen | VideoKind::ScreenAudio => format!("Couldn't share your screen: {e}"),
                         });
                         None
                     }
@@ -305,7 +305,7 @@ impl App {
                 if let Some(sender) = sender.filter(|_| self.in_call()) {
                     match kind {
                         VideoKind::Camera => self.live.camera = Some(sender),
-                        VideoKind::Screen => {
+                        VideoKind::Screen | VideoKind::ScreenAudio => {
                             self.live.screen = Some(sender);
                             self.live.stage = true;
                         }
@@ -377,7 +377,7 @@ impl App {
             let still = u == me && self.live.sending(k)
                 || match k {
                     VideoKind::Camera => wanted.contains_key(&(u, k)),
-                    VideoKind::Screen => sharing.contains(&u),
+                    VideoKind::Screen | VideoKind::ScreenAudio => sharing.contains(&u),
                 };
             if !still {
                 self.live.focus = None;
@@ -424,11 +424,11 @@ impl App {
         for (kind, e) in stopped {
             match kind {
                 VideoKind::Camera => self.live.camera = None,
-                VideoKind::Screen => self.live.screen = None,
+                VideoKind::Screen | VideoKind::ScreenAudio => self.live.screen = None,
             }
             self.notice = Some(match kind {
                 VideoKind::Camera => format!("Your camera stopped: {e}"),
-                VideoKind::Screen => format!("Screen sharing stopped: {e}"),
+                VideoKind::Screen | VideoKind::ScreenAudio => format!("Screen sharing stopped: {e}"),
             });
             self.tell_video_state();
         }
@@ -470,7 +470,7 @@ impl App {
     pub(crate) fn on_keyframe_request(&self, kind: VideoKind) {
         let sender = match kind {
             VideoKind::Camera => &self.live.camera,
-            VideoKind::Screen => &self.live.screen,
+            VideoKind::Screen | VideoKind::ScreenAudio => &self.live.screen,
         };
         if let Some(s) = sender {
             s.force_keyframe();

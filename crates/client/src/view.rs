@@ -1609,7 +1609,9 @@ impl App {
         let fs = self.fs();
         let preview = match kind {
             ChannelKind::Text => celerity_proto::normalize_channel_name(name),
-            ChannelKind::Voice | ChannelKind::Direct => celerity_proto::clean_voice_channel_name(name),
+            ChannelKind::Voice | ChannelKind::Direct | ChannelKind::Group | ChannelKind::Thread => {
+                celerity_proto::clean_voice_channel_name(name)
+            }
         };
         let kind_button = |label_text: &'static str, k: ChannelKind| {
             let selected = k == kind;
@@ -1621,7 +1623,9 @@ impl App {
         let hint = match (kind, preview.is_empty()) {
             (_, true) => String::new(),
             (ChannelKind::Text, false) => format!("Will appear as #{preview}"),
-            (ChannelKind::Voice | ChannelKind::Direct, false) => format!("Will appear as {preview}"),
+            (ChannelKind::Voice | ChannelKind::Direct | ChannelKind::Group | ChannelKind::Thread, false) => {
+                format!("Will appear as {preview}")
+            }
         };
         let topic_field: Element<'a, Message> = if kind == ChannelKind::Text {
             column![

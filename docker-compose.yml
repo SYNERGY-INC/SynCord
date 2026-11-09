@@ -1,6 +1,7 @@
 # Import this in CasaOS: App Store > "+" > Install a customized app > Import.
-# The image is published by the Release workflow (ghcr.io/bxpo/celerity-server);
-# to update, pull the new image (in CasaOS: the app's "Check then update").
+# The image is published by the Release workflow (ghcr.io/bxpo/celerity-server, also
+# published as ghcr.io/bxpo/syncord-server); to update, pull the new image (in CasaOS: the
+# app's "Check then update"), or turn on automatic updates below.
 name: celerity
 services:
   celerity-server:
@@ -8,11 +9,15 @@ services:
     container_name: celerity-server
     restart: unless-stopped
     ports:
-      - "7878:7878/tcp"   # chat
-      - "7878:7878/udp"   # voice
+      - "7878:7878/tcp"   # chat, admin page (/admin) and invite pages
+      - "7878:7878/udp"   # voice and video
     volumes:
       # Kept from when Celerity was called SynCord, so an existing server keeps its data.
+      # Daily database backups go to /DATA/AppData/syncord/backups.
       - /DATA/AppData/syncord:/data
+    labels:
+      # Lets the optional auto-updater below update this container (and nothing else).
+      - com.centurylinklabs.watchtower.enable=true
     x-casaos:
       architectures: [amd64]
       main: celerity-server
@@ -25,5 +30,24 @@ services:
       tagline:
         en_us: Lightweight self-hosted chat and voice server
       description:
-        en_us: Celerity server. The invite code is in /DATA/AppData/syncord/celerity-server.toml.
+        en_us: Celerity server. The invite code is in /DATA/AppData/syncord/celerity-server.toml. Manage it at http://<server>:7878/admin.
       port_map: "7878"
+
+  # Optional automatic updates (off unless you ask for them): once a day, checks for a new
+  # Celerity image, and if there is one, restarts Celerity on it. It only touches containers
+  # labelled com.centurylinklabs.watchtower.enable=true, so your other containers are left alone.
+  # Turn it on with:  docker compose --profile autoupdate up -d
+  # (CasaOS: leave it out, and use the app's "Check then update" instead.)
+  watchtower:
+    profiles: [autoupdate]
+    # A maintained Watchtower that works with current Docker versions.
+    image: nickfedor/watchtower:latest
+    container_name: celerity-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      # Every day at 04:00 (the container's clock, UTC unless TZ is set).
+      WATCHTOWER_SCHEDULE: "0 0 4 * * *"

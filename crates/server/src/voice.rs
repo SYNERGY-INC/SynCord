@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use celerity_proto::voice::{
-    Direction, Key, MAX_PACKET, Packet, ReplayWindow, Token, open, open_video, seal, seal_video,
+    Direction, Key, MAX_PACKET, Packet, ReplayWindow, Token, encode_video_down, open, open_video_in_place, seal,
 };
 use celerity_proto::{ChannelId, UserId, VideoKind, VoiceState};
 use rand::Rng;
@@ -23,9 +23,15 @@ use tracing::{debug, warn};
 const UDP_FRESH: Duration = Duration::from_secs(15);
 /// Audio packets allowed per second per person (50 is normal for 20 ms frames).
 const MAX_PACKETS_PER_SEC: u32 = 75;
-/// Video packets allowed per second per person (about 13 Mbit/s; a 1080p screen
-/// share needs a few hundred a second, more for a moment at each keyframe).
-const MAX_VIDEO_PACKETS_PER_SEC: u32 = 1500;
+/// Video packets allowed per second per person, camera and screen together. Packets carry
+/// at most about 1150 bytes, so this is about 46 Mbit/s: enough for a 1440p60 screen share
+/// (about 12 Mbit/s) plus a 1080p camera (about 3.5 Mbit/s), with room for keyframe bursts.
+const MAX_VIDEO_PACKETS_PER_SEC: u32 = 5000;
+/// Screen share sound packets allowed per second per person (Opus sends 50 a second
+/// with 20 ms frames, 100 with 10 ms frames).
+const MAX_SCREEN_AUDIO_PACKETS_PER_SEC: u32 = 150;
+/// Size of the UDP socket's receive and send buffers, so keyframe bursts aren't dropped.
+pub const UDP_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 struct Member {
     state: VoiceState,
@@ -47,6 +53,8 @@ struct Member {
     video_up: ReplayWindow,
     video_window_start: Instant,
     video_window_count: u32,
+    screen_audio_window_start: Instant,
+    screen_audio_window_count: u32,
     /// Whose screen shares they're watching.
     watching: HashSet<UserId>,
 }
@@ -130,6 +138,8 @@ impl Voice {
             video_up: ReplayWindow::default(),
             video_window_start: Instant::now(),
             video_window_count: 0,
+            screen_audio_window_start: Instant::now(),
+            screen_audio_window_count: 0,
             watching: HashSet::new(),
         };
         let previous = self.lock().insert(user_id, member);
@@ -185,6 +195,22 @@ impl Voice {
         }
     }
 
+    /// Take someone out of voice whichever connection they joined from (they were kicked).
+    /// Returns the channel they were in.
+    pub fn remove_user(&self, user_id: UserId) -> Option<ChannelId> {
+        let mut members = self.lock();
+        let channel = members.remove(&user_id).map(|m| m.state.channel_id);
+        for m in members.values_mut() {
+            m.watching.remove(&user_id);
+        }
+        channel
+    }
+
+    /// Everyone in a voice channel right now.
+    pub fn members_of(&self, channel_id: ChannelId) -> Vec<UserId> {
+        self.lock().values().filter(|m| m.state.channel_id == channel_id).map(|m| m.state.user_id).collect()
+    }
+
     pub fn set_state(&self, user_id: UserId, conn_id: u64, muted: bool, deafened: bool) -> Option<VoiceState> {
         let mut members = self.lock();
         let m = members.get_mut(&user_id).filter(|m| m.conn_id == conn_id)?;
@@ -233,6 +259,8 @@ impl Voice {
             && match kind {
                 VideoKind::Camera => b.state.camera,
                 VideoKind::Screen => b.state.screen && a.watching.contains(&to),
+                // Sound has no keyframes.
+                VideoKind::ScreenAudio => false,
             }
     }
 
@@ -340,21 +368,52 @@ impl Voice {
     }
 }
 
+thread_local! {
+    /// Buffers the video relay reuses for every packet (opened, then sealed again for each
+    /// listener), so relaying tens of megabits a second doesn't allocate per packet.
+    static VIDEO_SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<u8>)> =
+        std::cell::RefCell::new((Vec::with_capacity(MAX_PACKET), Vec::with_capacity(MAX_PACKET)));
+}
+
+/// Count one packet against a per-second budget; false once it's used up.
+fn within_budget(start: &mut Instant, count: &mut u32, limit: u32) -> bool {
+    if start.elapsed() >= Duration::from_secs(1) {
+        *start = Instant::now();
+        *count = 0;
+    }
+    *count += 1;
+    *count <= limit
+}
+
 impl Voice {
     /// Forward one video packet to whoever should see it, sealed with each one's key.
     fn relay_video(&self, token: Token, counter: u64, sealed: &[u8], from: Option<SocketAddr>) {
+        VIDEO_SCRATCH.with_borrow_mut(|(plain, out)| self.relay_video_with(token, counter, sealed, from, plain, out));
+    }
+
+    fn relay_video_with(
+        &self,
+        token: Token,
+        counter: u64,
+        sealed: &[u8],
+        from: Option<SocketAddr>,
+        plain: &mut Vec<u8>,
+        out: &mut Vec<u8>,
+    ) {
         let udp = self.udp.lock().unwrap().clone();
         let mut members = self.lock();
         let Some(sender) = members.values_mut().find(|m| m.token == token) else { return };
         // Video is always encrypted, so only apps that asked for a key can send it.
         let Some(key) = sender.key else { return };
-        let Some((kind, data)) = open_video(&key, Direction::Up, counter, sealed) else { return };
+        plain.clear();
+        plain.extend_from_slice(sealed);
+        let Some(kind) = open_video_in_place(&key, Direction::Up, counter, plain) else { return };
         if !sender.video_up.accept(counter) {
             return;
         }
         let on = match kind {
             VideoKind::Camera => sender.state.camera,
-            VideoKind::Screen => sender.state.screen,
+            VideoKind::Screen | VideoKind::ScreenAudio => sender.state.screen,
         };
         if !on {
             return;
@@ -362,15 +421,21 @@ impl Voice {
         if let Some(addr) = from {
             sender.udp = Some((addr, Instant::now()));
         }
-        if sender.video_window_start.elapsed() >= Duration::from_secs(1) {
-            sender.video_window_start = Instant::now();
-            sender.video_window_count = 0;
-        }
-        sender.video_window_count += 1;
-        if sender.video_window_count > MAX_VIDEO_PACKETS_PER_SEC {
+        let allowed = match kind {
+            VideoKind::ScreenAudio => within_budget(
+                &mut sender.screen_audio_window_start,
+                &mut sender.screen_audio_window_count,
+                MAX_SCREEN_AUDIO_PACKETS_PER_SEC,
+            ),
+            _ => {
+                within_budget(&mut sender.video_window_start, &mut sender.video_window_count, MAX_VIDEO_PACKETS_PER_SEC)
+            }
+        };
+        if !allowed {
             return;
         }
         let (sender_id, channel_id, ssrc) = (sender.state.user_id, sender.state.channel_id, sender.state.ssrc);
+        let data = &plain[1..];
 
         for m in members.values_mut() {
             if m.state.user_id == sender_id || m.state.channel_id != channel_id {
@@ -378,22 +443,22 @@ impl Voice {
             }
             let wanted = match kind {
                 VideoKind::Camera => true,
-                VideoKind::Screen => m.watching.contains(&sender_id),
+                // A screen share's sound goes exactly where its picture goes.
+                VideoKind::Screen | VideoKind::ScreenAudio => m.watching.contains(&sender_id),
             };
             let Some(key) = m.key.filter(|_| wanted) else { continue };
             let counter = m.down_counter;
             m.down_counter += 1;
-            let sealed = seal_video(&key, Direction::Down, counter, kind, &data);
-            let bytes = Bytes::from(Packet::VideoDown { ssrc, counter, sealed: &sealed }.encode());
+            encode_video_down(&key, counter, ssrc, kind, data, out);
             let fresh_udp = m.udp.filter(|(_, seen)| seen.elapsed() < UDP_FRESH).map(|(addr, _)| addr);
             match (fresh_udp, &udp) {
                 (Some(addr), Some(sock)) => {
-                    if let Err(e) = sock.try_send_to(&bytes, addr) {
+                    if let Err(e) = sock.try_send_to(out, addr) {
                         debug!("udp send to {addr} failed: {e}");
                     }
                 }
                 _ => {
-                    let _ = m.ws.try_send(bytes);
+                    let _ = m.ws.try_send(Bytes::copy_from_slice(out));
                 }
             }
         }
@@ -613,6 +678,57 @@ mod tests {
         // Old apps can't send video.
         v.handle_packet(&Packet::VideoUp { token: old_token, counter: 0, sealed: &[0; 40] }.encode(), None);
         assert!(rxs[0].try_recv().is_err());
+    }
+
+    #[test]
+    fn screen_audio_follows_the_screen_share() {
+        use celerity_proto::voice::{open_video, seal_video};
+        let v = Voice::default();
+        let mut joined = Vec::new();
+        for user in 1..=3 {
+            let (tx, rx) = mpsc::channel(4096);
+            let j = v.join(user, 10, user as u64, tx, false, false, true);
+            joined.push((j.token, j.key.unwrap(), rx));
+        }
+        let (alice_token, alice_key) = (joined[0].0, joined[0].1);
+        let send = |counter: u64, kind| {
+            let sealed = seal_video(&alice_key, Direction::Up, counter, kind, &[7; 20]);
+            v.handle_packet(&Packet::VideoUp { token: alice_token, counter, sealed: &sealed }.encode(), None);
+        };
+        // Not sharing: the sound is dropped.
+        send(0, VideoKind::ScreenAudio);
+        assert!(joined[1].2.try_recv().is_err());
+        v.set_video(1, 1, false, true).unwrap();
+        assert!(v.watch(2, 1, true));
+        assert!(!v.may_request_keyframe(2, 1, VideoKind::ScreenAudio));
+        send(1, VideoKind::ScreenAudio);
+        let b = joined[1].2.try_recv().expect("bob watches, so he hears it");
+        let Some(Packet::VideoDown { counter, sealed, .. }) = Packet::parse(&b) else { panic!() };
+        assert_eq!(
+            open_video(&joined[1].1, Direction::Down, counter, sealed),
+            Some((VideoKind::ScreenAudio, vec![7; 20]))
+        );
+        assert!(joined[2].2.try_recv().is_err(), "carol isn't watching");
+
+        // Sound has its own budget, separate from the picture's.
+        for c in 2..400 {
+            send(c, VideoKind::ScreenAudio);
+        }
+        let mut n = 1;
+        while joined[1].2.try_recv().is_ok() {
+            n += 1;
+        }
+        assert_eq!(n, MAX_SCREEN_AUDIO_PACKETS_PER_SEC);
+        send(400, VideoKind::Screen);
+        assert!(joined[1].2.try_recv().is_ok(), "the picture still gets through");
+    }
+
+    #[test]
+    fn video_budget_covers_high_quality_streams() {
+        // 1440p60 screen (12 Mbit/s) + 1080p camera (3.5 Mbit/s) in 1150-byte packets, doubled for bursts.
+        let needed = (12_000_000 + 3_500_000) * 2 / (1150 * 8);
+        const { assert!(MAX_VIDEO_PACKETS_PER_SEC >= 3300) };
+        assert!(MAX_VIDEO_PACKETS_PER_SEC as usize >= needed);
     }
 
     #[test]

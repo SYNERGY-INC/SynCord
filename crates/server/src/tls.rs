@@ -149,6 +149,26 @@ impl axum::serve::Listener for DualListener {
     }
 }
 
+/// Who's on the other end of an HTTP request, and whether it came in encrypted.
+/// Used by the admin page (to rate-limit failed logins and mark cookies secure).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Peer {
+    pub addr: SocketAddr,
+    pub tls: bool,
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, DualListener>> for Peer {
+    fn connect_info(stream: axum::serve::IncomingStream<'_, DualListener>) -> Self {
+        Peer { addr: *stream.remote_addr(), tls: matches!(stream.io(), Either::Left(_)) }
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TcpListener>> for Peer {
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TcpListener>) -> Self {
+        Peer { addr: *stream.remote_addr(), tls: false }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
