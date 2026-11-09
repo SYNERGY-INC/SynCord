@@ -55,7 +55,9 @@ unsafe fn activate(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IAudioClient
             },
         },
     };
-    let mut pv = PROPVARIANT::default();
+    // Never cleared: its blob points at `params` on this stack, and clearing a PROPVARIANT
+    // frees its blob with CoTaskMemFree (that corrupted the heap).
+    let mut pv = std::mem::ManuallyDrop::new(PROPVARIANT::default());
     unsafe {
         let inner = &mut *pv.Anonymous.Anonymous;
         inner.vt = VT_BLOB;
@@ -67,7 +69,7 @@ unsafe fn activate(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IAudioClient
     let (tx, rx) = mpsc::sync_channel(1);
     let handler: IActivateAudioInterfaceCompletionHandler = Activated(tx).into();
     let op = unsafe {
-        ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IAudioClient::IID, Some(&pv), &handler)
+        ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IAudioClient::IID, Some(&*pv), &handler)
     }
     .map_err(|e| format!("audio capture is unavailable: {}", e.message()))?;
     rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "audio capture did not start".to_string())?;
