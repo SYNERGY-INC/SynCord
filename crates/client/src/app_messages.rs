@@ -312,6 +312,10 @@ impl App {
             reply,
             pinned: false,
             kind: Default::default(),
+            thread: None,
+            poll: None,
+            sticker: None,
+            encrypted: None,
         };
         let st = s.chans.entry(channel_id).or_default();
         if !st.loaded || st.detached {
