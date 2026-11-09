@@ -60,6 +60,7 @@ mod view_roles;
 mod view_threads;
 mod voice;
 mod voice_moderation;
+mod welcome;
 mod widgets;
 
 use app::App;

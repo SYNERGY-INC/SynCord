@@ -58,6 +58,21 @@ impl App {
         };
 
         match &self.overlay {
+            // The first-run welcome (it steps aside for the picture cropper).
+            None if self.welcome.is_some() => {
+                let step = self.welcome.unwrap_or(0);
+                let dialog = crate::widgets::pop(self.welcome_view(step), self.pop(self.popped));
+                stack![
+                    base,
+                    opaque(
+                        center(opaque(dialog))
+                            .style(bg(Color::from_rgba(0.0, 0.0, 0.0, 0.6)))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                    )
+                ]
+                .into()
+            }
             None => base,
             Some(overlay) => {
                 let content = match overlay {
@@ -148,6 +163,14 @@ impl App {
             )
         } else if self.adding_server {
             ("Add a server", "Sign in to another Celerity server.", "Log In", "Need an account? Register")
+        } else if self.settings.server.is_empty() && self.settings.username.is_empty() {
+            // The very first time.
+            (
+                "Welcome to Celerity!",
+                "Sign in to your server, or register with the invite code you were given.",
+                "Log In",
+                "Need an account? Register",
+            )
         } else {
             ("Welcome back!", "We're so excited to see you again!", "Log In", "Need an account? Register")
         };
@@ -2483,7 +2506,7 @@ fn new_messages_line<'a>(t: &AppTheme, fs: f32) -> Element<'a, Message> {
 }
 
 /// A clickable miniature of a theme's layout.
-fn theme_tile<'a>(current: &AppTheme, theme: &'a AppTheme, selected: bool, fs: f32) -> Element<'a, Message> {
+pub(crate) fn theme_tile<'a>(current: &AppTheme, theme: &'a AppTheme, selected: bool, fs: f32) -> Element<'a, Message> {
     let block = |c: Color, w: f32, h: f32, r: f32| container(space()).width(w).height(h).style(style::flat(c, r));
     let chat_lines = column![
         block(theme.accent.0, 40.0, 6.0, 3.0),
@@ -2596,7 +2619,7 @@ pub(crate) fn long_time(ms: i64) -> String {
 }
 
 /// Horizontal bar showing the mic level, with a marker at the sensitivity threshold.
-fn level_meter<'a>(t: &AppTheme, level_db: f32, threshold_db: f32, live: bool) -> Element<'a, Message> {
+pub(crate) fn level_meter<'a>(t: &AppTheme, level_db: f32, threshold_db: f32, live: bool) -> Element<'a, Message> {
     const WIDTH: f32 = 360.0;
     const MIN_DB: f32 = -80.0;
     const MAX_DB: f32 = -10.0;

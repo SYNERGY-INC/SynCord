@@ -167,6 +167,9 @@ pub enum Message {
     /// A key or mouse side button went down or up (by position name, see voice::ptt).
     PhysicalKey(String, bool),
     ToggleMicTest,
+    /// The first-run welcome: go to a step, or finish.
+    WelcomeStep(u8),
+    WelcomeDone,
     UserVolume(UserId, f32),
     /// Left mouse button down on someone in voice (a click opens their profile, a drag moves them).
     VoicePress(UserId),
@@ -849,6 +852,8 @@ pub struct App {
     pub outbox: HashMap<MessageId, (Instant, bool)>,
     /// Waiting for a key to use for push to talk.
     pub recording_ptt: bool,
+    /// The first-run welcome's step, while it's showing.
+    pub welcome: Option<u8>,
     /// When your microphone last picked up talking while you're muted (for the reminder).
     pub muted_talking: Option<Instant>,
     talking_ticks: u32,
@@ -1012,6 +1017,7 @@ impl App {
             unread_bar: false,
             outbox: HashMap::new(),
             recording_ptt: false,
+            welcome: None,
             muted_talking: None,
             talking_ticks: 0,
             link_quality: None,
@@ -1745,6 +1751,17 @@ impl App {
                 self.settings.save();
             }
             Message::SwitchServer(position) => return self.switch_server(position),
+            Message::WelcomeStep(step) => {
+                if step + 1 == crate::welcome::STEPS {
+                    self.input_devices = voice::devices::input_names();
+                }
+                self.welcome = Some(step);
+                self.popped = Instant::now();
+            }
+            Message::WelcomeDone => {
+                self.welcome = None;
+                self.mic_test = None;
+            }
             Message::ToggleMuteChannel(channel) => {
                 let server = self.settings.server.clone();
                 let muted = self.settings.channel_muted(&server, channel);
@@ -1819,17 +1836,29 @@ impl App {
                 self.stop_voice();
             }
             Message::ToggleMute => {
-                if self.deafened {
+                let sound = if self.deafened {
                     // Unmuting while deafened turns both off, like other voice apps.
                     self.deafened = false;
                     self.muted = false;
+                    crate::sounds::Sound::Undeafen
                 } else {
                     self.muted = !self.muted;
+                    if self.muted { crate::sounds::Sound::Mute } else { crate::sounds::Sound::Unmute }
+                };
+                if self.settings.voice_sounds {
+                    self.settings.play(sound);
                 }
                 self.apply_mute_state();
             }
             Message::ToggleDeafen => {
                 self.deafened = !self.deafened;
+                if self.settings.voice_sounds {
+                    self.settings.play(if self.deafened {
+                        crate::sounds::Sound::Deafen
+                    } else {
+                        crate::sounds::Sound::Undeafen
+                    });
+                }
                 self.apply_mute_state();
             }
             Message::VoiceTick => {
@@ -2605,8 +2634,9 @@ impl App {
         }
         if current != Some(id) {
             // Remember where you'd read up to, for the NEW line (before marking it all read).
+            // Not for a channel never read before (everything in it would count as new).
             self.new_since =
-                self.session.as_ref().filter(|s| s.is_unread(id)).map(|s| (id, s.read.get(&id).copied().unwrap_or(0)));
+                self.session.as_ref().filter(|s| s.is_unread(id)).and_then(|s| s.read.get(&id).map(|r| (id, *r)));
             self.unread_bar = self.new_since.is_some();
             self.stop_video();
             self.set_composer(String::new());
@@ -2737,6 +2767,12 @@ impl App {
         let (keys, e2ee) = (ready.identity_keys.clone(), ready.invite_links);
         if !self.background {
             self.adding_server = false;
+            // First time signing in on this computer: say hello.
+            if !self.settings.welcomed {
+                self.settings.welcomed = true;
+                self.welcome = Some(0);
+                self.popped = Instant::now();
+            }
         }
         self.settings.token = Some(ready.token);
         self.settings.save();

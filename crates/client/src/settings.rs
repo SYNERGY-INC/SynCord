@@ -32,6 +32,9 @@ pub struct Settings {
     /// defaulted to the CPU, which made scrolling laggy, so they're switched over once.
     #[serde(default)]
     pub renderer_v06: bool,
+    /// The first-run welcome was shown (settings from before 0.7 count as welcomed).
+    #[serde(default = "yes")]
+    pub welcomed: bool,
 
     // Voice
     /// Microphone name; `None` uses the system default.
@@ -134,6 +137,7 @@ impl Default for Settings {
             compact: false,
             low_memory: false,
             renderer_v06: true,
+            welcomed: false,
             input_device: None,
             output_device: None,
             input_gain: 1.0,
@@ -187,6 +191,10 @@ pub struct SavedServer {
     pub server: String,
     pub username: String,
     pub token: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn path() -> Option<PathBuf> {

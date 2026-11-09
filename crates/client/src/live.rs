@@ -350,6 +350,9 @@ impl App {
                             }
                         }
                     }
+                    if self.settings.voice_sounds {
+                        self.settings.play(crate::sounds::Sound::Live);
+                    }
                     self.tell_video_state();
                 }
             }
