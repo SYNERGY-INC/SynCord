@@ -26,7 +26,8 @@ async fn start_server_with_udp() -> (String, u16) {
     let addr = listener.local_addr().unwrap();
     let udp_port = start_udp(&state, "127.0.0.1:0".parse().unwrap()).await.unwrap();
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
-    (format!("ws://{addr}/ws"), udp_port)
+    // These tests speak the current protocol, like an up-to-date app.
+    (format!("ws://{addr}/ws?protocol={}", celerity_proto::PROTOCOL_VERSION), udp_port)
 }
 
 fn rand_suffix() -> u64 {
@@ -125,13 +126,23 @@ async fn full_flow() {
     // Only the owner can create channels.
     send(
         &mut bob,
-        ClientMsg::CreateChannel { name: "bob's room".into(), topic: String::new(), kind: ChannelKind::Text },
+        ClientMsg::CreateChannel {
+            name: "bob's room".into(),
+            topic: String::new(),
+            kind: ChannelKind::Text,
+            category_id: None,
+        },
     )
     .await;
     expect(&mut bob, |m| matches!(m, ServerMsg::Error { .. })).await;
     send(
         &mut alice,
-        ClientMsg::CreateChannel { name: "Gaming Night".into(), topic: "gg".into(), kind: ChannelKind::Text },
+        ClientMsg::CreateChannel {
+            name: "Gaming Night".into(),
+            topic: "gg".into(),
+            kind: ChannelKind::Text,
+            category_id: None,
+        },
     )
     .await;
     let created = expect(&mut bob, |m| matches!(m, ServerMsg::ChannelCreated(_))).await;
@@ -273,7 +284,7 @@ async fn voice_relay_udp_and_websocket() {
 }
 
 fn http_base(ws_url: &str) -> String {
-    ws_url.replace("ws://", "http://").trim_end_matches("/ws").to_string()
+    ws_url.replace("ws://", "http://").split("/ws").next().unwrap().to_string()
 }
 
 fn png_bytes(w: u32, h: u32) -> Vec<u8> {
@@ -616,7 +627,8 @@ async fn roles_mentions_blocks_calls_previews_and_profile_pictures() {
     let state = AppState::new(config, Db::open_in_memory().unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let (url, base) = (format!("ws://{addr}/ws"), format!("http://{addr}"));
+    let (url, base) =
+        (format!("ws://{addr}/ws?protocol={}", celerity_proto::PROTOCOL_VERSION), format!("http://{addr}"));
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
     let http = reqwest::Client::new();
 
@@ -634,8 +646,12 @@ async fn roles_mentions_blocks_calls_previews_and_profile_pictures() {
     let (carol_id, carol_token) = (ready.me, ready.token.clone());
 
     // Bob can't make channels yet.
-    let create =
-        |name: &str| ClientMsg::CreateChannel { name: name.into(), topic: String::new(), kind: ChannelKind::Text };
+    let create = |name: &str| ClientMsg::CreateChannel {
+        name: name.into(),
+        topic: String::new(),
+        kind: ChannelKind::Text,
+        category_id: None,
+    };
     send(&mut bob, create("bobs")).await;
     expect(&mut bob, |m| matches!(m, ServerMsg::Error { message } if message.contains("Manage channels"))).await;
 

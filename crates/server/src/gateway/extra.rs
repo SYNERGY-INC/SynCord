@@ -30,11 +30,18 @@ impl Connection {
                 }
             }
             ClientMsg::UpdateRole(role) => {
-                let role = role.sanitized();
+                let mut role = role.sanitized();
+                let old_app = self.protocol < celerity_proto::PROTOCOL_VERSION;
+                let before = db.call(db::visibility_map).await?;
                 let updated = db
                     .call(move |c| {
                         let access = db::access(c, me)?;
                         let Some(current) = db::get_role(c, role.id)? else { return Ok(Err("That role no longer exists")) };
+                        // Apps older than 0.7 don't know the newer permissions: keep them as they are.
+                        if old_app {
+                            role.permissions =
+                                (role.permissions & !perms::SINCE_0_7) | (current.permissions & perms::SINCE_0_7);
+                        }
                         let editable = if role.id == EVERYONE_ROLE {
                             access.can(perms::MANAGE_ROLES)
                         } else {
@@ -70,11 +77,16 @@ impl Connection {
                     })
                     .await?;
                 match updated {
-                    Ok(roles) => roles.into_iter().for_each(|r| self.broadcast(&ServerMsg::RoleUpdated(r))),
+                    Ok(roles) => {
+                        roles.into_iter().for_each(|r| self.broadcast(&ServerMsg::RoleUpdated(r)));
+                        // Turning Administrator on or off changes who sees private channels.
+                        super::announce_visibility(&self.state, before).await?;
+                    }
                     Err(e) => return Ok(self.error(e).await),
                 }
             }
             ClientMsg::DeleteRole { role_id } => {
+                let before = db.call(db::visibility_map).await?;
                 let deleted = db
                     .call(move |c| {
                         let access = db::access(c, me)?;
@@ -92,11 +104,13 @@ impl Connection {
                     Ok(roles) => {
                         self.broadcast(&ServerMsg::RoleDeleted { role_id });
                         roles.into_iter().for_each(|r| self.broadcast(&ServerMsg::RoleUpdated(r)));
+                        super::announce_visibility(&self.state, before).await?;
                     }
                     Err(e) => return Ok(self.error(e).await),
                 }
             }
             ClientMsg::SetUserRoles { user_id, roles } => {
+                let before = db.call(db::visibility_map).await?;
                 let updated = db
                     .call(move |c| {
                         let access = db::access(c, me)?;
@@ -124,7 +138,10 @@ impl Connection {
                     })
                     .await?;
                 match updated {
-                    Ok(Some(user)) => self.broadcast(&ServerMsg::UserUpdated(user)),
+                    Ok(Some(user)) => {
+                        self.broadcast(&ServerMsg::UserUpdated(user));
+                        super::announce_visibility(&self.state, before).await?;
+                    }
                     Ok(None) => {}
                     Err(e) => return Ok(self.error(e).await),
                 }
@@ -174,8 +191,10 @@ impl Connection {
                         };
                         // Server channels need Manage messages; in a DM either person can pin.
                         let allowed = match db::accessible_kind(c, me, m.channel_id)? {
-                            Some(ChannelKind::Direct) => true,
-                            Some(ChannelKind::Text) => db::access(c, me)?.can(perms::MANAGE_MESSAGES),
+                            Some(ChannelKind::Direct | ChannelKind::Group) => true,
+                            Some(ChannelKind::Text | ChannelKind::Thread) => {
+                                db::access(c, me)?.can(perms::MANAGE_MESSAGES)
+                            }
                             _ => return Ok(Err("That message no longer exists")),
                         };
                         if !allowed {
@@ -209,10 +228,10 @@ impl Connection {
                     .await?;
                 match done {
                     Ok(Some((updated, note))) => {
-                        let to = super::audience(&db, me, updated.channel_id).await?.and_then(|(_, to)| to);
-                        self.broadcast_to(&ServerMsg::MessageUpdated(updated), to.clone());
+                        let to = self.state.channel_target(updated.channel_id).await?;
+                        self.broadcast_target(&ServerMsg::MessageUpdated(updated), to.clone());
                         if let Some(note) = note {
-                            self.broadcast_to(&ServerMsg::MessageCreated(note), to);
+                            self.broadcast_target(&ServerMsg::MessageCreated(note), to);
                         }
                     }
                     Ok(None) => {}
@@ -220,7 +239,7 @@ impl Connection {
                 }
             }
             ClientMsg::FetchPins { channel_id } => {
-                if super::audience(&db, me, channel_id).await?.is_none() {
+                if super::audience(&self.state, me, channel_id).await?.is_none() {
                     return Ok(self.error("You can't see that channel").await);
                 }
                 let messages = db.call(move |c| db::pins(c, channel_id)).await?;
@@ -232,7 +251,7 @@ impl Connection {
                 self.send(&ServerMsg::SearchResults { query, results, more }).await;
             }
             ClientMsg::FetchAround { channel_id, message_id } => {
-                if super::audience(&db, me, channel_id).await?.is_none() {
+                if super::audience(&self.state, me, channel_id).await?.is_none() {
                     return Ok(self.error("You can't see that channel").await);
                 }
                 let (messages, reached_start) = db.call(move |c| db::around(c, channel_id, message_id)).await?;

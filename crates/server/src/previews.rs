@@ -4,29 +4,18 @@
 
 use std::sync::Arc;
 
-use celerity_proto::{ChannelKind, Embed, Message, ServerMsg, UserId};
+use celerity_proto::{Embed, Message, ServerMsg};
 use tracing::debug;
 
 use crate::{AppState, db, embeds, http};
 
-/// Who sees a channel: its two members for a direct message, otherwise everyone.
-pub async fn audience_of(state: &AppState, message: &Message) -> Option<Arc<[UserId]>> {
-    let channel = message.channel_id;
-    let members = state
-        .db
-        .call(move |c| match db::channel_kind(c, channel)? {
-            Some(ChannelKind::Direct) => Ok(Some(db::direct_members(c, channel)?)),
-            _ => Ok(None),
-        })
-        .await
-        .ok()
-        .flatten();
-    members.map(Arc::from)
-}
-
 /// Make previews for a new message, or redo them after an edit changed its links.
-/// `previous` is the text before an edit.
+/// `previous` is the text before an edit. Encrypted messages never get previews: the
+/// server can't (and shouldn't) read them.
 pub fn update(state: Arc<AppState>, message: Message, previous: Option<&str>) {
+    if message.encrypted.is_some() {
+        return;
+    }
     let urls = embeds::find_urls(&message.content);
     if let Some(before) = previous
         && embeds::find_urls(before) == urls
@@ -59,6 +48,7 @@ pub fn update(state: Arc<AppState>, message: Message, previous: Option<&str>) {
             if image.is_none() && p.title.is_none() && p.description.is_none() {
                 continue;
             }
+            let rich = p.rich.clone().unwrap_or_default();
             embeds.push(Embed {
                 url: p.url.clone(),
                 site_name: p.site_name.clone(),
@@ -67,6 +57,11 @@ pub fn update(state: Arc<AppState>, message: Message, previous: Option<&str>) {
                 color: p.color,
                 image,
                 media: p.is_media,
+                provider: p.rich.as_ref().map(|r| r.provider.to_string()),
+                author: rich.author,
+                author_url: rich.author_url,
+                duration_secs: rich.duration_secs,
+                embed_id: rich.embed_id,
             });
         }
         let updated = state
@@ -81,9 +76,10 @@ pub fn update(state: Arc<AppState>, message: Message, previous: Option<&str>) {
             .await
             .ok()
             .flatten();
-        if let Some(m) = updated {
-            let to = audience_of(&state, &m).await;
-            state.broadcast(&ServerMsg::MessageUpdated(m), to);
+        if let Some(m) = updated
+            && let Ok(to) = state.channel_target(m.channel_id).await
+        {
+            state.broadcast_target(&ServerMsg::MessageUpdated(m), to);
         }
     });
 }

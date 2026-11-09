@@ -1,12 +1,14 @@
-//! Calls in direct messages leave a note in the conversation, like Discord:
-//! "Sam started a call", later showing how long it lasted or that it was missed.
+//! Calls in direct messages and groups leave a note in the conversation, like Discord:
+//! "Sam started a call", later showing how long it lasted or that it was missed. The note
+//! pings everyone else in the conversation, which is what makes their apps ring; anyone in
+//! it can join or leave while the call goes on.
 
 use std::sync::Arc;
 
 use celerity_proto::{ChannelId, ChannelKind, MessageId, MessageKind, ServerMsg, UserId};
 use tracing::warn;
 
-use crate::{AppState, db};
+use crate::{AppState, Target, db};
 
 /// Active call notes per direct-message channel.
 #[derive(Default)]
@@ -14,11 +16,13 @@ pub struct Calls {
     active: std::sync::Mutex<std::collections::HashMap<ChannelId, MessageId>>,
 }
 
-async fn members_if_direct(state: &AppState, channel: ChannelId) -> Option<Vec<UserId>> {
+/// The members of a direct message or group (and whether it's a group).
+async fn members_if_direct(state: &AppState, channel: ChannelId) -> Option<(Vec<UserId>, bool)> {
     state
         .db
         .call(move |c| match db::channel_kind(c, channel)? {
-            Some(ChannelKind::Direct) => Ok(Some(db::direct_members(c, channel)?)),
+            Some(ChannelKind::Direct) => Ok(Some((db::direct_members(c, channel)?, false))),
+            Some(ChannelKind::Group) => Ok(Some((db::direct_members(c, channel)?, true))),
             _ => Ok(None),
         })
         .await
@@ -28,8 +32,8 @@ async fn members_if_direct(state: &AppState, channel: ChannelId) -> Option<Vec<U
 
 /// Someone joined voice in `channel`: start a call note, or add them to the current one.
 pub async fn joined(state: &Arc<AppState>, channel: ChannelId, user: UserId) {
-    let Some(members) = members_if_direct(state, channel).await else { return };
-    let to: Arc<[UserId]> = Arc::from(members.clone());
+    let Some((members, group)) = members_if_direct(state, channel).await else { return };
+    let to = Target::only(members.clone()).modern(group);
     let current = state.calls.active.lock().unwrap().get(&channel).copied();
     let result = match current {
         Some(id) => state
@@ -54,7 +58,7 @@ pub async fn joined(state: &Arc<AppState>, channel: ChannelId, user: UserId) {
                 let text = format!("📞 {name} started a call.");
                 let Ok(m) = db::insert_message(c, channel, user, &text, &[], None)? else { return Ok(None) };
                 db::set_kind(c, m.id, &MessageKind::Call { participants: vec![user], ended_at: None })?;
-                // The other person gets a ping for it.
+                // Everyone else gets a ping for it (their apps ring).
                 let others: Vec<UserId> = members.iter().copied().filter(|u| *u != user).collect();
                 db::set_mentions(c, m.id, channel, &others)?;
                 db::mark_read(c, user, channel, m.id)?;
@@ -68,7 +72,7 @@ pub async fn joined(state: &Arc<AppState>, channel: ChannelId, user: UserId) {
             if let ServerMsg::MessageCreated(m) = &msg {
                 state.calls.active.lock().unwrap().insert(channel, m.id);
             }
-            state.broadcast(&msg, Some(to));
+            state.broadcast_target(&msg, to);
         }
         Ok(None) => {}
         Err(e) => warn!("couldn't record a call: {e}"),
@@ -81,7 +85,7 @@ pub async fn left(state: &Arc<AppState>, channel: ChannelId) {
         return;
     }
     let Some(id) = state.calls.active.lock().unwrap().remove(&channel) else { return };
-    let Some(members) = members_if_direct(state, channel).await else { return };
+    let Some((members, group)) = members_if_direct(state, channel).await else { return };
     let updated = state
         .db
         .call(move |c| {
@@ -93,7 +97,7 @@ pub async fn left(state: &Arc<AppState>, channel: ChannelId) {
         })
         .await;
     match updated {
-        Ok(Some(m)) => state.broadcast(&ServerMsg::MessageUpdated(m), Some(Arc::from(members))),
+        Ok(Some(m)) => state.broadcast_target(&ServerMsg::MessageUpdated(m), Target::only(members).modern(group)),
         Ok(None) => {}
         Err(e) => warn!("couldn't record the end of a call: {e}"),
     }

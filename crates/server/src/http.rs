@@ -19,13 +19,13 @@ use tracing::warn;
 
 use crate::{AppState, db, media};
 
-type HttpResult<T> = Result<T, (StatusCode, &'static str)>;
+pub(crate) type HttpResult<T> = Result<T, (StatusCode, &'static str)>;
 
-fn bad(code: StatusCode, msg: &'static str) -> (StatusCode, &'static str) {
+pub(crate) fn bad(code: StatusCode, msg: &'static str) -> (StatusCode, &'static str) {
     (code, msg)
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> HttpResult<UserId> {
+pub(crate) async fn authenticate(state: &AppState, headers: &HeaderMap) -> HttpResult<UserId> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -41,11 +41,11 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> HttpResult<UserI
 }
 
 /// Attachment ids are 32 lowercase hex characters; anything else could escape the folder.
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn file_path(dir: &Path, id: &str, thumb: bool) -> PathBuf {
+pub(crate) fn file_path(dir: &Path, id: &str, thumb: bool) -> PathBuf {
     dir.join(if thumb { format!("{id}.thumb") } else { id.to_owned() })
 }
 
@@ -67,7 +67,7 @@ pub struct UploadQuery {
 /// Only files up to this size get picture previews (bigger ones are just files).
 const MAX_PREVIEW_SOURCE: u64 = 64 * 1024 * 1024;
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     rand::rng().random::<[u8; 16]>().iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -91,7 +91,7 @@ pub async fn upload(
         .call(move |c| db::accessible_kind(c, me, channel))
         .await
         .map_err(|_| bad(StatusCode::INTERNAL_SERVER_ERROR, "database error"))?;
-    if !matches!(kind, Some(ChannelKind::Text | ChannelKind::Direct)) {
+    if !matches!(kind, Some(ChannelKind::Text | ChannelKind::Direct | ChannelKind::Group | ChannelKind::Thread)) {
         return Err(bad(StatusCode::FORBIDDEN, "you can't post files there"));
     }
 
