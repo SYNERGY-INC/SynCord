@@ -7,7 +7,7 @@ mod camera;
 mod screen;
 
 pub(crate) use camera::{list_cameras, run_camera};
-pub(crate) use screen::{list_screens, run_screen};
+pub(crate) use screen::{content, list_screens, run_screen};
 
 use std::sync::Mutex;
 

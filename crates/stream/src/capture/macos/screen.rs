@@ -3,15 +3,17 @@
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+use objc2_core_foundation::{CFDictionary, CFString, CGRect};
 use objc2_core_graphics::{
     CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID, CGPreflightScreenCaptureAccess,
-    CGRequestScreenCaptureAccess,
+    CGRectMakeWithDictionaryRepresentation, CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo,
+    CGWindowListOption, kCGWindowBounds,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
@@ -65,7 +67,7 @@ impl ScreenDelegate {
 
 const PERMISSION: &str = "screen recording permission needed: allow Celerity in System Settings > Privacy & Security > Screen Recording, then restart Celerity";
 
-fn content() -> Result<Retained<SCShareableContent>, String> {
+pub(crate) fn content() -> Result<Retained<SCShareableContent>, String> {
     if !CGPreflightScreenCaptureAccess() {
         // Shows the system prompt (once); the permission only applies after a restart.
         CGRequestScreenCaptureAccess();
@@ -160,15 +162,16 @@ pub(crate) fn run_screen(id: &str, config: ScreenConfig, sink: Sink, ready: Read
     };
     let main = CGMainDisplayID();
     let displays: Vec<Retained<SCDisplay>> = unsafe { c.displays() }.to_vec();
+    let scale = displays.iter().find(|d| unsafe { d.displayID() } == main).map_or(2.0, |d| {
+        let (pw, _) = pixel_size(d);
+        pw as f64 / unsafe { d.width() }.max(1) as f64
+    });
+    let window = id.strip_prefix("window:").and_then(|s| s.parse::<u32>().ok());
     // Content filter and its size in pixels.
-    let target = if let Some(wid) = id.strip_prefix("window:").and_then(|s| s.parse::<u32>().ok()) {
+    let target = if let Some(wid) = window {
         let windows: Vec<Retained<SCWindow>> = unsafe { c.windows() }.to_vec();
         windows.into_iter().find(|w| unsafe { w.windowID() } == wid).map(|w| unsafe {
             let f = w.frame();
-            let scale = displays.iter().find(|d| d.displayID() == main).map_or(2.0, |d| {
-                let (pw, _) = pixel_size(d);
-                pw as f64 / d.width().max(1) as f64
-            });
             let size = ((f.size.width * scale) as u32, (f.size.height * scale) as u32);
             (SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &w), size)
         })
@@ -193,8 +196,8 @@ pub(crate) fn run_screen(id: &str, config: ScreenConfig, sink: Sink, ready: Read
         stopped: stopped.clone(),
     });
     let queue = dispatch2::DispatchQueue::new("celerity.screen", None);
+    let cfg = unsafe { SCStreamConfiguration::new() };
     let stream = unsafe {
-        let cfg = SCStreamConfiguration::new();
         cfg.setWidth(tw as usize);
         cfg.setHeight(th as usize);
         cfg.setMinimumFrameInterval(CMTime::new(1, config.fps.clamp(1, 60) as i32));
@@ -238,10 +241,33 @@ pub(crate) fn run_screen(id: &str, config: ScreenConfig, sink: Sink, ready: Read
         }
     }
     let mut result = Ok(());
+    let mut size = (pw, ph);
+    let mut checked = Instant::now();
     while !stop.sleep(Duration::from_millis(100)) {
         if let Some(e) = stopped.lock().unwrap_or_else(|e| e.into_inner()).take() {
             result = Err(e);
             break;
+        }
+        // A shared window can close (ScreenCaptureKit then just goes quiet) or change size
+        // (the stream keeps its configured size and would distort the picture).
+        if let Some(wid) = window
+            && checked.elapsed() >= Duration::from_millis(500)
+        {
+            checked = Instant::now();
+            let Some((w, h)) = window_points(wid) else {
+                result = Err("the window was closed".into());
+                break;
+            };
+            let now = ((w * scale) as u32, (h * scale) as u32);
+            if now != size && now.0 >= 2 && now.1 >= 2 {
+                size = now;
+                let (tw, th) = fit_size(now.0, now.1, config.max_width, config.max_height);
+                unsafe {
+                    cfg.setWidth(tw as usize);
+                    cfg.setHeight(th as usize);
+                    stream.updateConfiguration_completionHandler(&cfg, None);
+                }
+            }
         }
     }
     let (tx, rx) = mpsc::channel::<()>();
@@ -251,4 +277,22 @@ pub(crate) fn run_screen(id: &str, config: ScreenConfig, sink: Sink, ready: Read
     unsafe { stream.stopCaptureWithCompletionHandler(Some(&done)) };
     let _ = rx.recv_timeout(Duration::from_secs(2));
     result
+}
+
+/// Size in points of window `wid`; `None` once it is gone.
+fn window_points(wid: u32) -> Option<(f64, f64)> {
+    let list = CGWindowListCopyWindowInfo(CGWindowListOption::OptionIncludingWindow, wid)?;
+    if list.is_empty() {
+        return None;
+    }
+    // SAFETY: the window list holds one CFDictionary per window.
+    let info = unsafe { list.cast_unchecked::<CFDictionary>() }.get(0)?;
+    let key: &CFString = unsafe { kCGWindowBounds };
+    let bounds = unsafe { info.value((key as *const CFString).cast()) };
+    let mut rect = CGRect::default();
+    // SAFETY: kCGWindowBounds holds a CGRect dictionary representation.
+    let ok = !bounds.is_null()
+        && unsafe { CGRectMakeWithDictionaryRepresentation(Some(&*(bounds as *const CFDictionary)), &mut rect) };
+    // A window whose bounds cannot be read still exists: report no change.
+    Some(if ok { (rect.size.width, rect.size.height) } else { (0.0, 0.0) })
 }

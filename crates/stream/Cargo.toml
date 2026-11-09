@@ -29,6 +29,7 @@ capture = [
     "dep:objc2-foundation",
     "dep:objc2-av-foundation",
     "dep:objc2-screen-capture-kit",
+    "dep:objc2-core-audio-types",
     "dep:objc2-core-media",
     "dep:objc2-core-video",
     "dep:objc2-core-graphics",
@@ -121,6 +122,8 @@ objc2-core-media = { version = "0.3", optional = true, default-features = false,
     "CMSampleBuffer",
     "CMTime",
     "CMBase",
+    "CMBlockBuffer",
+    "objc2-core-audio-types",
     "CMSync",
 ] }
 objc2-core-video = { version = "0.3", optional = true, default-features = false, features = [
@@ -129,16 +132,19 @@ objc2-core-video = { version = "0.3", optional = true, default-features = false,
     "CVBuffer",
     "CVImageBuffer",
     "CVPixelBuffer",
+    "CVPixelBufferPool",
     "CVReturn",
 ] }
 objc2-core-graphics = { version = "0.3", optional = true, default-features = false, features = [
     "std",
     "CGDirectDisplay",
     "CGDisplayConfiguration",
+    "CGGeometry",
     "CGWindow",
 ] }
 objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = [
     "std",
+    "CFArray",
     "CFCGTypes",
     "CFDictionary",
     "CFNumber",
@@ -154,6 +160,11 @@ objc2-video-toolbox = { version = "0.3", optional = true, default-features = fal
     "VTErrors",
     "VTSession",
     "VTVideoEncoderList",
+] }
+# Stream audio sample layout (AudioStreamBasicDescription, AudioBufferList).
+objc2-core-audio-types = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "CoreAudioBaseTypes",
 ] }
 block2 = { version = "0.6", optional = true }
 dispatch2 = { version = "0.3", optional = true }

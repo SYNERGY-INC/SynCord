@@ -124,13 +124,13 @@ impl Chunker {
     }
 
     /// For platforms that deliver nothing while nothing plays (WASAPI loopback, ScreenCaptureKit):
-    /// call regularly; after 30 ms without audio, the gap is filled with silence so the
-    /// consumer's clock keeps running.
+    /// call regularly; after 100 ms without audio (well beyond their packet spacing of 10-40 ms),
+    /// the gap is filled with silence so the consumer's clock keeps running.
     pub(crate) fn keep_alive(&mut self) {
         let now = Instant::now();
         let last = *self.last.get_or_insert(now);
         let gap = now.duration_since(last);
-        if gap >= Duration::from_millis(30) {
+        if gap >= Duration::from_millis(100) {
             let frames = (gap.as_secs_f64() * SAMPLE_RATE as f64) as usize / CHUNK_FRAMES * CHUNK_FRAMES;
             self.buf.resize(self.buf.len() + frames * 2, 0.0);
             self.flush();

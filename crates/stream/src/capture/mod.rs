@@ -18,6 +18,8 @@ use linux as platform;
 mod macos;
 #[cfg(target_os = "macos")]
 use macos as platform;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::content as shareable_content;
 
 #[cfg(windows)]
 mod windows;
