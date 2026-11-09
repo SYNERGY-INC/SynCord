@@ -149,6 +149,9 @@ pub(crate) struct VideoEncoder {
     /// The hardware path failed once; OpenH264 from now on.
     hw_failed: bool,
     hw: Option<Box<dyn Backend>>,
+    /// The candidate that passed the self-test: reused without testing again when the size
+    /// changes (a shared window being resized changes it many times a second).
+    trusted: Option<usize>,
     sw: Option<Encoder>,
     size: (u32, u32),
     force_key: bool,
@@ -167,6 +170,7 @@ impl VideoEncoder {
             want_hw,
             hw_failed: false,
             hw: None,
+            trusted: None,
             sw: Some(sw),
             size: (0, 0),
             force_key: false,
@@ -217,14 +221,22 @@ impl VideoEncoder {
         if !self.want_hw || self.hw_failed {
             return;
         }
+        let list = candidates();
+        if let Some(c) = self.trusted.and_then(|i| list.get(i))
+            && let Ok(b) = (c.open)(&self.config, w, h)
+        {
+            self.hw = Some(b);
+            return;
+        }
         let mut reasons = Vec::new();
-        for c in candidates() {
+        for (i, c) in list.iter().enumerate() {
             let fps = self.config.max_fps;
             let tested = (c.open)(&self.config, w, h).and_then(|mut b| self_test(b.as_mut(), w, h, 8, fps));
             // A fresh instance for the real stream, so rate control starts clean.
             match tested.and_then(|()| (c.open)(&self.config, w, h)) {
                 Ok(b) => {
                     self.hw = Some(b);
+                    self.trusted = Some(i);
                     // OpenH264 stays allocated only as the emergency fallback; drop its buffers.
                     self.sw = None;
                     return;
