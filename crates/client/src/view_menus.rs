@@ -62,6 +62,69 @@ impl App {
             .into()
     }
 
+    /// A short menu of actions.
+    fn simple_menu(&self, items: Vec<(String, Message)>) -> Element<'_, Message> {
+        let t = &self.theme;
+        let fs = self.fs();
+        let mut col = column![].spacing(1);
+        for (label, msg) in items {
+            col = col.push(
+                button(text(label).size(fs * 0.9).color(t.text.0))
+                    .width(Length::Fill)
+                    .padding([6, 10])
+                    .on_press(msg)
+                    .style(style::row_button(t, false)),
+            );
+        }
+        container(col)
+            .padding(6)
+            .width(200)
+            .style(move |_| container::Style {
+                background: Some(style::darken(t.floating.0, 0.12).into()),
+                border: Border { radius: (t.radius * 0.8).into(), width: 1.0, color: t.hover.0 },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// `base` with a channel's (or DM's) right-click menu: mark read, mute.
+    pub(crate) fn with_channel_menu<'a>(
+        &'a self,
+        base: impl Into<Element<'a, Message>>,
+        channel: celerity_proto::ChannelId,
+        direct: bool,
+    ) -> Element<'a, Message> {
+        context_menu(base, move || {
+            let muted = self.settings.channel_muted(&self.settings.server, channel);
+            let what = if direct { "conversation" } else { "channel" };
+            self.simple_menu(vec![
+                ("Mark as read".into(), Message::MarkChannelRead(channel)),
+                (
+                    if muted { format!("Unmute {what}") } else { format!("Mute {what}") },
+                    Message::ToggleMuteChannel(channel),
+                ),
+            ])
+        })
+        .into()
+    }
+
+    /// `base` with a server tile's right-click menu.
+    pub(crate) fn with_server_menu<'a>(
+        &'a self,
+        base: impl Into<Element<'a, Message>>,
+        position: usize,
+        key: String,
+    ) -> Element<'a, Message> {
+        context_menu(base, move || {
+            let muted = self.settings.muted_servers.contains(&key);
+            self.simple_menu(vec![
+                ("Mark as read".into(), Message::MarkServerRead(position)),
+                (if muted { "Unmute server" } else { "Mute server" }.into(), Message::ToggleMuteServer(position)),
+            ])
+        })
+        .into()
+    }
+
     fn user_menu(&self, user: UserId) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();

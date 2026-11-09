@@ -235,6 +235,17 @@ pub enum Message {
     ShowServer,
     /// Open the server at this position in the rail.
     SwitchServer(usize),
+    /// Mute or unmute a channel or DM on the open server, or the server at a rail position.
+    ToggleMuteChannel(ChannelId),
+    ToggleMuteServer(usize),
+    /// Mark everything on the server at a rail position read.
+    MarkServerRead(usize),
+    MarkChannelRead(ChannelId),
+    /// The "new messages" bar: jump to the first one, or dismiss it.
+    JumpToUnread,
+    DismissUnread,
+    ToggleDesktopNotifications(bool),
+    ToggleNotifyAll(bool),
     /// Sign in to one more server (the + in the rail).
     AddServer,
     CancelAddServer,
@@ -737,6 +748,8 @@ pub struct App {
     /// Channel being viewed and the last message read before opening it: the red NEW line
     /// goes above the first message after that.
     pub new_since: Option<(ChannelId, MessageId)>,
+    /// The "new messages" bar over the open channel (until jumped to or dismissed).
+    pub unread_bar: bool,
     /// The taskbar icon was flashed and hasn't been cleared yet.
     pub(crate) wants_attention: bool,
     /// Message the next one you send replies to.
@@ -871,6 +884,7 @@ impl App {
             replying: None,
             wants_attention: false,
             new_since: None,
+            unread_bar: false,
             voice_drag: None,
             voice_hover: None,
             overlay: None,
@@ -946,6 +960,11 @@ impl App {
             _ => Task::none(),
         };
         let others = app.start_parked();
+        // Started from a celerity:// link (a notification or a browser).
+        let link = match crate::tray::link_argument() {
+            Some(link) => Task::done(Message::Wake(crate::tray::Wake::Open(link))),
+            None => Task::none(),
+        };
         // Look for updates shortly after starting.
         let check = Task::perform(
             async {
@@ -954,7 +973,7 @@ impl App {
             },
             Message::UpdateFound,
         );
-        (app, Task::batch([task, others, check]))
+        (app, Task::batch([task, others, link, check]))
     }
 
     pub fn title(&self) -> String {
@@ -1526,6 +1545,42 @@ impl App {
                 self.settings.save();
             }
             Message::SwitchServer(position) => return self.switch_server(position),
+            Message::ToggleMuteChannel(channel) => {
+                let server = self.settings.server.clone();
+                let muted = self.settings.channel_muted(&server, channel);
+                self.settings.set_channel_muted(&server, channel, !muted);
+                self.settings.save();
+            }
+            Message::ToggleMuteServer(position) => {
+                if let Some(e) = self.rail().into_iter().find(|e| e.position == position) {
+                    let key = e.key.clone();
+                    let muted = self.settings.muted_servers.contains(&key);
+                    self.settings.set_server_muted(&key, !muted);
+                    self.settings.save();
+                }
+            }
+            Message::MarkServerRead(position) => return self.mark_server_read(position),
+            Message::MarkChannelRead(channel) => self.mark_channel_read(channel),
+            Message::JumpToUnread => {
+                let first = self.new_since.and_then(|(channel, since)| {
+                    let s = self.session.as_ref()?;
+                    let st = s.chans.get(&channel)?;
+                    st.messages.iter().find(|m| m.id > since && m.author_id != s.me).map(|m| (channel, m.id))
+                });
+                self.unread_bar = false;
+                if let Some((channel, message)) = first {
+                    return self.update(Message::OpenSearchResult(channel, message));
+                }
+            }
+            Message::DismissUnread => self.unread_bar = false,
+            Message::ToggleDesktopNotifications(on) => {
+                self.settings.desktop_notifications = on;
+                self.settings.save();
+            }
+            Message::ToggleNotifyAll(on) => {
+                self.settings.notify_all = on;
+                self.settings.save();
+            }
             Message::AddServer => self.add_server(),
             Message::CancelAddServer => return self.cancel_add_server(),
             Message::Logout => {
@@ -1803,6 +1858,7 @@ impl App {
                 });
             }
             Message::Wake(crate::tray::Wake::Quit) => return iced::exit(),
+            Message::Wake(crate::tray::Wake::Open(link)) => return self.open_link(&link),
             Message::ToggleCloseToTray(on) => {
                 self.settings.close_to_tray = on;
                 self.settings.save();
@@ -2273,6 +2329,7 @@ impl App {
             // Remember where you'd read up to, for the NEW line (before marking it all read).
             self.new_since =
                 self.session.as_ref().filter(|s| s.is_unread(id)).map(|s| (id, s.read.get(&id).copied().unwrap_or(0)));
+            self.unread_bar = self.new_since.is_some();
             self.stop_video();
             self.set_composer(String::new());
             self.composer_mentions.clear();
@@ -2487,6 +2544,7 @@ impl App {
             _ => {}
         }
         if let ServerMsg::MessageCreated(m) = &msg {
+            self.maybe_notify(m);
             let ping = self.on_mention(m);
             let rest = self.on_server_inner(msg);
             return Task::batch([ping, rest]);
@@ -2518,6 +2576,7 @@ impl App {
                 // Chime for messages from others (not while deafened). Pings have their own
                 // sound (see on_mention), and blocked or ignored people make none.
                 let quiet = s.mentions_me(&m)
+                    || self.settings.is_muted(&self.settings.server, channel)
                     || s.blocked.contains(&m.author_id)
                     || self.settings.ignored_here(&self.settings.server).contains(&m.author_id);
                 let dnd = self.settings.status == celerity_proto::Status::DoNotDisturb;

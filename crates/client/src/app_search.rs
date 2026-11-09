@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use chrono::TimeZone;
+
 use celerity_proto::{ChannelId, ChannelKind, ClientMsg, Message as ChatMessage, MessageId, SearchHas, SearchQuery};
 use iced::widget::{Id, button, column, container, operation, row, scrollable, space, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task};
@@ -461,6 +463,56 @@ impl App {
         .width(340)
         .height(Length::Fill)
         .into()
+    }
+
+    /// "N new messages since 3:42 PM" over a channel opened with unread messages: jump to
+    /// the first one, or mark them read.
+    pub(crate) fn unread_bar<'a>(&'a self, s: &'a Session, channel: ChannelId) -> Option<Element<'a, Message>> {
+        let (ch, since) = self.new_since.filter(|_| self.unread_bar)?;
+        if ch != channel {
+            return None;
+        }
+        let messages = &s.chans.get(&channel)?.messages;
+        let new: Vec<_> = messages.iter().filter(|m| m.id > since && m.author_id != s.me).collect();
+        let first = new.first()?;
+        // A couple of new messages are all on screen anyway.
+        if new.len() < 4 {
+            return None;
+        }
+        let t = &self.theme;
+        let fs = self.fs();
+        let accent = t.accent.0;
+        let when = chrono::Local
+            .timestamp_millis_opt(first.created_at)
+            .single()
+            .map(|d| d.format("%-I:%M %p").to_string())
+            .unwrap_or_default();
+        let count = if new.len() >= messages.len() { format!("{}+", new.len()) } else { new.len().to_string() };
+        Some(
+            container(
+                row![
+                    button(
+                        text(format!("{count} new messages since {when}"))
+                            .size(fs * 0.85)
+                            .font(semibold())
+                            .color(Color::WHITE)
+                    )
+                    .padding(0)
+                    .width(Length::Fill)
+                    .on_press(Message::JumpToUnread)
+                    .style(|_, _| iced::widget::button::Style::default()),
+                    button(text("Mark as read").size(fs * 0.85).font(semibold()).color(Color::WHITE))
+                        .padding([3, 10])
+                        .on_press(Message::DismissUnread)
+                        .style(style::solid_button(style::darken(accent, 0.25), 6.0)),
+                ]
+                .align_y(Alignment::Center),
+            )
+            .padding([4, 16])
+            .width(Length::Fill)
+            .style(card(with_alpha(accent, 0.9), 0.0))
+            .into(),
+        )
     }
 
     /// "You're viewing older messages" bar, while not showing the newest.

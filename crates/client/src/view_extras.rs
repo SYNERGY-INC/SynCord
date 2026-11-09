@@ -711,8 +711,12 @@ impl App {
         for d in &s.directs {
             let Some(u) = s.users.get(&d.user_id) else { continue };
             let selected = s.current == Some(d.id);
-            let unread = s.is_unread(d.id) && !selected;
+            let muted = self.settings.channel_muted(&self.settings.server, d.id);
+            let unread = s.is_unread(d.id) && !selected && !muted;
             let mut name = text(u.name().to_owned()).size(fs * 0.95);
+            if muted && !selected {
+                name = name.color(with_alpha(t.muted.0, 0.6));
+            }
             if unread {
                 name = name.font(bold()).color(t.header.0);
             }
@@ -727,11 +731,12 @@ impl App {
             } else if unread {
                 line = line.push(container(space()).width(8).height(8).style(style::flat(t.header.0, 4.0)));
             }
-            list = list.push(style::fade_row(
+            let row = style::fade_row(
                 t,
                 button(line).width(Length::Fill).padding([5, 8]).on_press(Message::SelectChannel(d.id)),
                 selected,
-            ));
+            );
+            list = list.push(self.with_channel_menu(row, d.id, true));
         }
 
         container(column![

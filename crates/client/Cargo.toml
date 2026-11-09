@@ -38,6 +38,8 @@ fontdb = "0.23"
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 emojis = "0.9"
+# Desktop notifications (Windows toasts, macOS Notification Center, freedesktop on Linux).
+notify-rust = "4"
 celerity-update.workspace = true
 celerity-video = { workspace = true, features = ["playback"] }
 celerity-stream = { workspace = true }
@@ -48,7 +50,7 @@ tray-icon = "0.26"
 
 # Time since the last key press or mouse move anywhere on the computer (for going idle).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_System_Registry"] }
 
 [dev-dependencies]
 celerity-server = { path = "../server" }

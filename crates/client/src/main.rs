@@ -20,6 +20,7 @@ mod live;
 mod markdown;
 mod media;
 mod net;
+mod notify;
 mod presence;
 mod servers;
 mod settings;
@@ -51,6 +52,8 @@ fn main() -> iced::Result {
     // HTTPS (for servers behind a proxy like Caddy) uses the same small crypto library as the WebSocket.
     let _ = rustls::crypto::ring::default_provider().install_default();
     settings::adopt_legacy_folder();
+    // Windows: the name and icon notifications show, and celerity:// links.
+    notify::register();
     // Already running (maybe in the tray)? Bring that copy to the front instead.
     if !tray::claim_single_instance() {
         return Ok(());

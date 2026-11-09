@@ -13,6 +13,18 @@ const GIF_TILE_SIDE: u32 = 200;
 
 impl App {
     /// Tell the server we've read the channel being shown, if there's anything new.
+    /// Right-click > Mark as read, on any channel.
+    pub(crate) fn mark_channel_read(&mut self, channel: celerity_proto::ChannelId) {
+        let Some(s) = &mut self.session else { return };
+        let Some(latest) = s.latest.get(&channel).copied() else { return };
+        if s.read.get(&channel).is_some_and(|r| *r >= latest) {
+            return;
+        }
+        s.read.insert(channel, latest);
+        s.mention_counts.remove(&channel);
+        self.send(ClientMsg::MarkRead { channel_id: channel, message_id: latest });
+    }
+
     pub(crate) fn mark_current_read(&mut self) {
         let Some(s) = &mut self.session else { return };
         let Some(channel) = s.current else { return };

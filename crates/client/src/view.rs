@@ -394,10 +394,13 @@ impl App {
                 .to_uppercase();
             let selected = server.open && s.is_some_and(|s| s.view == View::Server);
             let session = server.session;
-            let unread = session.is_some_and(|x| {
-                x.channels.iter().any(|c| c.kind == ChannelKind::Text && x.is_unread(c.id))
-                    || (!server.open && x.unread_directs() > 0)
-            });
+            let server_muted = self.settings.muted_servers.contains(&server.key);
+            let channel_muted = |c: i64| self.settings.muted_channels.get(&server.key).is_some_and(|m| m.contains(&c));
+            let unread = !server_muted
+                && session.is_some_and(|x| {
+                    x.channels.iter().any(|c| c.kind == ChannelKind::Text && x.is_unread(c.id) && !channel_muted(c.id))
+                        || (!server.open && x.unread_directs() > 0)
+                });
             // Pings in its channels (and, for servers that aren't open, its DMs).
             let pings = session.map_or(0, |x| x.server_mentions() + if server.open { 0 } else { x.direct_mentions() });
             let color = if server.offline {
@@ -456,7 +459,9 @@ impl App {
                 (false, true) => server.name.clone(),
                 (false, false) => format!("{} · {who}", server.name),
             };
-            list = list.push(entry(side, rail_tip(t, tile_stack.into(), tip, fs)));
+            let tile =
+                self.with_server_menu(rail_tip(t, tile_stack.into(), tip, fs), server.position, server.key.clone());
+            list = list.push(entry(side, tile));
         }
 
         // Sign in to another server.
@@ -511,8 +516,16 @@ impl App {
         let mut list = column![self.category(s, "Text channels", ChannelKind::Text)].spacing(2);
         for ch in s.channels.iter().filter(|c| c.kind == ChannelKind::Text) {
             let selected = s.current == Some(ch.id);
-            let unread = s.is_unread(ch.id) && !selected;
-            let name_color = if unread && !selected { Some(t.header.0) } else { None };
+            // Muted channels don't light up for new messages (only for pings).
+            let muted = self.settings.is_muted(&self.settings.server, ch.id);
+            let unread = s.is_unread(ch.id) && !selected && !muted;
+            let name_color = if unread && !selected {
+                Some(t.header.0)
+            } else if muted && !selected {
+                Some(with_alpha(t.muted.0, 0.6))
+            } else {
+                None
+            };
             let mut name = text(ch.name.clone()).size(fs);
             if unread {
                 name = name.font(semibold());
@@ -526,11 +539,12 @@ impl App {
             if s.mention_count(ch.id) > 0 && !selected {
                 line = line.push(mention_badge(t, s.mention_count(ch.id), fs));
             }
-            list = list.push(style::fade_row(
+            let row = style::fade_row(
                 t,
                 button(line).width(Length::Fill).padding([6, 8]).on_press(Message::SelectChannel(ch.id)),
                 selected,
-            ));
+            );
+            list = list.push(self.with_channel_menu(row, ch.id, false));
         }
 
         list = list.push(self.category(s, "Voice channels", ChannelKind::Voice));
@@ -934,6 +948,9 @@ impl App {
         }
 
         let has_channel = channel.is_some();
+        if let Some(bar) = channel.as_ref().and_then(|c| self.unread_bar(s, c.id)) {
+            col = col.push(bar);
+        }
         col = col.push(self.message_list(s, channel.as_ref()));
         if channel.as_ref().and_then(|c| s.chans.get(&c.id)).is_some_and(|st| st.detached) {
             col = col.push(self.older_bar());
@@ -1947,6 +1964,19 @@ impl App {
                 .on_toggle(Message::ToggleNoiseSuppression)
                 .text_size(fs),
             text("Tip: use headphones so others don't hear themselves echo through your mic.")
+                .size(fs * 0.8)
+                .color(t.muted.0),
+            divider(t.hover.0),
+            label(t, "Notifications", fs),
+            toggler(st.desktop_notifications)
+                .label("Show a notification for direct messages and @mentions while Celerity isn't in front")
+                .on_toggle(Message::ToggleDesktopNotifications)
+                .text_size(fs),
+            toggler(st.notify_all)
+                .label("...and for every message in your servers")
+                .on_toggle_maybe(st.desktop_notifications.then_some(Message::ToggleNotifyAll))
+                .text_size(fs),
+            text("Right-click a channel, conversation or server to mute it: no sounds, notifications or unread dots, except when someone @mentions you.")
                 .size(fs * 0.8)
                 .color(t.muted.0),
             divider(t.hover.0),

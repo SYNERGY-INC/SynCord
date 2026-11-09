@@ -50,6 +50,15 @@ pub struct Settings {
     pub dm_sound: bool,
     /// Play a sound for new messages from others in server channels.
     pub server_sound: bool,
+    /// Pop up a desktop notification for direct messages and @mentions while Celerity
+    /// isn't in front...
+    pub desktop_notifications: bool,
+    /// ...or for every message.
+    pub notify_all: bool,
+    /// Muted servers (by address) and channels (per server): no sounds, notifications or
+    /// unread dots, except when someone @mentions you.
+    pub muted_servers: Vec<String>,
+    pub muted_channels: HashMap<String, Vec<i64>>,
     /// Play a sound when people join or leave your voice channel.
     pub voice_sounds: bool,
     /// Flash the taskbar icon for every new message (mentions always flash) while Celerity isn't focused.
@@ -118,6 +127,10 @@ impl Default for Settings {
             user_volumes: HashMap::new(),
             dm_sound: true,
             server_sound: true,
+            desktop_notifications: true,
+            notify_all: false,
+            muted_servers: Vec::new(),
+            muted_channels: HashMap::new(),
             voice_sounds: true,
             flash_taskbar: true,
             sound_volume: 0.6,
@@ -182,6 +195,32 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()>
 }
 
 impl Settings {
+    /// The server (or this channel on it) is muted.
+    pub fn is_muted(&self, server: &str, channel: i64) -> bool {
+        let key = crate::net::server_key(server);
+        self.muted_servers.contains(&key) || self.muted_channels.get(&key).is_some_and(|c| c.contains(&channel))
+    }
+
+    pub fn channel_muted(&self, server: &str, channel: i64) -> bool {
+        self.muted_channels.get(&crate::net::server_key(server)).is_some_and(|c| c.contains(&channel))
+    }
+
+    pub fn set_server_muted(&mut self, server: &str, muted: bool) {
+        let key = crate::net::server_key(server);
+        self.muted_servers.retain(|k| *k != key);
+        if muted {
+            self.muted_servers.push(key);
+        }
+    }
+
+    pub fn set_channel_muted(&mut self, server: &str, channel: i64, muted: bool) {
+        let list = self.muted_channels.entry(crate::net::server_key(server)).or_default();
+        list.retain(|c| *c != channel);
+        if muted {
+            list.push(channel);
+        }
+    }
+
     /// People ignored on this server.
     pub fn ignored_here(&self, server: &str) -> &[i64] {
         self.ignored.get(&crate::net::server_key(server)).map(Vec::as_slice).unwrap_or(&[])

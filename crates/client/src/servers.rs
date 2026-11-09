@@ -81,6 +81,8 @@ impl Parked {
 /// What the server rail shows for one server.
 pub struct RailEntry<'a> {
     pub position: usize,
+    /// The server's address as settings key it (`net::server_key`).
+    pub key: String,
     pub open: bool,
     pub name: String,
     pub session: Option<&'a Session>,
@@ -174,6 +176,7 @@ impl App {
             .enumerate()
             .map(|(i, p)| RailEntry {
                 position: if i < open_pos { i } else { i + 1 },
+                key: net::server_key(&p.saved.server),
                 open: false,
                 name: p.name(),
                 session: p.session.as_ref(),
@@ -184,6 +187,7 @@ impl App {
             open_pos,
             RailEntry {
                 position: open_pos,
+                key: net::server_key(&self.settings.server),
                 open: true,
                 name: self
                     .session
@@ -304,6 +308,36 @@ impl App {
         self.settings.server_position = next;
         self.mirror_parked();
         self.settings.save();
+    }
+
+    /// Mark every channel on the server at `position` read (DMs stay as they are).
+    pub(crate) fn mark_server_read(&mut self, position: usize) -> Task<Message> {
+        let open_pos = self.settings.server_position.min(self.parked.len());
+        let mark = |app: &mut App| {
+            let Some(s) = &mut app.session else { return };
+            let mut marks = Vec::new();
+            for c in &s.channels {
+                if let Some(&latest) = s.latest.get(&c.id)
+                    && s.read.get(&c.id).is_none_or(|r| *r < latest)
+                {
+                    marks.push((c.id, latest));
+                }
+            }
+            for &(channel_id, message_id) in &marks {
+                s.read.insert(channel_id, message_id);
+                s.mention_counts.remove(&channel_id);
+            }
+            for (channel_id, message_id) in marks {
+                app.send(ClientMsg::MarkRead { channel_id, message_id });
+            }
+        };
+        if position == open_pos {
+            mark(self);
+        } else if position <= self.parked.len() {
+            let j = if position < open_pos { position } else { position - 1 };
+            self.in_background(j, mark);
+        }
+        Task::none()
     }
 
     // ---- Calls on another server

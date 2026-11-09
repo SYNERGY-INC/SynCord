@@ -13,10 +13,12 @@ use futures::Stream;
 use tokio::sync::mpsc;
 
 /// Something outside the window wants the app's attention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wake {
     /// Show the window (tray click, "Open Celerity", or Celerity started again).
     Show,
+    /// Open a `celerity://` link (a notification was clicked, or a link was opened elsewhere).
+    Open(String),
     /// "Quit Celerity" in the tray menu (there's no tray on Linux).
     #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     Quit,
@@ -34,6 +36,16 @@ fn channel() -> &'static Channel {
 
 fn wake(w: Wake) {
     let _ = channel().0.send(w);
+}
+
+/// Show the window and open `link` (a `celerity://` link).
+pub fn open_link(link: String) {
+    wake(Wake::Open(link));
+}
+
+/// A `celerity://` link Celerity was started with (from a browser or the system), if any.
+pub fn link_argument() -> Option<String> {
+    std::env::args().skip(1).find(|a| a.starts_with("celerity://"))
 }
 
 /// The app's subscription to tray and second-launch events.
@@ -94,6 +106,10 @@ pub fn claim_single_instance() -> bool {
                     && let Ok(mut s) = TcpStream::connect(("127.0.0.1", port))
                 {
                     let _ = s.write_all(b"show");
+                    // Newer copies also take a link to open; older ones stop reading after "show".
+                    if let Some(link) = link_argument() {
+                        let _ = s.write_all(format!("\nopen {link}").as_bytes());
+                    }
                     return false;
                 }
                 return true; // it didn't answer: run anyway
@@ -110,7 +126,13 @@ pub fn claim_single_instance() -> bool {
             for mut conn in listener.incoming().flatten() {
                 let mut buf = [0u8; 4];
                 if conn.read_exact(&mut buf).is_ok() && &buf == b"show" {
-                    wake(Wake::Show);
+                    let _ = conn.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+                    let mut rest = String::new();
+                    let _ = conn.take(4096).read_to_string(&mut rest);
+                    match rest.trim().strip_prefix("open ") {
+                        Some(link) if link.starts_with("celerity://") => wake(Wake::Open(link.to_string())),
+                        _ => wake(Wake::Show),
+                    }
                 }
             }
         });
