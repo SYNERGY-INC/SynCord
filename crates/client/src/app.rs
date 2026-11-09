@@ -260,7 +260,6 @@ pub enum Message {
     AddServer,
     CancelAddServer,
     OpenDirect(UserId),
-    NewDirect,
 
     Tick,
     Escape,
@@ -369,6 +368,17 @@ pub enum Message {
     SwitcherQuery(String),
     /// Go to a quick switcher result (`usize::MAX`: the highlighted one).
     SwitcherGo(usize),
+
+    // Added in 0.7 (each feature in its own module, see features.rs)
+    Channels(crate::app_channels::ChannelsMsg),
+    Threads(crate::app_threads::ThreadMsg),
+    Groups(crate::app_groups::GroupMsg),
+    Expressions(crate::app_expressions::ExprMsg),
+    Polls(crate::polls::PollMsg),
+    Soundboard(crate::soundboard::SoundMsg),
+    Invites(crate::app_invites::InviteMsg),
+    /// The person said yes in a confirmation dialog.
+    Confirm(crate::features::ConfirmAction),
 }
 
 /// What a picked emoji is for.
@@ -384,6 +394,9 @@ pub enum PickerTab {
     /// One of [`crate::emoji::GROUPS`]; `usize::MAX` is "recently used".
     Emoji(usize),
     Gifs,
+    /// The server's own emoji (0.7).
+    Custom,
+    Stickers,
 }
 
 pub struct EmojiPicker {
@@ -447,10 +460,19 @@ pub enum View {
 /// What the chat area is showing.
 pub struct ChannelInfo<'a> {
     pub id: ChannelId,
-    pub name: &'a str,
+    pub name: std::borrow::Cow<'a, str>,
     pub topic: &'a str,
     /// For direct messages: the other person.
     pub direct_with: Option<&'a User>,
+    /// For group conversations.
+    pub group: Option<&'a celerity_proto::GroupChannel>,
+}
+
+impl ChannelInfo<'_> {
+    /// A direct message or group, rather than a server channel.
+    pub fn is_conversation(&self) -> bool {
+        self.direct_with.is_some() || self.group.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +494,10 @@ pub enum SettingsTab {
     Appearance,
     Voice,
     Roles,
+    /// Server settings added in 0.7.
+    Server,
+    Emoji,
+    Soundboard,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -503,6 +529,8 @@ pub enum Overlay {
         url: String,
         trust: bool,
     },
+    /// The dialogs of what 0.7 added (see features.rs).
+    Dialog(crate::features::Dialog),
 }
 
 #[derive(Default)]
@@ -562,6 +590,22 @@ pub struct Session {
     pub max_upload_mb: u64,
     /// Server clock minus this computer's clock, in milliseconds.
     pub clock_offset_ms: i64,
+
+    // ---- Added in 0.7
+    /// The server speaks 0.7 (every 0.7 server says it can make invite links).
+    pub v07: bool,
+    pub categories: Vec<celerity_proto::Category>,
+    /// Threads we know of: the active ones, and any seen since.
+    pub threads: HashMap<ChannelId, celerity_proto::Thread>,
+    pub groups: Vec<celerity_proto::GroupChannel>,
+    pub emojis: Vec<celerity_proto::CustomEmoji>,
+    pub stickers: Vec<celerity_proto::Sticker>,
+    pub sounds: Vec<celerity_proto::Sound>,
+    /// The address invite links use, if the owner set one.
+    pub public_address: Option<String>,
+    /// The thread in the side panel, and the channel whose list of threads is showing.
+    pub open_thread: Option<ChannelId>,
+    pub thread_list: Option<crate::app_threads::ThreadList>,
 }
 
 impl Session {
@@ -577,11 +621,32 @@ impl Session {
     pub fn current_info(&self) -> Option<ChannelInfo<'_>> {
         let id = self.current?;
         if let Some(c) = self.channels.iter().find(|c| c.id == id) {
-            return Some(ChannelInfo { id, name: &c.name, topic: &c.topic, direct_with: None });
+            return Some(ChannelInfo {
+                id,
+                name: c.name.as_str().into(),
+                topic: &c.topic,
+                direct_with: None,
+                group: None,
+            });
+        }
+        if let Some(g) = self.group(id) {
+            return Some(ChannelInfo {
+                id,
+                name: self.group_name(g).into(),
+                topic: "",
+                direct_with: None,
+                group: Some(g),
+            });
         }
         let d = self.direct(id)?;
         let user = self.users.get(&d.user_id)?;
-        Some(ChannelInfo { id, name: user.name(), topic: &user.profile.status_text, direct_with: Some(user) })
+        Some(ChannelInfo {
+            id,
+            name: user.name().into(),
+            topic: &user.profile.status_text,
+            direct_with: Some(user),
+            group: None,
+        })
     }
 
     pub fn is_unread(&self, channel: ChannelId) -> bool {
@@ -592,8 +657,10 @@ impl Session {
         }
     }
 
+    /// Direct messages and groups with something new.
     pub fn unread_directs(&self) -> usize {
-        self.directs.iter().filter(|d| self.is_unread(d.id)).count()
+        let ids = self.directs.iter().map(|d| d.id).chain(self.groups.iter().map(|g| g.id));
+        ids.filter(|id| self.is_unread(*id)).count()
     }
 
     pub fn first_text_channel(&self) -> Option<ChannelId> {
@@ -859,6 +926,22 @@ pub struct App {
     /// Call this person as soon as the DM with them is open.
     pub(crate) pending_call: Option<UserId>,
     pub update: crate::updater::Stage,
+
+    // ---- Added in 0.7
+    /// A channel or category being dragged to a new place.
+    pub channel_drag: Option<crate::app_channels::ChannelDrag>,
+    /// Category the channel being created goes in.
+    pub(crate) new_channel_category: Option<celerity_proto::CategoryId>,
+    /// The menu under the server's name.
+    pub server_menu: bool,
+    /// The menu on the + next to the message box.
+    pub composer_plus: bool,
+    pub thread_ui: crate::app_threads::ThreadUi,
+    /// Everyone in a group being made (to open it when it arrives).
+    pub(crate) pending_group: Option<Vec<UserId>>,
+    pub expr: crate::app_expressions::ExprUi,
+    pub soundboard: crate::soundboard::Soundboard,
+    pub invites: crate::app_invites::InviteUi,
 }
 
 impl App {
@@ -974,6 +1057,15 @@ impl App {
             pending_direct: None,
             pending_call: None,
             update: crate::updater::Stage::Checking,
+            channel_drag: None,
+            new_channel_category: None,
+            server_menu: false,
+            composer_plus: false,
+            thread_ui: Default::default(),
+            pending_group: None,
+            expr: Default::default(),
+            soundboard: Default::default(),
+            invites: Default::default(),
         };
 
         if app.settings.close_to_tray && crate::tray::SUPPORTED {
@@ -1009,6 +1101,7 @@ impl App {
     pub fn title(&self) -> String {
         match self.session.as_ref().and_then(|s| s.current_info()) {
             Some(c) if c.direct_with.is_some() => format!("@{} - Celerity", c.name),
+            Some(c) if c.group.is_some() => format!("{} - Celerity", c.name),
             Some(c) => format!("#{} - Celerity", c.name),
             None => "Celerity".into(),
         }
@@ -1123,6 +1216,18 @@ impl App {
                 _ => None,
             }));
         }
+        if self.channel_drag.is_some() {
+            use crate::app_channels::ChannelsMsg;
+            subs.push(iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::Channels(ChannelsMsg::DragMove(position)))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::Channels(ChannelsMsg::DragRelease))
+                }
+                _ => None,
+            }));
+        }
         let someone_typing = self.session.as_ref().is_some_and(|s| s.typing.values().any(|m| !m.is_empty()));
         // Call timers tick once a second while anyone is in voice.
         let calls_running = self.session.as_ref().is_some_and(|s| !s.voice.is_empty());
@@ -1211,14 +1316,18 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         // Note when a dialog, menu or picker opens, so it can pop in.
-        let panel = |a: &Self| (a.search.open, a.pins.is_some(), a.settings.show_members);
+        let panel = |a: &Self| {
+            let threads = a.session.as_ref().map(|s| (s.open_thread, s.thread_list.as_ref().map(|l| l.channel)));
+            (a.search.open, a.pins.is_some(), a.settings.show_members, threads)
+        };
         let panel_before = panel(self);
         let before = (self.overlay.as_ref().map(std::mem::discriminant), self.emoji_picker.is_some(), self.ringing);
         let task = self.update_inner(message);
         let after = (self.overlay.as_ref().map(std::mem::discriminant), self.emoji_picker.is_some(), self.ringing);
         // A side panel opening (or swapping for another) slides in.
         let panel_after = panel(self);
-        if panel_after != panel_before && (panel_after.0 || panel_after.1 || panel_after.2) {
+        let threads_open = panel_after.3.is_some_and(|(t, l)| t.is_some() || l.is_some());
+        if panel_after != panel_before && (panel_after.0 || panel_after.1 || panel_after.2 || threads_open) {
             self.panel_opened = Instant::now();
             self.now = self.panel_opened;
         }
@@ -1359,7 +1468,7 @@ impl App {
                     self.accept(pick);
                     return Task::none();
                 }
-                let content = crate::emoji::replace_shortcodes(self.composer.trim());
+                let content = self.expand_custom_emoji(self.composer.trim());
                 let content = self.encode_mentions(&content, &self.composer_mentions);
                 if self.pending.iter().any(|p| matches!(p.state, UploadState::Uploading)) {
                     self.notice = Some("Still uploading. Press Enter again when the files are ready.".into());
@@ -1417,12 +1526,7 @@ impl App {
                 }
             }
             Message::StartEdit(id) => {
-                let content = self
-                    .session
-                    .as_ref()
-                    .and_then(|s| s.current.and_then(|c| s.chans.get(&c)))
-                    .and_then(|st| st.messages.iter().find(|m| m.id == id))
-                    .map(|m| m.content.clone());
+                let content = self.find_message(id).map(|m| m.content.clone());
                 if let Some(content) = content {
                     let (shown, mentions) = self.decode_mentions(&content);
                     self.edit_mentions = mentions;
@@ -1440,7 +1544,7 @@ impl App {
                     if content.trim().is_empty() {
                         self.send(ClientMsg::DeleteMessage { message_id });
                     } else {
-                        let content = crate::emoji::replace_shortcodes(content.trim());
+                        let content = self.expand_custom_emoji(content.trim());
                         let content = self.encode_mentions(&content, &self.edit_mentions);
                         self.send(ClientMsg::EditMessage { message_id, content });
                     }
@@ -1462,6 +1566,7 @@ impl App {
                 }
             }
             Message::OpenNewChannel(kind) => {
+                self.new_channel_category = None;
                 self.overlay = Some(Overlay::NewChannel { name: String::new(), topic: String::new(), kind });
                 return operation::focus(Id::new("new-channel"));
             }
@@ -1482,7 +1587,8 @@ impl App {
             }
             Message::CreateChannel => {
                 if let Some(Overlay::NewChannel { name, topic, kind }) = self.overlay.take() {
-                    self.send(ClientMsg::CreateChannel { name, topic, kind, category_id: None });
+                    let category_id = self.new_channel_category.take();
+                    self.send(ClientMsg::CreateChannel { name, topic, kind, category_id });
                 }
             }
             Message::AskDeleteChannel(id) => self.overlay = Some(Overlay::ConfirmDelete(id)),
@@ -1870,8 +1976,7 @@ impl App {
             | Message::SendGif(_)
             | Message::ShowHome
             | Message::ShowServer
-            | Message::OpenDirect(_)
-            | Message::NewDirect => return self.update_social(message),
+            | Message::OpenDirect(_) => return self.update_social(message),
 
             Message::OpenColorPicker(..)
             | Message::CloseColorPicker
@@ -1997,6 +2102,14 @@ impl App {
                 return self.on_shortcut(sc);
             }
             Message::SwitcherQuery(_) | Message::SwitcherGo(_) => return self.update_switcher(message),
+            Message::Channels(m) => return self.update_channels(m),
+            Message::Threads(m) => return self.update_threads(m),
+            Message::Groups(m) => return self.update_groups(m),
+            Message::Expressions(m) => return self.update_expressions(m),
+            Message::Polls(m) => return self.update_polls(m),
+            Message::Soundboard(m) => return self.update_soundboard(m),
+            Message::Invites(m) => return self.update_invites(m),
+            Message::Confirm(action) => return self.confirmed(action),
             Message::ToggleCamera
             | Message::OpenScreenPicker
             | Message::ScreensListed(_)
@@ -2070,7 +2183,11 @@ impl App {
                 }
             }
             Message::Escape => {
-                if self.color_picker.is_some() {
+                if self.close_feature_popups() {
+                    // The server menu, the + menu or the soundboard.
+                } else if self.channel_drag.take().is_some() {
+                    // Dropped nowhere.
+                } else if self.color_picker.is_some() {
                     self.color_picker = None;
                 } else if self.voice_drag.is_some() {
                     self.voice_drag = None;
@@ -2088,6 +2205,8 @@ impl App {
                     self.editing = None;
                 } else if self.search.open && self.settings_tab.is_none() {
                     self.search.open = false;
+                } else if self.settings_tab.is_none() && self.close_thread_panel() {
+                    // The thread (or thread list) panel.
                 } else if self.theme_editor.is_some() {
                     return self.update_theme_editor(Message::CloseThemeEditor);
                 } else if self.settings_tab.is_some() {
@@ -2366,7 +2485,7 @@ impl App {
                 // Someone started (or joined) a call in your DMs: ring, unless you're in it.
                 let Some(s) = &self.session else { return };
                 if user_id != s.me {
-                    let in_dm_call = state.as_ref().map(|st| st.channel_id).filter(|c| s.direct(*c).is_some());
+                    let in_dm_call = state.as_ref().map(|st| st.channel_id).filter(|c| s.is_conversation(*c));
                     let mine =
                         if call_here { self.voice.as_ref().map(|v| v.channel_id).or(self.voice_joining) } else { None };
                     match in_dm_call {
@@ -2463,6 +2582,8 @@ impl App {
             self.last_typing_sent = None;
             self.emoji_picker = None;
             self.pending.clear();
+            self.composer_plus = false;
+            self.close_other_threads(id);
         }
         let Some(s) = &mut self.session else { return Task::none() };
         s.current = Some(id);
@@ -2591,6 +2712,7 @@ impl App {
         // On a reconnect, stay in the same channel and keep showing what was there, but
         // refetch it (messages may have come and gone meanwhile).
         let previous = self.session.as_ref().and_then(|s| s.current);
+        let previous_thread = self.session.as_ref().and_then(|s| s.open_thread);
         let kept_chans: HashMap<ChannelId, ChannelState> = match self.session.take() {
             Some(old) if old.me == ready.me => old
                 .chans
@@ -2607,7 +2729,11 @@ impl App {
             _ => HashMap::new(),
         };
         let current = previous
-            .filter(|id| ready.channels.iter().any(|c| c.id == *id) || ready.directs.iter().any(|d| d.id == *id))
+            .filter(|id| {
+                ready.channels.iter().any(|c| c.id == *id)
+                    || ready.directs.iter().any(|d| d.id == *id)
+                    || ready.groups.iter().any(|g| g.id == *id)
+            })
             .or_else(|| ready.channels.iter().find(|c| c.kind == ChannelKind::Text).map(|c| c.id));
         let mut latest: HashMap<ChannelId, MessageId> = HashMap::new();
         for c in &ready.channels {
@@ -2620,6 +2746,13 @@ impl App {
                 latest.insert(d.id, m);
             }
         }
+        let groups = ready.groups.iter().map(|g| (g.id, g.last_message_id));
+        for (id, m) in groups.chain(ready.threads.iter().map(|t| (t.id, t.last_message_id))) {
+            if let Some(m) = m {
+                latest.insert(id, m);
+            }
+        }
+        let open_thread = previous_thread.filter(|id| ready.threads.iter().any(|t| t.id == *id));
 
         self.session = Some(Session {
             me: ready.me,
@@ -2645,6 +2778,16 @@ impl App {
             mention_counts: ready.mentions.into_iter().map(|m| (m.channel_id, m.count)).collect(),
             presences: ready.presences.into_iter().map(|p| (p.user_id, (p.status, p.activity))).collect(),
             clock_offset_ms: if ready.server_time > 0 { ready.server_time - now_ms() } else { 0 },
+            v07: ready.invite_links,
+            categories: ready.categories,
+            threads: ready.threads.into_iter().map(|t| (t.id, t)).collect(),
+            groups: ready.groups,
+            emojis: ready.emojis,
+            stickers: ready.stickers,
+            sounds: ready.sounds,
+            public_address: ready.public_address,
+            open_thread,
+            thread_list: None,
         });
         // Tell the (maybe restarted) server our status again.
         self.sent_presence = None;
@@ -2662,7 +2805,7 @@ impl App {
             self.voice_joining = Some(channel_id);
             self.send(ClientMsg::JoinVoice { channel_id, encrypted: true });
         }
-        let avatars = self.request_avatars();
+        let avatars = Task::batch([self.request_avatars(), self.request_expressions()]);
         self.preload_channels(current);
         if self.background {
             // Shown when you switch to it.
@@ -2699,6 +2842,9 @@ impl App {
             self.on_people(msg);
             return Task::none();
         }
+        if crate::features::is_feature_event(&msg) {
+            return self.on_feature_event(msg);
+        }
         match msg {
             ServerMsg::Pins { channel_id, messages } => {
                 if let Some(p) = self.pins.as_mut().filter(|p| p.channel == channel_id) {
@@ -2717,6 +2863,7 @@ impl App {
         }
         if let ServerMsg::MessageCreated(m) = &msg {
             self.maybe_notify(m);
+            self.on_thread_message(m);
             let ping = self.on_mention(m);
             let rest = self.on_server_inner(msg);
             return Task::batch([ping, rest]);
@@ -2753,7 +2900,7 @@ impl App {
                     || self.settings.ignored_here(&self.settings.server).contains(&m.author_id);
                 let dnd = self.settings.status == celerity_proto::Status::DoNotDisturb;
                 if Some(m.author_id) != me && !self.deafened && !quiet && !dnd {
-                    let in_server = s.channels.iter().any(|c| c.id == channel);
+                    let in_server = s.channels.iter().any(|c| c.id == channel) || s.threads.contains_key(&channel);
                     if (in_server && self.settings.server_sound) || (!in_server && self.settings.dm_sound) {
                         self.settings.play(crate::sounds::Sound::Message);
                     }
@@ -2911,7 +3058,7 @@ impl App {
                     self.notice = Some(friendly_error(message));
                 }
             }
-            // Added in 0.7; not shown yet.
+            // End-to-end encryption isn't used by this app yet; the rest is in on_feature_event.
             _ => {}
         }
         Task::none()

@@ -99,6 +99,8 @@ pub struct Settings {
     pub camera: Option<String>,
     /// Websites whose links open without asking first.
     pub trusted_sites: Vec<String>,
+    /// Channel categories folded away in the channel list, per server.
+    pub collapsed_categories: HashMap<String, Vec<i64>>,
 }
 
 /// A GIF starred for quick re-sending (remembered per server).
@@ -157,6 +159,7 @@ impl Default for Settings {
             camera: None,
             trusted_sites: Vec::new(),
             video_muted: false,
+            collapsed_categories: HashMap::new(),
         }
     }
 }

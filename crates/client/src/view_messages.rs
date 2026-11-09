@@ -96,6 +96,9 @@ impl App {
     /// Message text with clickable links and @mentions, and emoji in colour (and Markdown).
     pub(crate) fn message_text<'a>(&'a self, s: &'a Session, content: &'a str, size: f32) -> Element<'a, Message> {
         let t = &self.theme;
+        if let Some(with_emoji) = self.text_with_custom_emoji(s, content, size) {
+            return with_emoji;
+        }
         if crate::markdown::might_have_markdown(content) {
             return self.markdown_text(s, content, size);
         }
@@ -172,6 +175,9 @@ impl App {
             && let Some(img) = &e.image
         {
             return self.embed_picture(img, 400.0, 300.0);
+        }
+        if let Some(card) = self.rich_embed(e) {
+            return card;
         }
         let mut body = column![].spacing(6).width(Length::Fill);
         if let Some(site) = &e.site_name {

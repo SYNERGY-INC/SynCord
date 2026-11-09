@@ -169,7 +169,7 @@ impl App {
             let (accent, floating) = (t.accent.0, t.floating.0);
             let pill = button(
                 row![
-                    style::emoji_text(reaction.emoji.clone(), fs * 1.05),
+                    self.emoji_glyph(&reaction.emoji, fs * 1.05),
                     text(reaction.users.len().to_string()).size(fs * 0.8).font(semibold())
                 ]
                 .spacing(5)
@@ -195,7 +195,11 @@ impl App {
                 }
             });
             let names: Vec<&str> = reaction.users.iter().filter_map(|u| s.users.get(u).map(User::name)).collect();
-            let who = container(text(format!("{} reacted with {}", names.join(", "), reaction.emoji)).size(fs * 0.8))
+            let shown = match celerity_proto::expressions::find_custom_emoji(&reaction.emoji).first() {
+                Some(e) => format!(":{}:", e.name),
+                None => reaction.emoji.clone(),
+            };
+            let who = container(text(format!("{} reacted with {shown}", names.join(", "))).size(fs * 0.8))
                 .padding([4, 8])
                 .style(card(t.rail.0, 6.0));
             r = r.push(tooltip(pill, who, tooltip::Position::Top));
@@ -291,7 +295,11 @@ impl App {
         }
         let t = &self.theme;
         let fs = self.fs();
-        let title = if matches!(found[0], Suggestion::Emoji(..)) { "Emoji matching" } else { "Members" };
+        let title = if matches!(found[0], Suggestion::Emoji(..) | Suggestion::Custom(_)) {
+            "Emoji matching"
+        } else {
+            "Members"
+        };
         let selected = self.suggestion_index.min(found.len() - 1);
         let mut col = column![label(t, title, fs)].spacing(2);
         for (i, pick) in found.into_iter().enumerate() {
@@ -303,6 +311,17 @@ impl App {
                 .spacing(10)
                 .align_y(Alignment::Center)
                 .into(),
+                Suggestion::Custom(id) => match s.emojis.iter().find(|e| e.id == id) {
+                    Some(e) => row![
+                        self.custom_emoji(e.id, &e.name, fs * 1.3),
+                        text(format!(":{}:", e.name)).size(fs * 0.9).color(t.text.0),
+                        text(s.community.clone()).size(fs * 0.75).color(t.muted.0),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .into(),
+                    None => continue,
+                },
                 Suggestion::User(id) => match s.users.get(&id) {
                     Some(u) => row![
                         self.avatar(u, 24.0),
@@ -363,8 +382,15 @@ impl App {
         if !self.settings.recent_emoji.is_empty() {
             tabs = tabs.push(tab_button(style::emoji_text("🕘", fs * 1.1).into(), PickerTab::Emoji(usize::MAX)));
         }
+        let (custom_tab, stickers_tab) = self.expression_tab_icons(picker.target);
+        if let Some(icon) = custom_tab {
+            tabs = tabs.push(tab_button(icon, PickerTab::Custom));
+        }
         for (i, (_, _, glyph)) in emoji::GROUPS.iter().enumerate() {
             tabs = tabs.push(tab_button(style::emoji_text(*glyph, fs * 1.1).into(), PickerTab::Emoji(i)));
+        }
+        if let Some(icon) = stickers_tab {
+            tabs = tabs.push(tab_button(icon, PickerTab::Stickers));
         }
         if picker.target == PickerTarget::Composer {
             tabs = tabs.push(tab_button(text("GIF").size(fs * 0.8).font(bold()).into(), PickerTab::Gifs));
@@ -375,6 +401,7 @@ impl App {
         let placeholder = match (gifs_tab, provider) {
             (true, Some(p)) => format!("Search {p}"),
             (true, None) => "Search your favourite GIFs".to_string(),
+            (false, _) if picker.tab == PickerTab::Stickers => "Find a sticker".to_string(),
             (false, _) => "Find the perfect emoji".to_string(),
         };
         let search = text_input(&placeholder, &picker.search)
@@ -384,8 +411,32 @@ impl App {
             .size(fs * 0.9)
             .style(style::input(t, t.rail.0));
 
+        let session = self.session.as_ref()?;
+        // The server's emoji that match a search, shown above the standard ones.
+        let q = picker.search.trim().trim_matches(':').to_lowercase();
+        let custom_found: Vec<&celerity_proto::CustomEmoji> = if q.is_empty() {
+            Vec::new()
+        } else {
+            session.emojis.iter().filter(|e| e.name.to_lowercase().contains(&q)).collect()
+        };
         let body: Element<'_, Message> = if gifs_tab {
             self.gifs_view(&picker.search, provider)
+        } else if picker.tab == PickerTab::Stickers {
+            column![
+                label(t, format!("{} stickers", session.community), fs),
+                scrollable(self.stickers_grid(session, &picker.search)).height(Length::Fill).style(style::scroll(t))
+            ]
+            .spacing(6)
+            .into()
+        } else if picker.tab == PickerTab::Custom && picker.search.is_empty() {
+            column![
+                label(t, session.community.clone(), fs),
+                scrollable(self.custom_emoji_grid(session.emojis.iter().collect()))
+                    .height(Length::Fill)
+                    .style(style::scroll(t))
+            ]
+            .spacing(6)
+            .into()
         } else {
             let (title, list): (String, Vec<String>) = if !picker.search.is_empty() {
                 (
@@ -398,24 +449,24 @@ impl App {
                     PickerTab::Emoji(i) => {
                         (emoji::GROUPS[i.min(8)].1.into(), emoji::group(i).map(|e| e.as_str().to_string()).collect())
                     }
-                    PickerTab::Gifs => (String::new(), Vec::new()),
+                    PickerTab::Gifs | PickerTab::Custom | PickerTab::Stickers => (String::new(), Vec::new()),
                 }
             };
             let mut grid = row![].spacing(2);
             for e in list {
                 grid = grid.push(
-                    button(center(style::emoji_text(e.clone(), fs * 1.5)).width(38).height(38))
+                    button(center(self.emoji_glyph(&e, fs * 1.5)).width(38).height(38))
                         .padding(0)
                         .on_press(Message::PickEmoji(e))
                         .style(style::row_button(t, false)),
                 );
             }
-            column![
-                label(t, title, fs),
-                scrollable(grid.wrap().vertical_spacing(2)).height(Length::Fill).style(style::scroll(t))
-            ]
-            .spacing(6)
-            .into()
+            let mut page = column![].spacing(6);
+            if !custom_found.is_empty() {
+                page = page.push(label(t, session.community.clone(), fs)).push(self.custom_emoji_grid(custom_found));
+            }
+            page = page.push(label(t, title, fs)).push(grid.wrap().vertical_spacing(2));
+            scrollable(page).height(Length::Fill).style(style::scroll(t)).into()
         };
 
         let panel = column![search, tabs.wrap(), body].spacing(8).height(Length::Fill);
@@ -692,13 +743,13 @@ impl App {
             .push(
                 button(text("+").size(fs * 1.2))
                     .padding([0, 6])
-                    .on_press(Message::NewDirect)
+                    .on_press(Message::Groups(crate::app_groups::GroupMsg::OpenPicker))
                     .style(style::link_button(t.muted.0, t.header.0)),
             )
             .align_y(Alignment::Center);
         let mut list =
             column![container(category).padding(Padding { left: 8.0, top: 16.0, right: 4.0, bottom: 4.0 })].spacing(2);
-        if s.directs.is_empty() {
+        if s.directs.is_empty() && s.groups.is_empty() {
             list = list.push(
                 container(
                     text("No conversations yet. Click + or someone's profile to send them a message.")
@@ -708,7 +759,12 @@ impl App {
                 .padding(8),
             );
         }
-        for d in &s.directs {
+        for id in s.conversations() {
+            if let Some(g) = s.group(id) {
+                list = list.push(self.group_row(s, g));
+                continue;
+            }
+            let Some(d) = s.direct(id) else { continue };
             let Some(u) = s.users.get(&d.user_id) else { continue };
             let selected = s.current == Some(d.id);
             let muted = self.settings.channel_muted(&self.settings.server, d.id);

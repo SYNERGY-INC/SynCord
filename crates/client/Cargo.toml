@@ -23,6 +23,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 dirs = "6"
 cpal = "0.18"
 opus = "0.4"
+# Soundboard sounds: MP3, Ogg Vorbis and WAV (Ogg Opus goes through `opus` above).
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "vorbis", "ogg", "wav", "pcm"] }
 nnnoiseless = { version = "0.5", default-features = false }
 # Echo cancellation (pure Rust port of WebRTC's AEC3), so speakers don't echo back through the mic.
 sonora = "0.3"

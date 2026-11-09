@@ -34,7 +34,8 @@ impl App {
     pub(crate) fn request_pictures(&mut self) -> Task<Message> {
         let keys = self.still_picture_keys();
         let Some((http, base, token)) = self.http_ctx() else { return Task::none() };
-        let mut tasks = Vec::new();
+        // Server emoji and the stickers in the messages.
+        let mut tasks = vec![self.request_expressions()];
         for key in keys {
             if self.images.start(&key) {
                 let (http, base, token, id) = (http.clone(), base.clone(), token.clone(), key.clone());
@@ -61,9 +62,10 @@ impl App {
     /// Pictures in the open channel that aren't GIFs (cheap to load up front).
     fn still_picture_keys(&self) -> Vec<String> {
         let Some(s) = &self.session else { return Vec::new() };
-        let Some(st) = s.current.and_then(|c| s.chans.get(&c)) else { return Vec::new() };
-        st.messages
-            .iter()
+        // The open channel, and the open thread's messages beside it.
+        let shown = [s.current, s.open_thread].into_iter().flatten().filter_map(|c| s.chans.get(&c));
+        shown
+            .flat_map(|st| st.messages.iter())
             .flat_map(|m| m.attachments.iter().chain(m.embeds.iter().filter_map(|e| e.image.as_ref())))
             .filter(|a| (a.is_image() && !a.animated) || a.is_video())
             .map(|a| media::key(&a.id, false))
