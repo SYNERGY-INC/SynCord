@@ -45,6 +45,9 @@ impl AudioShare {
                 }
                 let Ok(n) = encoder.encode_float(&frame, &mut out) else { continue };
                 seq = seq.wrapping_add(1);
+                if seq == 1 {
+                    eprintln!("sharing your screen's sound");
+                }
                 let mut packet = Vec::with_capacity(n + 2);
                 packet.extend_from_slice(&seq.to_be_bytes());
                 packet.extend_from_slice(&out[..n]);
@@ -67,6 +70,8 @@ pub struct Listener {
 
 struct ListenerShared {
     jitter: Mutex<JitterBuffer>,
+    /// Logged once, when the first packet arrives.
+    heard: AtomicBool,
     /// Volume as f32 bits (1.0 = as sent).
     volume: AtomicU32,
     stop: AtomicBool,
@@ -76,6 +81,7 @@ impl Listener {
     pub fn start(output_device: Option<String>, volume: f32, far_end: Option<Arc<FarEnd>>) -> Listener {
         let shared = Arc::new(ListenerShared {
             jitter: Mutex::new(JitterBuffer::default()),
+            heard: AtomicBool::new(false),
             volume: AtomicU32::new(volume.to_bits()),
             stop: AtomicBool::new(false),
         });
@@ -139,6 +145,9 @@ impl Listener {
     pub fn push(&self, payload: &[u8]) {
         if payload.len() < 3 {
             return;
+        }
+        if !self.shared.heard.swap(true, Ordering::Relaxed) {
+            eprintln!("hearing a screen share's sound");
         }
         let seq = u16::from_be_bytes([payload[0], payload[1]]);
         self.shared.jitter.lock().unwrap().insert(seq, payload[2..].to_vec());

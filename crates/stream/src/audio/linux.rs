@@ -57,7 +57,18 @@ fn server_present() -> bool {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| format!("/run/user/{}", unsafe { libc::getuid() }).into());
-    runtime.join("pulse/native").exists() || std::path::Path::new("/var/run/pulse/native").exists()
+    if runtime.join("pulse/native").exists() || std::path::Path::new("/var/run/pulse/native").exists() {
+        return true;
+    }
+    // Without XDG_RUNTIME_DIR, PulseAudio keeps its socket in a folder linked from
+    // ~/.config/pulse/<machine id>-runtime.
+    let Some(home) = std::env::var_os("HOME") else { return false };
+    let config = std::path::Path::new(&home).join(".config/pulse");
+    std::fs::read_dir(config)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().ends_with("-runtime") && e.path().join("native").exists())
 }
 
 pub(crate) fn support() -> AudioSupport {
