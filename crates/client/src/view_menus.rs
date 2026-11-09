@@ -1,8 +1,8 @@
 //! Right-click menus.
 
+use celerity_proto::{User, UserId};
 use iced::widget::{button, column, container, row, text};
 use iced::{Alignment, Border, Color, Element, Length};
-use celerity_proto::{User, UserId};
 
 use crate::app::{App, Message};
 use crate::style::{self, semibold};

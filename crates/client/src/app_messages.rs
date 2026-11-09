@@ -2,9 +2,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use celerity_proto::{Message as ChatMessage, MessageId};
 use iced::widget::{Id, button, column, container, mouse_area, operation, pin, responsive, stack, text, text_editor};
 use iced::{Element, Length, Point, Task};
-use celerity_proto::{Message as ChatMessage, MessageId};
 
 use crate::app::{App, Message, PickerTarget};
 use crate::style::{self, card};

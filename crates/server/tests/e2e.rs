@@ -3,10 +3,10 @@
 
 use std::time::Duration;
 
-use futures::{SinkExt, StreamExt};
 use celerity_proto::voice::{Packet, token_from_hex};
 use celerity_proto::{ChannelKind, ClientMsg, Profile, ServerMsg};
 use celerity_server::{AppState, Config, db::Db, router, start_udp};
+use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message as Ws};
 

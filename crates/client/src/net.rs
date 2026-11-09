@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use futures::{SinkExt, Stream, StreamExt};
 use celerity_proto::{ClientMsg, ServerMsg};
+use futures::{SinkExt, Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -273,8 +273,11 @@ mod tests {
         let state = AppState::new(Config::default(), Db::open_in_memory().unwrap());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
-        let dir =
-            std::env::temp_dir().join(format!("celerity-net-test-{}-{}", std::process::id(), address.replace(':', "-")));
+        let dir = std::env::temp_dir().join(format!(
+            "celerity-net-test-{}-{}",
+            std::process::id(),
+            address.replace(':', "-")
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         if encrypted {
             let (tls, print) = celerity_server::tls::load_or_create(&dir).unwrap();

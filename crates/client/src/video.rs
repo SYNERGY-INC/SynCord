@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use celerity_proto::Attachment;
+use celerity_video::Player;
 use iced::widget::image::Handle;
 use iced::widget::{button, center, column, container, image, row, slider, space, stack, text};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Task};
-use celerity_proto::Attachment;
-use celerity_video::Player;
 
 use crate::app::{App, Message};
 use crate::icons::{self, icon};

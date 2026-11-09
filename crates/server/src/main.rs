@@ -29,13 +29,7 @@ fn with_legacy_name(path: PathBuf) -> PathBuf {
         return path;
     }
     let legacy = path.with_file_name(LEGACY_CONFIG_FILE);
-    if !legacy.exists() {
-        path
-    } else if std::fs::rename(&legacy, &path).is_ok() {
-        path
-    } else {
-        legacy
-    }
+    if legacy.exists() && std::fs::rename(&legacy, &path).is_err() { legacy } else { path }
 }
 /// Start a fresh log when the old one gets bigger than this.
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;

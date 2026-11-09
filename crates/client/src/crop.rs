@@ -5,13 +5,13 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
+use celerity_proto::{AVATAR_SIZE, BANNER_SIZE, PROFILE_IMAGE_PATH};
 use iced::widget::image::Handle;
 use iced::widget::{button, center, column, container, image as picture, mouse_area, row, slider, text};
 use iced::{Alignment, Border, Color, Element, Length, Point, Task};
 use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
 use image::imageops::FilterType;
 use image::{AnimationDecoder, Delay, Frame, ImageFormat, RgbaImage};
-use celerity_proto::{AVATAR_SIZE, BANNER_SIZE, PROFILE_IMAGE_PATH};
 
 use crate::app::{App, Message};
 use crate::style::{self, bold, card};

@@ -1,8 +1,8 @@
 //! Server settings: roles.
 
+use celerity_proto::{ClientMsg, EVERYONE_ROLE, Role, perms};
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input, toggler};
 use iced::{Alignment, Border, Element, Length, Task};
-use celerity_proto::{ClientMsg, EVERYONE_ROLE, Role, perms};
 
 use crate::app::{App, Message, RoleDraft, Session};
 use crate::style::{self, bold, label, semibold};

@@ -1,13 +1,13 @@
 //! All screens. Layout follows the familiar four-column chat layout:
 //! server bar | channel list | messages | member list.
 
+use celerity_proto::{AvatarRing, ChannelKind, Message as ChatMessage, User, UserId, VoiceState};
 use chrono::{Local, TimeZone};
 use iced::widget::{
     Id, button, center, column, container, mouse_area, opaque, pick_list, row, scrollable, slider, space, stack, text,
     text_input, toggler,
 };
 use iced::{Alignment, Border, Color, Element, Length, Padding};
-use celerity_proto::{AvatarRing, ChannelKind, Message as ChatMessage, User, UserId, VoiceState};
 
 use crate::app::{
     App, COMPOSER_ID, ChannelInfo, DEFAULT_DEVICE, DEFAULT_FONT, DraftField, MESSAGES_ID, Message, Overlay,

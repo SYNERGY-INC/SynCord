@@ -3,12 +3,12 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use iced::widget::{Id, operation};
-use iced::{Subscription, Task, keyboard};
 use celerity_proto::{
     AvatarRing, Channel, ChannelId, ClientMsg, Message as ChatMessage, MessageId, Profile, Ready, ServerMsg, User,
     UserId,
 };
+use iced::widget::{Id, operation};
+use iced::{Subscription, Task, keyboard};
 
 use std::path::PathBuf;
 use std::sync::Arc;

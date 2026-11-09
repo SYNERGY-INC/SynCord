@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
-use iced::Task;
 use celerity_proto::{Attachment, MAX_ATTACHMENTS};
+use iced::Task;
 
 use crate::app::{App, Clip, Download, Message, Overlay, PendingUpload, UploadState};
 use crate::media::{self, Picture, Source};

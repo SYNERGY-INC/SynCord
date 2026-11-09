@@ -1,8 +1,8 @@
 //! Audio processing for the microphone path: resampling, level metering,
 //! noise suppression, the voice-activity gate and Opus encoding.
 
-use nnnoiseless::DenoiseState;
 use celerity_proto::voice::FRAME_SAMPLES;
+use nnnoiseless::DenoiseState;
 
 /// Streaming linear resampler. Linear interpolation is plenty for speech.
 pub struct Resampler {

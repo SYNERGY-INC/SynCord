@@ -1,7 +1,7 @@
 //! Update logic for emoji, reactions, direct messages and read markers.
 
-use iced::Task;
 use celerity_proto::{ClientMsg, Reaction, ServerMsg};
+use iced::Task;
 
 use crate::app::{App, EmojiPicker, Message, Overlay, PickerTab, PickerTarget, View};
 use crate::media;

@@ -1,9 +1,9 @@
 //! The message box: several lines (Shift+Enter), and suggestions for
 //! `:emoji:` and `@mentions` while typing.
 
+use celerity_proto::{RoleId, UserId, perms};
 use iced::widget::text_editor::{self, Action, Binding, Edit, KeyPress, Motion, Status};
 use iced::{Task, keyboard};
-use celerity_proto::{RoleId, UserId, perms};
 
 use crate::app::{App, Message, Session};
 use crate::emoji;

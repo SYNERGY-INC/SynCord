@@ -1,12 +1,12 @@
 //! Views for pictures, files, emoji, reactions and direct messages.
 
+use celerity_proto::{Attachment, Message as ChatMessage, User};
 use iced::widget::{
     Id, button, center, column, container, image, mouse_area, progress_bar, row, scrollable, space, stack, text,
     text_input, tooltip,
 };
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding};
 use std::sync::atomic::Ordering;
-use celerity_proto::{Attachment, Message as ChatMessage, User};
 
 use crate::app::{App, Message, PickerTab, PickerTarget, Session, UploadState};
 use crate::emoji;

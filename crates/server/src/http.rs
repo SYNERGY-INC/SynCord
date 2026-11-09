@@ -10,11 +10,11 @@ use axum::body::Body;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use rand::Rng;
-use serde::Deserialize;
 use celerity_proto::{
     AVATAR_SIZE, Attachment, BANNER_SIZE, ChannelId, ChannelKind, ProfileImage, ServerMsg, UserId, clean_filename,
 };
+use rand::Rng;
+use serde::Deserialize;
 use tracing::warn;
 
 use crate::{AppState, db, media};

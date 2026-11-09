@@ -1,9 +1,9 @@
 //! Video in calls: the camera and screen buttons, the tiles people's video
 //! shows in, the call view for server voice channels, and the screen picker.
 
+use celerity_proto::{ChannelId, User, UserId, VideoKind, VoiceState};
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, text, toggler};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding};
-use celerity_proto::{ChannelId, User, UserId, VideoKind, VoiceState};
 
 use crate::app::{App, Message, Session};
 use crate::icons;

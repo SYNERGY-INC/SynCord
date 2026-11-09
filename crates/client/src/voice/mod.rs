@@ -351,9 +351,9 @@ fn udp_loop(sock: UdpSocket, token: Token, shared: Arc<Shared>) {
 
 #[cfg(test)]
 mod tests {
-    use futures::StreamExt;
     use celerity_proto::voice::{FRAME_SAMPLES, token_from_hex};
     use celerity_proto::{ChannelKind, ClientMsg, ServerMsg};
+    use futures::StreamExt;
 
     use super::dsp::{CaptureSettings, level_db};
     use super::*;

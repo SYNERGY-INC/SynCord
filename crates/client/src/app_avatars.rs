@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
+use celerity_proto::{AvatarRing, User};
 use iced::widget::{container, image, space, stack};
 use iced::{Border, Color, Element, Length, Task};
-use celerity_proto::{AvatarRing, User};
 
 use crate::app::{App, Message};
 use crate::media::{self, Picture};

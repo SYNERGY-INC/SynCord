@@ -1,9 +1,9 @@
 //! Moving people between voice channels (drag and drop, or the right-click menu) and
 //! server-muting or server-deafening them. Needs the Move members / Mute members permissions.
 
+use celerity_proto::{ChannelId, ChannelKind, ClientMsg, UserId, perms};
 use iced::widget::{button, column, container, pin, row, stack, text};
 use iced::{Alignment, Element, Length, Point, Task};
-use celerity_proto::{ChannelId, ChannelKind, ClientMsg, UserId, perms};
 
 use crate::app::{App, Message};
 use crate::style::{self, card};

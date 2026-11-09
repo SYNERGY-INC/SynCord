@@ -9,9 +9,9 @@ use std::time::Instant;
 
 use futures::StreamExt;
 
+use celerity_proto::{Attachment, ChannelId, FILES_PATH, UPLOAD_PATH};
 use iced::widget::image::Handle;
 use image::{AnimationDecoder, ImageFormat, codecs::gif::GifDecoder, imageops::FilterType};
-use celerity_proto::{Attachment, ChannelId, FILES_PATH, UPLOAD_PATH};
 
 /// Longest side for pictures in the chat (server previews are at most 480 px).
 pub const THUMB_SIDE: u32 = 480;
@@ -683,9 +683,9 @@ mod tests {
     /// A big file goes up and comes back down in pieces, with progress counted both ways.
     #[tokio::test(flavor = "multi_thread")]
     async fn streamed_upload_and_save_with_progress() {
-        use futures::StreamExt;
         use celerity_proto::{ChannelKind, ClientMsg, ServerMsg};
         use celerity_server::{AppState, Config, db::Db, router};
+        use futures::StreamExt;
 
         let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = std::env::temp_dir().join(format!("celerity-media-test-{}", std::process::id()));

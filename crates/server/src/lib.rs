@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::routing::get;
-use serde::{Deserialize, Serialize};
 use celerity_proto::UserId;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

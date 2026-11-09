@@ -1,8 +1,8 @@
 //! The profile card.
 
+use celerity_proto::User;
 use iced::widget::{column, container, row, space, stack, text};
 use iced::{Alignment, Border, Element, Length, Padding};
-use celerity_proto::User;
 
 use crate::app::{App, Message, Session};
 use crate::style::{self, bold, card, divider, label};

@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use rand::Rng;
 use celerity_proto::voice::{
     Direction, Key, MAX_PACKET, Packet, ReplayWindow, Token, open, open_video, seal, seal_video,
 };
 use celerity_proto::{ChannelId, UserId, VideoKind, VoiceState};
+use rand::Rng;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};

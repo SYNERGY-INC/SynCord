@@ -3,9 +3,9 @@
 
 use std::time::Duration;
 
+use celerity_proto::{ChannelId, ChannelKind, ClientMsg, Message as ChatMessage, MessageId, SearchHas, SearchQuery};
 use iced::widget::{Id, button, column, container, operation, row, scrollable, space, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task};
-use celerity_proto::{ChannelId, ChannelKind, ClientMsg, Message as ChatMessage, MessageId, SearchHas, SearchQuery};
 
 use crate::app::{App, Message, Session};
 use crate::style::{self, bold, card, semibold};

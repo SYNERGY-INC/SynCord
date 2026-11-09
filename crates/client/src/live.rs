@@ -16,11 +16,11 @@ use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iced::Task;
-use iced::widget::image::Handle;
 use celerity_proto::voice::{Direction, Key, Packet, Token, open_video, seal_video};
 use celerity_proto::{ClientMsg, UserId, VideoKind};
 use celerity_stream as stream;
+use iced::Task;
+use iced::widget::image::Handle;
 
 use crate::app::{App, Message};
 use crate::net::Connection;

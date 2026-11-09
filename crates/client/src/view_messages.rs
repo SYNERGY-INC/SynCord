@@ -1,8 +1,8 @@
 //! Message text (links, mentions, emoji) and link previews.
 
+use celerity_proto::{Embed, Message as ChatMessage};
 use iced::widget::{button, column, container, rich_text, row, space, span, text};
 use iced::{Alignment, Border, Color, Element, Font, Length, Padding};
-use celerity_proto::{Embed, Message as ChatMessage};
 
 use crate::app::{App, Message, Session};
 use crate::icons;

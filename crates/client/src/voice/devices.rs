@@ -3,9 +3,9 @@
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 
+use celerity_proto::voice::SAMPLE_RATE;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig, SupportedStreamConfig};
-use celerity_proto::voice::SAMPLE_RATE;
 
 use super::dsp::Resampler;
 use super::mixer::Mixer;
