@@ -30,7 +30,7 @@ impl App {
             let starting = self.live.starting.contains(&kind);
             let (icon, label, msg) = match kind {
                 VideoKind::Camera => (&icons::CAMERA, if on { "Camera on" } else { "Camera" }, Message::ToggleCamera),
-                VideoKind::Screen => {
+                VideoKind::Screen | VideoKind::ScreenAudio => {
                     (&icons::SCREEN, if on { "Stop sharing" } else { "Screen" }, Message::OpenScreenPicker)
                 }
             };
@@ -132,7 +132,7 @@ impl App {
         let name = match kind {
             VideoKind::Camera => user.name().to_string(),
             VideoKind::Screen if mine => "Your screen".to_string(),
-            VideoKind::Screen => format!("{}'s screen", user.name()),
+            VideoKind::Screen | VideoKind::ScreenAudio => format!("{}'s screen", user.name()),
         };
         tag = tag.push(text(name).size(fs * 0.78).font(semibold()).color(Color::WHITE));
         let mut corner = row![

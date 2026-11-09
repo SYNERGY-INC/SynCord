@@ -1369,7 +1369,7 @@ impl App {
             }
             Message::CreateChannel => {
                 if let Some(Overlay::NewChannel { name, topic, kind }) = self.overlay.take() {
-                    self.send(ClientMsg::CreateChannel { name, topic, kind });
+                    self.send(ClientMsg::CreateChannel { name, topic, kind, category_id: None });
                 }
             }
             Message::AskDeleteChannel(id) => self.overlay = Some(Overlay::ConfirmDelete(id)),
@@ -2578,6 +2578,8 @@ impl App {
                     self.notice = Some(friendly_error(message));
                 }
             }
+            // Added in 0.7; not shown yet.
+            _ => {}
         }
         Task::none()
     }
