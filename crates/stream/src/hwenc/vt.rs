@@ -13,7 +13,7 @@ use objc2_core_media::{
     kCMVideoCodecType_H264,
 };
 use objc2_core_video::{
-    CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
+    CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
     CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferPool, CVPixelBufferUnlockBaseAddress,
     kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
@@ -235,10 +235,21 @@ impl VtEncoder {
 
     unsafe fn pixel_buffer(&self, frame: &I420Frame) -> Result<CFRetained<CVPixelBuffer>, String> {
         unsafe {
-            let pool: CFRetained<CVPixelBufferPool> =
-                self.session.pixel_buffer_pool().ok_or("the encoder has no pixel buffer pool")?;
             let mut raw: *mut CVPixelBuffer = std::ptr::null_mut();
-            let r = CVPixelBufferPool::create_pixel_buffer(None, &pool, NonNull::from(&mut raw));
+            // The session's pool hands out buffers the encoder reads without a copy; a plain
+            // buffer if it has none.
+            let pool: Option<CFRetained<CVPixelBufferPool>> = self.session.pixel_buffer_pool();
+            let r = match &pool {
+                Some(pool) => CVPixelBufferPool::create_pixel_buffer(None, pool, NonNull::from(&mut raw)),
+                None => CVPixelBufferCreate(
+                    None,
+                    self.width as usize,
+                    self.height as usize,
+                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                    None,
+                    NonNull::from(&mut raw),
+                ),
+            };
             let pb = NonNull::new(raw)
                 .filter(|_| r == 0)
                 .map(|p| CFRetained::from_raw(p))
