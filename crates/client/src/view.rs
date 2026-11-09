@@ -175,8 +175,14 @@ impl App {
             ("Welcome back!", "We're so excited to see you again!", "Log In", "Need an account? Register")
         };
 
+        let logo = iced::widget::image(iced::widget::image::Handle::from_bytes(
+            include_bytes!("../../../packaging/icons/celerity-128.png").as_slice(),
+        ))
+        .width(64)
+        .height(64);
         let mut form = column![
             column![
+                logo,
                 text(title).size(fs * 1.6).font(bold()).color(t.header.0),
                 text(subtitle).size(fs).color(t.muted.0),
             ]
