@@ -9,8 +9,8 @@ use celerity_proto::{
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
-    DbResult, access, all_channels, all_users, channel_kind, create_channel, direct_members, kind_to_i64, now_ms,
-    string_column, user_roles,
+    DbResult, access, all_channels, channel_kind, create_channel, direct_members, kind_to_i64, now_ms, string_column,
+    user_roles,
 };
 
 // ---- Private channels
@@ -560,9 +560,4 @@ pub fn edit_encrypted(conn: &Connection, id: MessageId, payload: &EncryptedPaylo
         params![serde_json::to_string(payload).unwrap(), now_ms(), id],
     )?;
     Ok(())
-}
-
-/// Every member's id and whether they can still log in (for the admin page and counts).
-pub fn member_count(conn: &Connection) -> DbResult<usize> {
-    Ok(all_users(conn)?.iter().filter(|u| !u.removed).count())
 }
