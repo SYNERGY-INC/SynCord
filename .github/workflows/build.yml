@@ -56,7 +56,7 @@ jobs:
       # only run here; their output must decode with OpenH264.
       - name: Test the streaming engine
         if: runner.os != 'Linux'
-        run: cargo test -p celerity-stream --release -- --nocapture
+        run: cargo test -p celerity-stream --release -- --nocapture --test-threads=1
       - run: cargo build --release
       - name: Collect binaries
         shell: bash
