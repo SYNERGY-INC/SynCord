@@ -12,6 +12,7 @@ pub mod previews;
 pub mod tls;
 pub mod update;
 pub mod voice;
+pub mod web;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -180,7 +181,7 @@ pub async fn start_udp(state: &Arc<AppState>, addr: SocketAddr) -> std::io::Resu
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/", get(|| async { "Celerity server is running.\n" }))
+        .route("/", get(web::index))
         .route("/ws", get(gateway::upgrade))
         // Uploads are streamed to disk and size-checked as they arrive.
         .route(
@@ -194,6 +195,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(http::MAX_PROFILE_IMAGE as usize)),
         )
         .route(&format!("{}/{{id}}", celerity_proto::PROFILE_IMAGE_PATH), get(http::download_profile_image))
+        .fallback(get(web::asset))
         .with_state(state)
 }
 
