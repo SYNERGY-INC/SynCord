@@ -647,6 +647,10 @@ mod tests {
         // Request larger than anything: the largest.
         assert_eq!(choose_mode(&modes, want(3840, 2160, 30)), Some(modes[4]));
         assert_eq!(choose_mode(&[], want(640, 360, 30)), None);
+        // 1080p: raw at 30 beats MJPEG at 30; a 60 fps request takes MJPEG at 60.
+        let hd = [m(PIX_MJPG, 1920, 1080, 60.0), m(PIX_NV12, 1920, 1080, 30.0), m(PIX_YUYV, 1920, 1080, 5.0)];
+        assert_eq!(choose_mode(&hd, want(1920, 1080, 30)), Some(hd[1]));
+        assert_eq!(choose_mode(&hd, want(1920, 1080, 60)), Some(hd[0]));
     }
 
     /// A 16x16 baseline JPEG, solid colour (R=200, G=60, B=40), 4:2:0, made with ImageMagick.

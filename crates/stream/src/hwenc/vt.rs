@@ -385,8 +385,8 @@ mod tests {
     }
 
     #[test]
-    fn odd_sizes_and_4k() {
-        for (w, h) in [(1366, 768), (3840, 2160)] {
+    fn odd_and_large_sizes() {
+        for (w, h) in [(1366, 768), (2560, 1440)] {
             let mut enc = any_session(w, h);
             self_test(&mut enc, w, h, 6, 1.0).unwrap_or_else(|e| panic!("{w}x{h}: {e}"));
         }

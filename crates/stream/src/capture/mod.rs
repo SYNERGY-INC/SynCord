@@ -116,7 +116,7 @@ pub fn list_cameras() -> Result<Vec<DeviceInfo>, String> {
     platform::list_cameras()
 }
 
-/// Lists displays (and on macOS, windows) that can be captured.
+/// Lists displays, then visible application windows (not our own), that can be captured.
 pub fn list_screens() -> Result<Vec<ScreenInfo>, String> {
     platform::list_screens()
 }
@@ -284,7 +284,9 @@ pub(crate) fn choose_mode(modes: &[Mode], want: CameraConfig) -> Option<Mode> {
         let covers = m.width >= want.width && m.height >= want.height;
         let area = m.width as i64 * m.height as i64;
         let size_key = if covers { area } else { i64::MAX / 2 - area };
-        (!fps_ok, size_key, m.rank, -(m.fps as i64))
+        // A 60 fps request prefers a 60 fps mode (often MJPEG) over a raw 30 fps one.
+        let full_rate = m.fps >= want_fps;
+        (!fps_ok, size_key, !full_rate, m.rank, -(m.fps as i64))
     })
 }
 

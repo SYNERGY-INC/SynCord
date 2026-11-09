@@ -26,9 +26,10 @@ pub struct EncoderConfig {
     /// timestamps). Keyframes also happen on [`Encoder::force_keyframe`] and size changes.
     pub keyframe_interval: Duration,
     /// OpenH264's screen-content mode (`SCREEN_CONTENT_REAL_TIME`) instead of its camera mode.
-    /// Off by default, also for screens: on text it gave ~10% lower luma error at the same
-    /// bitrate but cost 2-5x the encode CPU and ~1.5x the memory (see the `text_quality` test
-    /// and the `bench` example). Fixed at creation.
+    /// On text it gives ~10% lower luma error at the same bitrate but costs 2-5x the encode CPU
+    /// and ~1.5x the memory (see the `text_quality` test and the `bench` example), so it is off
+    /// here and turned on by the screen presets up to 1080p30. Hardware encoders ignore it.
+    /// Fixed at creation.
     pub screen_content_tools: bool,
 }
 

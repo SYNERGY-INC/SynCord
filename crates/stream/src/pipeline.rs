@@ -53,7 +53,8 @@ pub struct SenderConfig {
     /// Datagram size limit, header included.
     pub max_packet: usize,
     /// Keep an RGBA copy of the last sent picture with this longest side, for a local preview
-    /// ("this is what others see"). `None` saves the conversion.
+    /// ("this is what others see"), updated at most 20 times a second. `None` saves the
+    /// conversion.
     pub preview_max_side: Option<u32>,
     /// Use a hardware encoder (Media Foundation / VideoToolbox) when one passes the self-test;
     /// OpenH264 otherwise. Receivers cannot tell the difference.
@@ -101,9 +102,10 @@ impl SenderConfig {
             encoder: EncoderConfig {
                 bitrate_bps: quality.bitrate_bps(),
                 max_fps: fps as f32,
-                // Sharper text at 30 fps and below; at 60 fps OpenH264's screen mode costs too
-                // much CPU, and motion matters more there. Hardware encoders ignore it.
-                screen_content_tools: fps <= 30,
+                // Sharper text up to 1080p30 (~10% less error on text, ~20 ms per moving
+                // 1080p frame); beyond that OpenH264's screen mode is too slow, and at 60 fps
+                // motion matters more. Hardware encoders ignore it.
+                screen_content_tools: fps <= 30 && max_width * max_height <= 1920 * 1080,
                 ..EncoderConfig::screen()
             },
             max_width,
@@ -428,6 +430,9 @@ fn encode_loop(sh: Arc<SenderShared>, mut enc: VideoEncoder, config: SenderConfi
     let mut last_key_ms: Option<u64> = None;
     let mut preview_buf = Vec::new();
     let mut preview_serial = 0u64;
+    // The local preview is small and only for the user; 20 fps is plenty and saves the
+    // conversion of every 1440p60 frame.
+    let mut last_preview: Option<Instant> = None;
     // The last encoded picture, re-sent when the source goes quiet (a static screen delivers no
     // frames): keyframe requests still get answered and receivers see the stream is alive.
     let mut last: Option<I420Frame> = None;
@@ -528,7 +533,9 @@ fn encode_loop(sh: Arc<SenderShared>, mut enc: VideoEncoder, config: SenderConfi
             Err(e) => error = Some(e),
         }
         let name = enc.name();
-        let preview = config.preview_max_side.filter(|_| encoded > 0).map(|side| {
+        let preview_due = last_preview.is_none_or(|t| t.elapsed() >= Duration::from_millis(50));
+        let preview = config.preview_max_side.filter(|_| encoded > 0 && preview_due).map(|side| {
+            last_preview = Some(Instant::now());
             let (w, h) = convert::fit_side(frame.width(), frame.height(), side);
             convert::to_rgba(&YuvView::from(&frame), w, h, &mut preview_buf);
             preview_serial += 1;

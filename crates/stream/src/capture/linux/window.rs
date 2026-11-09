@@ -336,7 +336,16 @@ mod tests {
             eprintln!("skipped: no DISPLAY");
             return;
         }
-        let (conn, screen) = x11rb::connect(None).unwrap();
+        // Xvfb resets when its last client leaves (unless -noreset), dropping connections made
+        // at that moment; the display test runs in parallel, so retry.
+        let (conn, screen) = (0..20)
+            .find_map(|_| {
+                x11rb::connect(None).ok().or_else(|| {
+                    std::thread::sleep(Duration::from_millis(50));
+                    None
+                })
+            })
+            .expect("connect to the X server");
         let s = &conn.setup().roots[screen];
         let win = conn.generate_id().unwrap();
         let aux = CreateWindowAux::new().background_pixel(0xff0000); // red
