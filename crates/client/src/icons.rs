@@ -158,3 +158,11 @@ icon!(
     r#"<rect x="2.5" y="3.5" width="19" height="13.5" rx="2" stroke="black" stroke-width="2" fill="none"/><path d="M8 21h8M12 17v4" stroke="black" stroke-width="2" stroke-linecap="round"/><path d="M12 13.5V7.5m-3 3l3-3 3 3" stroke="black" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#
 );
 icon!(PIN, r#"<path d="M15 3l6 6-2 1-3.5 3.5.5 4.5-1.5 1.5-4-4-5 5-1-1 5-5-4-4L7 8l4.5.5L15 5z" fill="black"/>"#);
+icon!(
+    PEOPLE,
+    r#"<circle cx="9" cy="8" r="3.6" fill="black"/><path d="M2.5 19.5c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6z" fill="black"/><circle cx="17" cy="9" r="2.8" fill="black"/><path d="M16.2 13.6c3.1-.4 5.6 1.7 5.6 4.9h-4.6c0-1.9-.4-3.5-1-4.9z" fill="black"/>"#
+);
+icon!(
+    TRASH,
+    r#"<path d="M9 3.5h6M4.5 6.5h15" stroke="black" stroke-width="2" stroke-linecap="round"/><path d="M6.5 6.5l1 13.5h9l1-13.5z" fill="black"/>"#
+);

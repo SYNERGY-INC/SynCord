@@ -2,7 +2,12 @@
 
 ## v0.6.0
 
-**New: cameras and screen sharing, statuses, search, pinned messages, replies and markdown.**
+**New: a fresh look, cameras and screen sharing, statuses, search, pinned messages, replies and markdown.**
+
+- **A new look**: the channel list, chat and member list float as rounded panels over a darker
+  backdrop, with soft shadows. Icon buttons in the channel header (pins, members, delete), a
+  pill-shaped search and message box, a glow on the selected channel, rounder hover highlights,
+  and a refreshed login screen, settings and Direct Messages home. Works with every theme.
 
 - **Turn on your camera or share your screen** in any call (voice channels and DM calls): the
   Camera and Screen buttons are under *Voice Connected*. Pick a screen and choose sharp text

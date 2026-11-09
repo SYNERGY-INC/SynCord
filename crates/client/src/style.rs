@@ -41,6 +41,61 @@ pub fn flat(c: Color, radius: f32) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
+// ---- Floating panels
+
+/// The window behind the floating panels: a shade deeper than the server rail.
+pub fn backdrop(t: &AppTheme) -> Color {
+    let rail = t.rail.0;
+    if crate::theme::luminance(rail) > 0.5 { darken(rail, 0.07) } else { darken(rail, 0.35) }
+}
+
+/// Lighter by `amount` (0..1) towards white.
+pub fn lighten(c: Color, amount: f32) -> Color {
+    Color { r: c.r + (1.0 - c.r) * amount, g: c.g + (1.0 - c.g) * amount, b: c.b + (1.0 - c.b) * amount, a: c.a }
+}
+
+/// Corner roundness of the big panels.
+pub fn panel_radius(t: &AppTheme) -> f32 {
+    (t.radius * 1.6).clamp(8.0, 18.0)
+}
+
+/// A floating panel: rounded, with a faint edge and (with the GPU renderer) a soft shadow.
+/// The CPU renderer gets no shadow: it can leave smears when only part of the window redraws.
+pub fn panel(t: &AppTheme, fill: Color, shadow: bool) -> impl Fn(&Theme) -> container::Style + use<> {
+    let (radius, edge) = (panel_radius(t), with_alpha(t.header.0, 0.06));
+    move |_| container::Style {
+        background: Some(fill.into()),
+        border: Border { radius: radius.into(), width: 1.0, color: edge },
+        shadow: if shadow {
+            iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.32),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 18.0,
+            }
+        } else {
+            iced::Shadow::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// A soft diagonal gradient of `c` (a touch lighter at the top left).
+pub fn sheen(c: Color) -> Background {
+    Background::Gradient(iced::Gradient::Linear(
+        iced::gradient::Linear::new(iced::Radians(2.4)).add_stop(0.0, lighten(c, 0.1)).add_stop(1.0, darken(c, 0.08)),
+    ))
+}
+
+/// An inset card inside a panel (the user panel, Voice Connected).
+pub fn inset(t: &AppTheme, fill: Color) -> impl Fn(&Theme) -> container::Style + use<> {
+    let (radius, edge) = (t.radius * 1.2, with_alpha(t.header.0, 0.05));
+    move |_| container::Style {
+        background: Some(fill.into()),
+        border: Border { radius: radius.into(), width: 1.0, color: edge },
+        ..Default::default()
+    }
+}
+
 pub fn divider<'a, M: 'a>(c: Color) -> Element<'a, M> {
     container(space()).width(Length::Fill).height(1).style(bg(c)).into()
 }
@@ -67,9 +122,17 @@ pub fn row_button(t: &AppTheme, selected: bool) -> impl Fn(&Theme, button::Statu
 /// A list row whose hover background fades (see [`fade_row`]): only the selected
 /// state is drawn here.
 pub fn row_button_still(t: &AppTheme, selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style + use<> {
-    let (sel, text, header, radius) = (t.selected.0, t.muted.0, t.header.0, t.radius * 0.6);
+    let (sel, text, header, radius) = (t.selected.0, t.muted.0, t.header.0, t.radius * 0.8);
+    let accent = t.accent.0;
     move |_, status| button::Style {
-        background: selected.then(|| sel.into()),
+        // Selected: the theme's selection colour with a glow of the accent from the left.
+        background: selected.then(|| {
+            Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2))
+                    .add_stop(0.0, sel)
+                    .add_stop(1.0, mix(sel, accent, 0.38)),
+            ))
+        }),
         text_color: if selected || matches!(status, button::Status::Hovered) { header } else { text },
         border: Border { radius: radius.into(), ..Default::default() },
         ..Default::default()
@@ -81,19 +144,25 @@ pub fn fade_row<'a, M: Clone + 'a>(t: &AppTheme, row: iced::widget::Button<'a, M
     crate::widgets::hover_fade(row.style(row_button_still(t, selected)), t.hover.0, t.radius * 0.6).into()
 }
 
-/// Solid button in the given colour.
+/// `a` blended towards `b` by `amount`.
+pub fn mix(a: Color, b: Color, amount: f32) -> Color {
+    let m = |x: f32, y: f32| x + (y - x) * amount;
+    Color { r: m(a.r, b.r), g: m(a.g, b.g), b: m(a.b, b.b), a: m(a.a, b.a) }
+}
+
+/// Solid button in the given colour, with a soft sheen.
 pub fn solid_button(color: Color, radius: f32) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| {
         let c = match status {
-            button::Status::Hovered => darken(color, 0.1),
-            button::Status::Pressed => darken(color, 0.2),
+            button::Status::Hovered => lighten(color, 0.08),
+            button::Status::Pressed => darken(color, 0.12),
             button::Status::Disabled => with_alpha(color, 0.5),
             button::Status::Active => color,
         };
         button::Style {
-            background: Some(c.into()),
+            background: Some(if matches!(status, button::Status::Disabled) { c.into() } else { sheen(c) }),
             text_color: contrast_text(color),
-            border: Border { radius: radius.into(), ..Default::default() },
+            border: Border { radius: radius.max(8.0).into(), ..Default::default() },
             ..Default::default()
         }
     }
@@ -110,7 +179,7 @@ pub fn link_button(color: Color, hover: Color) -> impl Fn(&Theme, button::Status
 
 /// Small square icon button with a hover background.
 pub fn icon_button(t: &AppTheme) -> impl Fn(&Theme, button::Status) -> button::Style {
-    let (muted, header, hover, radius) = (t.muted.0, t.header.0, t.hover.0, t.radius * 0.5);
+    let (muted, header, hover, radius) = (t.muted.0, t.header.0, t.hover.0, t.radius * 0.8);
     move |_, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
@@ -119,6 +188,23 @@ pub fn icon_button(t: &AppTheme) -> impl Fn(&Theme, button::Status) -> button::S
             border: Border { radius: radius.into(), ..Default::default() },
             ..Default::default()
         }
+    }
+}
+
+/// A rounded-pill text box (search).
+pub fn pill_input(t: &AppTheme, fill: Color) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + use<> {
+    let (muted, text, accent, edge) = (t.muted.0, t.text.0, t.accent.0, with_alpha(t.header.0, 0.07));
+    move |_, status| text_input::Style {
+        background: Background::Color(fill),
+        border: Border {
+            radius: 999.0.into(),
+            width: 1.0,
+            color: if matches!(status, text_input::Status::Focused { .. }) { accent } else { edge },
+        },
+        icon: muted,
+        placeholder: muted,
+        value: text,
+        selection: with_alpha(accent, 0.4),
     }
 }
 

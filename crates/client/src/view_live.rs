@@ -230,7 +230,6 @@ impl App {
         .spacing(10)
         .align_y(Alignment::Center);
 
-        let stage_bg = style::darken(t.rail.0, 0.35);
         // One video big fills the stage; a grid scrolls if it doesn't fit.
         let grid = self.video_grid(s, channel, false);
         let body: Element<'a, Message> = if self.live.focus.is_some() {
@@ -248,7 +247,6 @@ impl App {
         ])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(style::bg(stage_bg))
         .into()
     }
 

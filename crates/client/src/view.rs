@@ -79,6 +79,24 @@ impl App {
                 let dim = if matches!(overlay, Overlay::Image(_)) { 0.88 } else { 0.6 };
                 // The backdrop fades in while the dialog pops up.
                 let dim = dim * ((self.pop(self.popped) - 0.9) / 0.1).clamp(0.0, 1.0);
+                // Dialogs float with a soft shadow (GPU renderer; the CPU one can smear them).
+                let content: Element<'_, Message> = if self.settings.low_memory || matches!(overlay, Overlay::Image(_))
+                {
+                    content
+                } else {
+                    let radius = self.theme.radius * 1.5;
+                    container(content)
+                        .style(move |_| container::Style {
+                            border: Border { radius: radius.into(), ..Default::default() },
+                            shadow: iced::Shadow {
+                                color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                                offset: iced::Vector::new(0.0, 10.0),
+                                blur_radius: 32.0,
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                };
                 let content = crate::widgets::pop(content, self.pop(self.popped));
                 let backdrop = mouse_area(
                     center(opaque(content))
@@ -192,23 +210,35 @@ impl App {
                 .style(style::link_button(t.accent.0, t.header.0)),
         );
 
-        center(container(form).width(460).padding(32).style(card(t.sidebar.0, t.radius * 1.5)))
-            .style(bg(t.rail.0))
+        // A glow of the accent colour behind the card.
+        let (back, accent) = (style::backdrop(t), t.accent.0);
+        let glow = iced::Background::Gradient(iced::Gradient::Linear(
+            iced::gradient::Linear::new(iced::Radians(2.3))
+                .add_stop(0.0, style::mix(back, accent, 0.28))
+                .add_stop(0.55, back)
+                .add_stop(1.0, style::mix(back, t.online.0, 0.12)),
+        ));
+        center(container(form).width(460).padding(32).style(style::panel(t, t.sidebar.0, !self.settings.low_memory)))
+            .style(move |_| container::Style { background: Some(glow), ..Default::default() })
             .into()
     }
 
     // ------------------------------------------------------------------ main
 
     fn main_view<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
+        let t = &self.theme;
+        let (side, chat) = (t.sidebar.0, t.chat.0);
+        let mut layout = row![self.server_rail(s)].spacing(8).height(Length::Fill);
         if s.view == View::Home {
-            let mut layout = row![self.server_rail(s), self.home_sidebar(s), self.chat_area(s)];
+            layout = layout.push(self.float(self.home_sidebar(s), side)).push(self.float(self.chat_area(s), chat));
             if self.search.open {
-                layout = layout.push(self.sliding_panel(self.search_panel(s)));
+                layout = layout.push(self.sliding_panel(self.float(self.search_panel(s), side)));
             } else if let Some(p) = &self.pins {
-                layout = layout.push(self.sliding_panel(self.pins_panel(s, p)));
+                layout = layout.push(self.sliding_panel(self.float(self.pins_panel(s, p), side)));
             }
-            return layout.height(Length::Fill).into();
+            return self.on_backdrop(layout.into());
         }
+        layout = layout.push(self.float(self.channel_sidebar(s), side));
         // The call view replaces the chat while open.
         let stage = self
             .voice
@@ -216,19 +246,33 @@ impl App {
             .map(|v| v.channel_id)
             .filter(|c| self.live.stage && s.channels.iter().any(|x| x.id == *c));
         if let Some(channel) = stage {
-            return row![self.server_rail(s), self.channel_sidebar(s), self.stage_view(s, channel)]
-                .height(Length::Fill)
-                .into();
+            let stage_bg = style::darken(t.rail.0, 0.35);
+            return self.on_backdrop(layout.push(self.float(self.stage_view(s, channel), stage_bg)).into());
         }
-        let mut layout = row![self.server_rail(s), self.channel_sidebar(s), self.chat_area(s)];
+        layout = layout.push(self.float(self.chat_area(s), chat));
         if self.search.open {
-            layout = layout.push(self.sliding_panel(self.search_panel(s)));
+            layout = layout.push(self.sliding_panel(self.float(self.search_panel(s), side)));
         } else if let Some(p) = &self.pins {
-            layout = layout.push(self.sliding_panel(self.pins_panel(s, p)));
+            layout = layout.push(self.sliding_panel(self.float(self.pins_panel(s, p), side)));
         } else if self.settings.show_members {
-            layout = layout.push(self.sliding_panel(self.member_list(s)));
+            layout = layout.push(self.sliding_panel(self.float(self.member_list(s), side)));
         }
-        layout.height(Length::Fill).into()
+        self.on_backdrop(layout.into())
+    }
+
+    /// A floating panel (sidebar, chat, members...).
+    fn float<'a>(&self, content: Element<'a, Message>, fill: Color) -> Element<'a, Message> {
+        container(content).height(Length::Fill).style(style::panel(&self.theme, fill, !self.settings.low_memory)).into()
+    }
+
+    /// The window's backdrop, with the panels floating on it.
+    fn on_backdrop<'a>(&self, layout: Element<'a, Message>) -> Element<'a, Message> {
+        container(layout)
+            .padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 0.0 })
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(bg(style::backdrop(&self.theme)))
+            .into()
     }
 
     /// A right-hand panel, sliding in from the edge as it opens.
@@ -249,10 +293,26 @@ impl App {
                 ..Default::default()
             })
         };
+        let glow = !self.settings.low_memory;
+        let ring = style::lighten(t.accent.0, 0.25);
         let tile = |content: Element<'a, Message>, color: Color, selected: bool, msg: Message| {
             button(container(content).center(48).style(move |_| container::Style {
-                background: Some(color.into()),
-                border: Border { radius: if selected { 16.0 } else { 24.0 }.into(), ..Default::default() },
+                background: Some(if selected { style::sheen(color) } else { color.into() }),
+                border: Border {
+                    radius: if selected { 16.0 } else { 24.0 }.into(),
+                    width: if selected { 1.5 } else { 0.0 },
+                    color: with_alpha(ring, 0.6),
+                },
+                // A soft glow of the accent under the selected one.
+                shadow: if selected && glow {
+                    iced::Shadow {
+                        color: with_alpha(ring, 0.45),
+                        offset: iced::Vector::new(0.0, 2.0),
+                        blur_radius: 14.0,
+                    }
+                } else {
+                    iced::Shadow::default()
+                },
                 ..Default::default()
             }))
             .padding(0)
@@ -344,7 +404,6 @@ impl App {
         .padding([12, 0])
         .width(72)
         .height(Length::Fill)
-        .style(bg(t.rail.0))
         .into()
     }
 
@@ -411,10 +470,13 @@ impl App {
                 line = line.push(text(crate::app::format_duration(length)).size(fs * 0.75).color(t.muted.0));
             }
             let drop_here = self.voice_drag.as_ref().is_some_and(|d| d.moved() && d.over == Some(ch.id));
-            let mut entry =
-                button(line).width(Length::Fill).padding([6, 8]).style(style::row_button(t, connected || drop_here));
+            let mut entry = button(line)
+                .width(Length::Fill)
+                .padding([6, 8])
+                .style(style::row_button_still(t, connected || drop_here));
             entry = entry.on_press(if connected { Message::OpenStage } else { Message::JoinVoice(ch.id) });
             // Drop target for dragging people between channels.
+            let entry = crate::widgets::hover_fade(entry, t.hover.0, t.radius * 0.8);
             list = list.push(
                 mouse_area(entry).on_enter(Message::VoiceDragOver(Some(ch.id))).on_exit(Message::VoiceDragOver(None)),
             );
@@ -438,14 +500,13 @@ impl App {
 
         container(column![
             header,
-            divider(style::darken(t.sidebar.0, 0.25)),
+            divider(with_alpha(t.header.0, 0.06)),
             scrollable(container(list).padding([0, 8])).height(Length::Fill).style(style::scroll(t)),
             self.voice_panel(s),
             self.user_panel(s),
         ])
         .width(240)
         .height(Length::Fill)
-        .style(bg(t.sidebar.0))
         .into()
     }
 
@@ -558,13 +619,12 @@ impl App {
         if connected {
             body = body.push(self.live_buttons());
         }
-        container(column![
-            divider(style::darken(t.user_panel.0, 0.2)),
-            container(body).padding([8, 10]).width(Length::Fill)
-        ])
-        .width(Length::Fill)
-        .style(bg(t.user_panel.0))
-        .into()
+        // An inset card with a faint green glow while connected.
+        let fill = if connected { style::mix(t.user_panel.0, t.online.0, 0.1) } else { t.user_panel.0 };
+        container(container(body).padding([10, 10]).width(Length::Fill).style(style::inset(t, fill)))
+            .padding(Padding { top: 6.0, right: 8.0, bottom: 0.0, left: 8.0 })
+            .width(Length::Fill)
+            .into()
     }
 
     pub(crate) fn user_panel<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
@@ -619,7 +679,10 @@ impl App {
         ]
         .spacing(2)
         .align_y(Alignment::Center);
-        container(content).padding([10, 8]).width(Length::Fill).style(bg(t.user_panel.0)).into()
+        container(container(content).padding([8, 6]).width(Length::Fill).style(style::inset(t, t.user_panel.0)))
+            .padding(8)
+            .width(Length::Fill)
+            .into()
     }
 
     /// Update button next to settings: grey normally, green with a "!" when an update is waiting.
@@ -682,70 +745,68 @@ impl App {
         let channel = s.current_info();
         let is_direct = channel.as_ref().is_some_and(|c| c.direct_with.is_some());
 
-        // Header: "# name | topic" ............ [Members]
+        // Header: [#] name · topic ............ [pin] [members] [trash] (search)
         let mut header = row![].spacing(10).align_y(Alignment::Center);
         if let Some(ch) = &channel {
-            header = header
-                .push(text(if is_direct { "@" } else { "#" }).size(fs * 1.5).color(t.muted.0))
-                .push(text(ch.name.to_owned()).size(fs * 1.05).font(bold()).color(t.header.0));
+            let accent = t.accent.0;
+            let badge: Element<'a, Message> = match ch.direct_with {
+                Some(u) => self.avatar(u, 26.0),
+                None => container(text("#").size(fs * 1.1).font(bold()).color(accent))
+                    .center(26)
+                    .style(move |_| container::Style {
+                        background: Some(with_alpha(accent, 0.16).into()),
+                        border: Border { radius: 8.0.into(), ..Default::default() },
+                        ..Default::default()
+                    })
+                    .into(),
+            };
+            header = header.push(badge).push(text(ch.name.to_owned()).size(fs * 1.05).font(bold()).color(t.header.0));
             if !ch.topic.is_empty() {
                 header = header
-                    .push(container(space()).width(1).height(24).style(bg(t.hover.0)))
-                    .push(text(ch.topic.to_owned()).size(fs * 0.9).color(t.muted.0));
+                    .push(text("·").size(fs).color(t.muted.0))
+                    .push(text(truncate(ch.topic, 60)).size(fs * 0.88).color(t.muted.0));
             }
         }
         header = header.push(space::horizontal());
-        if channel.is_some() {
-            let open = self.pins.is_some();
-            header = header.push(iced::widget::tooltip(
-                button(icons::icon(&icons::PIN, fs * 1.25, if open { t.header.0 } else { t.muted.0 }))
-                    .padding([4, 6])
-                    .on_press(Message::TogglePins)
-                    .style(style::icon_button(t)),
-                container(text("Pinned messages").size(fs * 0.8)).padding([4, 8]).style(card(t.floating.0, 6.0)),
+        let tool = |handle: &'static std::sync::LazyLock<iced::widget::svg::Handle>,
+                    on: bool,
+                    tip: &'static str,
+                    msg: Message| {
+            let color = if on { t.header.0 } else { t.muted.0 };
+            iced::widget::tooltip(
+                button(icons::icon(handle, fs * 1.25, color)).padding(6).on_press(msg).style(style::icon_button(t)),
+                container(text(tip).size(fs * 0.8)).padding([4, 8]).style(card(t.floating.0, 6.0)),
                 iced::widget::tooltip::Position::Bottom,
-            ));
-            header = header.push(self.search_box());
+            )
+        };
+        if let Some(ch) = channel.as_ref().filter(|_| is_direct) {
+            let in_call =
+                self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id) || self.voice_joining == Some(ch.id);
+            if !in_call {
+                header = header.push(tool(&icons::PHONE, false, "Start a call", Message::JoinVoice(ch.id)));
+            }
+        }
+        if channel.is_some() {
+            header = header.push(tool(&icons::PIN, self.pins.is_some(), "Pinned messages", Message::TogglePins));
+        }
+        // While searching, the results take the members' place.
+        if !is_direct && !self.search.open {
+            let shown = self.settings.show_members;
+            let tip = if shown { "Hide members" } else { "Show members" };
+            header = header.push(tool(&icons::PEOPLE, shown, tip, Message::ToggleMembers));
         }
         if let Some(ch) = channel
             .as_ref()
             .filter(|_| s.can(syncord_proto::perms::MANAGE_CHANNELS) && s.channels.len() > 1 && !is_direct)
         {
-            header = header.push(
-                button(text("Delete channel").size(fs * 0.8).wrapping(iced::widget::text::Wrapping::None))
-                    .padding([4, 8])
-                    .on_press(Message::AskDeleteChannel(ch.id))
-                    .style(style::icon_button(t)),
-            );
+            header = header.push(tool(&icons::TRASH, false, "Delete channel", Message::AskDeleteChannel(ch.id)));
         }
-        if let Some(ch) = channel.as_ref().filter(|_| is_direct) {
-            let in_call =
-                self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id) || self.voice_joining == Some(ch.id);
-            if !in_call {
-                header = header.push(
-                    button(icons::icon(&icons::PHONE, fs * 1.3, t.text.0))
-                        .padding([4, 8])
-                        .on_press(Message::JoinVoice(ch.id))
-                        .style(style::icon_button(t)),
-                );
-            }
+        if channel.is_some() {
+            header = header.push(self.search_box());
         }
-        // While searching, the results take the members' place.
-        if !is_direct && !self.search.open {
-            header = header.push(
-                button(
-                    text(if self.settings.show_members { "Hide members" } else { "Members" })
-                        .size(fs * 0.8)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                )
-                .padding([4, 8])
-                .on_press(Message::ToggleMembers)
-                .style(style::icon_button(t)),
-            );
-        }
-        let header = container(header).padding([0, 16]).height(48).width(Length::Fill).align_y(Alignment::Center);
+        let header = container(header).padding([0, 14]).height(52).width(Length::Fill).align_y(Alignment::Center);
 
-        let mut col = column![header, divider(style::darken(t.chat.0, 0.25))];
+        let mut col = column![header, divider(with_alpha(t.header.0, 0.06))];
         if let Some(ch) = channel.as_ref().filter(|_| is_direct)
             && let Some(bar) = self.call_bar(s, ch.id)
         {
@@ -786,7 +847,7 @@ impl App {
         if let Some(ch) = channel {
             col = col.push(self.composer(s, ch));
         }
-        let chat = container(col).width(Length::Fill).height(Length::Fill).style(bg(t.chat.0));
+        let chat = container(col).width(Length::Fill).height(Length::Fill);
         // Always a stack, so opening the picker doesn't reset the chat's scroll position or focus.
         let picker: Element<'a, Message> = match self.emoji_picker_view().filter(|_| has_channel) {
             Some(picker) => container(opaque(crate::widgets::pop(picker, self.pop(self.picker_popped))))
@@ -805,17 +866,34 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let Some(channel) = channel else {
-            let hint = if s.view == View::Home {
-                "Pick a conversation, or click + to message someone."
+            let (title, hint) = if s.view == View::Home {
+                ("Your conversations", "Pick one on the left, or click + to message someone.")
             } else {
-                "No channels yet."
+                ("No channels yet", "Create one with the + next to Text channels.")
             };
-            return center(text(hint).color(t.muted.0)).into();
+            let accent = t.accent.0;
+            let badge =
+                container(icons::icon(&icons::DIRECT, 40.0, accent)).center(88).style(move |_| container::Style {
+                    background: Some(with_alpha(accent, 0.14).into()),
+                    border: Border { radius: 28.0.into(), ..Default::default() },
+                    ..Default::default()
+                });
+            return center(
+                column![
+                    badge,
+                    text(title).size(fs * 1.4).font(bold()).color(t.header.0),
+                    text(hint).size(fs * 0.95).color(t.muted.0),
+                ]
+                .spacing(10)
+                .align_x(Alignment::Center),
+            )
+            .into();
         };
         let state = s.chans.get(&channel.id);
         let messages: &[ChatMessage] = state.map(|st| st.messages.as_slice()).unwrap_or(&[]);
 
-        let mut list = column![].padding(Padding { top: 16.0, bottom: 16.0, left: 0.0, right: 0.0 });
+        // Inset from the panel's edges, so hover highlights are rounded cards.
+        let mut list = column![].padding(Padding { top: 16.0, bottom: 16.0, left: 8.0, right: 8.0 });
 
         match state {
             Some(st) if st.loaded && st.reached_start => {
@@ -826,10 +904,17 @@ impl App {
                         format!("This is the beginning of your direct messages with {}.", u.name()),
                     ),
                     None => (
-                        container(text("#").size(fs * 2.4).color(t.header.0))
-                            .center(68)
-                            .style(card(t.floating.0, 34.0))
-                            .into(),
+                        {
+                            let accent = t.accent.0;
+                            container(text("#").size(fs * 2.4).font(bold()).color(accent))
+                                .center(68)
+                                .style(move |_| container::Style {
+                                    background: Some(with_alpha(accent, 0.16).into()),
+                                    border: Border { radius: 20.0.into(), ..Default::default() },
+                                    ..Default::default()
+                                })
+                                .into()
+                        },
                         format!("Welcome to #{}!", channel.name),
                         format!("This is the start of the #{} channel.", channel.name),
                     ),
@@ -1108,14 +1193,20 @@ impl App {
             Some(r) => column![self.reply_preview(r), line].into(),
             None => line.into(),
         };
-        let bar = container(space())
-            .width(2)
-            .height(Length::Fill)
-            .style(move |_| container::Style { background: Some(bar_color.into()), ..Default::default() });
+        let bar = container(space()).width(3).height(Length::Fill).style(move |_| container::Style {
+            background: Some(bar_color.into()),
+            border: Border { radius: 2.0.into(), ..Default::default() },
+            ..Default::default()
+        });
+        let corner = t.radius;
         let row = mouse_area(
-            container(row![bar, container(line).padding([2, 14]).width(Length::Fill)])
-                .width(Length::Fill)
-                .style(move |_| container::Style { background: hover_bg.map(Into::into), ..Default::default() }),
+            container(row![bar, container(line).padding([2, 13]).width(Length::Fill)]).width(Length::Fill).style(
+                move |_| container::Style {
+                    background: hover_bg.map(Into::into),
+                    border: Border { radius: corner.into(), ..Default::default() },
+                    ..Default::default()
+                },
+            ),
         )
         .on_right_press(Message::OpenMessageMenu(m.id))
         .on_double_click(Message::SelectMessageText(m.id));
@@ -1124,7 +1215,7 @@ impl App {
         let row = crate::widgets::hover_sensor(row, move |over| {
             if over { Message::HoverMessage(Some(id)) } else { Message::HoverOff(id) }
         });
-        let row = crate::widgets::hover_fade(row, style::darken(t.chat.0, 0.12), 0.0);
+        let row = crate::widgets::hover_fade(row, style::mix(t.chat.0, t.header.0, 0.05), t.radius);
         // New messages slide up into place.
         match self.arrived.get(&m.id) {
             Some(at) => crate::widgets::slide(row, iced::Vector::new(0.0, self.slid(*at, 14.0))).into(),
@@ -1159,6 +1250,7 @@ impl App {
             });
         let floating = t.floating.0;
         let radius = t.radius;
+        let edge = with_alpha(t.header.0, 0.07);
         let bar = container(
             row![
                 button(icons::icon(&icons::ATTACH, fs * 1.4, t.muted.0))
@@ -1185,10 +1277,10 @@ impl App {
             .spacing(2)
             .align_y(Alignment::End),
         )
-        .padding(Padding { top: 0.0, bottom: 3.0, left: 6.0, right: 6.0 })
+        .padding(Padding { top: 0.0, bottom: 3.0, left: 8.0, right: 8.0 })
         .style(move |_| container::Style {
             background: Some(floating.into()),
-            border: Border { radius: radius.into(), ..Default::default() },
+            border: Border { radius: (radius * 2.6).clamp(10.0, 24.0).into(), width: 1.0, color: edge },
             ..Default::default()
         });
 
@@ -1282,10 +1374,10 @@ impl App {
             }
         }
 
-        container(scrollable(list).height(Length::Fill).style(style::scroll(t)))
+        container(scrollable(container(list).padding([0, 6])).height(Length::Fill).style(style::scroll(t)))
             .width(240)
             .height(Length::Fill)
-            .style(bg(t.sidebar.0))
+            .padding([6, 0])
             .into()
     }
 
@@ -1470,11 +1562,11 @@ impl App {
         let fs = self.fs();
 
         let nav_item = |name: &'static str, target: SettingsTab| {
-            button(text(name).size(fs))
-                .width(Length::Fill)
-                .padding([6, 10])
-                .on_press(Message::SettingsTab(target))
-                .style(style::row_button(t, tab == target))
+            style::fade_row(
+                t,
+                button(text(name).size(fs)).width(Length::Fill).padding([7, 12]).on_press(Message::SettingsTab(target)),
+                tab == target,
+            )
         };
         let danger = t.danger.0;
         let nav = column![
@@ -1515,39 +1607,50 @@ impl App {
             SettingsTab::Roles => self.roles_settings(s),
         };
 
+        // A round close button, like the dialogs'.
+        let (muted, hover, header) = (t.muted.0, t.hover.0, t.header.0);
         let close = column![
-            button(text("X").size(fs * 1.1).font(bold()))
-                .padding([6, 12])
-                .on_press(Message::CloseSettings)
-                .style(style::icon_button(t)),
+            button(icons::icon(&icons::CLOSE, fs * 1.1, t.muted.0)).padding(9).on_press(Message::CloseSettings).style(
+                move |_, status| {
+                    let on = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                    button::Style {
+                        background: Some(if on { hover } else { Color::TRANSPARENT }.into()),
+                        text_color: if on { header } else { muted },
+                        border: Border { radius: 999.0.into(), width: 1.5, color: muted },
+                        ..Default::default()
+                    }
+                }
+            ),
             text("ESC").size(fs * 0.7).color(t.muted.0),
         ]
-        .spacing(4)
+        .spacing(6)
         .align_x(Alignment::Center);
 
-        row![
-            container(nav)
-                .padding(Padding { top: 60.0, right: 8.0, left: 20.0, bottom: 20.0 })
+        // Floating panels, like the main window.
+        let shadow = !self.settings.low_memory;
+        let layout = row![
+            container(container(nav).padding(Padding { top: 40.0, right: 12.0, left: 12.0, bottom: 20.0 }))
                 .align_x(Alignment::End)
                 .width(Length::FillPortion(1))
                 .height(Length::Fill)
-                .style(bg(t.sidebar.0)),
+                .style(style::panel(t, t.sidebar.0, shadow)),
             container(row![
                 scrollable(
                     container(content)
-                        .padding(Padding { top: 60.0, left: 40.0, right: 20.0, bottom: 40.0 })
+                        .padding(Padding { top: 44.0, left: 40.0, right: 20.0, bottom: 40.0 })
                         .max_width(760)
                 )
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(style::scroll(t)),
-                container(close).padding(Padding { top: 60.0, right: 20.0, ..Padding::ZERO }),
+                container(close).padding(Padding { top: 44.0, right: 20.0, ..Padding::ZERO }),
             ],)
             .width(Length::FillPortion(2))
             .height(Length::Fill)
-            .style(bg(t.chat.0)),
+            .style(style::panel(t, t.chat.0, shadow)),
         ]
-        .into()
+        .spacing(8);
+        container(layout).padding(8).width(Length::Fill).height(Length::Fill).style(bg(style::backdrop(t))).into()
     }
 
     fn profile_settings<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
@@ -2134,16 +2237,25 @@ fn theme_tile<'a>(current: &AppTheme, theme: &'a AppTheme, selected: bool, fs: f
         block(theme.floating.0, 92.0, 12.0, 4.0),
     ]
     .spacing(5);
-    let mini = row![
-        container(block(theme.accent.0, 14.0, 14.0, 7.0)).padding(5).height(Length::Fill).style(bg(theme.rail.0)),
-        container(column![block(theme.muted.0, 30.0, 5.0, 3.0), block(theme.selected.0, 34.0, 7.0, 3.0)].spacing(5))
-            .padding(6)
+    // The floating layout in miniature: panels on the backdrop.
+    let mini_panel = |c: Color| style::flat(c, 4.0);
+    let mini = container(
+        row![
+            container(block(theme.accent.0, 12.0, 12.0, 4.0)).padding([4, 2]),
+            container(
+                column![block(theme.muted.0, 28.0, 5.0, 3.0), block(theme.selected.0, 32.0, 7.0, 3.0)].spacing(5)
+            )
+            .padding(5)
             .height(Length::Fill)
-            .style(bg(theme.sidebar.0)),
-        container(chat_lines).padding(6).width(Length::Fill).height(Length::Fill).style(bg(theme.chat.0)),
-    ]
+            .style(mini_panel(theme.sidebar.0)),
+            container(chat_lines).padding(5).width(Length::Fill).height(Length::Fill).style(mini_panel(theme.chat.0)),
+        ]
+        .spacing(3),
+    )
+    .padding(Padding { top: 3.0, right: 3.0, bottom: 3.0, left: 1.0 })
     .height(72)
-    .width(160);
+    .width(160)
+    .style(bg(style::backdrop(theme)));
 
     let border_color = if selected { current.accent.0 } else { Color::TRANSPARENT };
     let radius = current.radius;

@@ -12,7 +12,7 @@ use crate::app::{App, Message, PickerTab, PickerTarget, Session, UploadState};
 use crate::emoji;
 use crate::icons::{self, icon};
 use crate::media::{self, format_size};
-use crate::style::{self, bg, bold, card, label, semibold};
+use crate::style::{self, bold, card, label, semibold};
 use crate::theme::{contrast_text, with_alpha};
 
 const PICTURE_W: f32 = 400.0;
@@ -736,14 +736,13 @@ impl App {
 
         container(column![
             header,
-            style::divider(style::darken(t.sidebar.0, 0.25)),
+            style::divider(with_alpha(t.header.0, 0.06)),
             scrollable(container(list).padding([0, 8])).height(Length::Fill).style(style::scroll(t)),
             self.voice_panel(s),
             self.user_panel(s),
         ])
         .width(240)
         .height(Length::Fill)
-        .style(bg(t.sidebar.0))
         .into()
     }
 }

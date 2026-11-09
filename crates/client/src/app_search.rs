@@ -252,10 +252,10 @@ impl App {
             .id(Id::new(SEARCH_ID))
             .on_input(Message::SearchInput)
             .on_submit(Message::SubmitSearch)
-            .padding([4, 8])
+            .padding([6, 14])
             .size(fs * 0.85)
-            .width(if self.search.open { 240 } else { 160 })
-            .style(style::input(t, style::darken(t.chat.0, 0.3)))
+            .width(if self.search.open { 240 } else { 170 })
+            .style(style::pill_input(t, style::mix(t.chat.0, t.header.0, 0.06)))
             .into()
     }
 
@@ -342,7 +342,6 @@ impl App {
         )
         .width(340)
         .height(Length::Fill)
-        .style(style::bg(t.sidebar.0))
         .into()
     }
 
@@ -461,7 +460,6 @@ impl App {
         )
         .width(340)
         .height(Length::Fill)
-        .style(style::bg(t.sidebar.0))
         .into()
     }
 
