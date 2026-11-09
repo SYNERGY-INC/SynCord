@@ -7,6 +7,9 @@ Celerity was called SynCord before 0.7.0.
 **SynCord is now Celerity.** Your settings, servers, messages and invite codes come along: the app
 and server update to Celerity by themselves.
 
+**Celerity on your phone**: open your server's address in the phone's browser and add it to the
+Home Screen (thanks, hepbep!). Text channels, DMs, pictures and files, voice and notifications.
+
 **Streaming at the highest quality, with sound**
 
 - **Share a single window** instead of your whole screen (the picker lists Screens and Windows).

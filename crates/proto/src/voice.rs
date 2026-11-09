@@ -292,6 +292,17 @@ pub fn token_from_hex(s: &str) -> Option<Token> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The web app (web/test/voice.test.ts) checks its encryption against this exact output.
+    #[test]
+    fn web_app_vector() {
+        let key: Key = std::array::from_fn(|i| i as u8);
+        let sealed = seal(&key, Direction::Up, 7, 513, &[0xde, 0xad, 0xbe, 0xef]);
+        let hex: String = sealed.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, WEB_APP_VECTOR);
+    }
+    const WEB_APP_VECTOR: &str = "2a47cbeef06cf484ccea757ca0106d2e989237880e88";
+
     use super::*;
 
     #[test]

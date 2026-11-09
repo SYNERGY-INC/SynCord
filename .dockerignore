@@ -2,3 +2,5 @@ target
 .git
 docs
 dist
+web/node_modules
+web/.test-out

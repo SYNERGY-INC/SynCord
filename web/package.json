@@ -1,0 +1,21 @@
+{
+  "name": "celerity-web",
+  "private": true,
+  "version": "0.6.0",
+  "description": "Celerity in a browser: open the server's address on a phone and add it to the home screen.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.sw.json",
+    "test": "node test/run.mjs"
+  },
+  "dependencies": {
+    "@evan/opus": "1.0.3",
+    "@noble/ciphers": "2.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  }
+}

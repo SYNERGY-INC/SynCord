@@ -167,7 +167,10 @@ Send that link to your friends. The release page explains which file each person
 - The apps aren't signed with paid certificates. **Windows** may say *"Windows protected your PC"*
   (click **More info → Run anyway**), and **macOS** needs you to allow the app the first time
   (macOS 15+: **System Settings → Privacy & Security → Open Anyway**; older: right-click → **Open**).
-- **Phones and tablets** aren't supported yet. Celerity is a desktop app for now.
+- **Phones and tablets**: open your server's address in the phone's browser (for example
+  `http://192.168.1.20:7878`) and add it to the Home Screen. The web app has text channels, DMs,
+  pictures and files, voice and notifications (see [web/README.md](web/README.md)). Video,
+  screen sharing and the newer 0.7 features are in the desktop app.
 
 ### Automatic updates
 
@@ -508,7 +511,7 @@ Themes are plain files, so you can send them to friends.
 
 ## Roadmap
 
-1. A phone app (Android first)
+1. More of the desktop app's features in the phone web app
 2. Screen sharing on Wayland
 3. End-to-end encrypted files
 
