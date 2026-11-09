@@ -249,6 +249,9 @@ impl App {
                 if !s.directs.iter().any(|x| x.id == d.id) {
                     s.directs.insert(0, d.clone());
                 }
+                if self.background {
+                    return Task::none();
+                }
                 if self.pending_call == Some(d.user_id) {
                     self.pending_call = None;
                     self.pending_direct = None;

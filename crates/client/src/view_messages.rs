@@ -245,7 +245,7 @@ impl App {
         ]
         .spacing(10)
         .align_y(Alignment::Center);
-        let in_it = self.voice.as_ref().is_some_and(|v| v.channel_id == m.channel_id);
+        let in_it = self.voice_here().is_some_and(|v| v.channel_id == m.channel_id);
         if ended_at.is_none() && !in_it {
             r = r.push(
                 button(text("Join Call").size(fs * 0.85))

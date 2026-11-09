@@ -129,12 +129,12 @@ impl App {
             return None;
         }
         people.sort_by_key(|u| u.id);
-        let joined = self.voice.as_ref().is_some_and(|v| v.channel_id == channel);
+        let joined = self.voice_here().is_some_and(|v| v.channel_id == channel);
         // With cameras or screens on, the call shows its video instead of faces.
         let video = joined && self.call_has_video(s, channel);
         let mut faces = row![].spacing(10).align_y(Alignment::Center);
         for u in people {
-            let talking = self.speaking.contains(&u.id);
+            let talking = self.is_speaking(&u.id);
             let ring = if talking { t.online.0 } else { iced::Color::TRANSPARENT };
             faces = faces.push(container(self.avatar(u, 56.0)).padding(3).style(move |_| container::Style {
                 border: Border { radius: 32.0.into(), width: 3.0, color: ring },

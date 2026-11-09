@@ -219,7 +219,7 @@ impl App {
     }
 
     fn tell_video_state(&self) {
-        self.send(ClientMsg::SetVideo { camera: self.live.camera.is_some(), screen: self.live.screen.is_some() });
+        self.send_call(ClientMsg::SetVideo { camera: self.live.camera.is_some(), screen: self.live.screen.is_some() });
     }
 
     pub(crate) fn update_live(&mut self, message: Message) -> Task<Message> {
@@ -317,7 +317,7 @@ impl App {
                 self.live.watching.insert(user);
                 self.live.stage = true;
                 self.live.focus = Some((user, VideoKind::Screen));
-                self.send(ClientMsg::WatchStream { user_id: user, watching: true });
+                self.send_call(ClientMsg::WatchStream { user_id: user, watching: true });
                 self.sync_live();
             }
             Message::StopWatching(user) => {
@@ -325,7 +325,7 @@ impl App {
                 if self.live.focus == Some((user, VideoKind::Screen)) {
                     self.live.focus = None;
                 }
-                self.send(ClientMsg::WatchStream { user_id: user, watching: false });
+                self.send_call(ClientMsg::WatchStream { user_id: user, watching: false });
                 self.sync_live();
             }
             Message::OpenStage => self.live.stage = true,
@@ -352,6 +352,10 @@ impl App {
     /// you're watching), ask for keyframes where pictures broke up, and notice
     /// cameras or screens that stopped by themselves.
     pub(crate) fn sync_live(&mut self) {
+        self.on_call_server(Self::sync_live_here);
+    }
+
+    fn sync_live_here(&mut self) {
         let Some(s) = &self.session else { return };
         let me = s.me;
         let Some(channel) = self.voice.as_ref().map(|v| v.channel_id) else { return };
@@ -407,7 +411,7 @@ impl App {
             // Full size only for the video shown big: small tiles decode small (less to draw).
             r.set_max_side(if self.live.focus == Some((*user, *kind)) { 1920 } else { 640 });
             if r.take_keyframe_request() {
-                self.send(ClientMsg::RequestKeyframe { user_id: *user, kind: *kind });
+                self.send_call(ClientMsg::RequestKeyframe { user_id: *user, kind: *kind });
             }
         }
 
@@ -432,7 +436,7 @@ impl App {
 
     /// New pictures from the decoders (and of what you're sending).
     fn pull_pictures(&mut self) {
-        let Some(me) = self.session.as_ref().map(|s| s.me) else { return };
+        let Some(me) = self.call_session().map(|s| s.me) else { return };
         let mut fresh: Vec<((UserId, VideoKind), stream::Frame)> = Vec::new();
         for (key, (_, r)) in &self.live.receivers {
             if let Some(f) = r.frame() {

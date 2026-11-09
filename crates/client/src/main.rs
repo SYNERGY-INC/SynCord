@@ -21,6 +21,7 @@ mod markdown;
 mod media;
 mod net;
 mod presence;
+mod servers;
 mod settings;
 mod shortcuts;
 mod sound;

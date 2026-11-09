@@ -149,7 +149,7 @@ impl App {
         }
         let overlay = container(corner).padding(8).height(Length::Fill).align_y(Alignment::End);
 
-        let talking = kind == VideoKind::Camera && self.speaking.contains(&user.id);
+        let talking = kind == VideoKind::Camera && self.is_speaking(&user.id);
         let ring = if talking { t.online.0 } else { Color::TRANSPARENT };
         let fill = style::darken(t.rail.0, 0.2);
         let framed =
@@ -317,7 +317,7 @@ impl App {
             let pill = container(text("LIVE").size(fs * 0.62).font(bold()).color(Color::WHITE))
                 .padding([1, 5])
                 .style(style::flat(t.danger.0, 4.0));
-            let in_my_call = self.voice.as_ref().is_some_and(|mine| mine.channel_id == v.channel_id);
+            let in_my_call = self.voice_here().is_some_and(|mine| mine.channel_id == v.channel_id);
             r = r.push(if in_my_call && v.user_id != me {
                 Element::from(
                     button(pill).padding(0).on_press(Message::WatchScreen(v.user_id)).style(style::icon_button(t)),

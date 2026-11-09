@@ -157,6 +157,7 @@ icon!(
     SCREEN,
     r#"<rect x="2.5" y="3.5" width="19" height="13.5" rx="2" stroke="black" stroke-width="2" fill="none"/><path d="M8 21h8M12 17v4" stroke="black" stroke-width="2" stroke-linecap="round"/><path d="M12 13.5V7.5m-3 3l3-3 3 3" stroke="black" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#
 );
+icon!(PLUS, r#"<path d="M12 4.5v15M4.5 12h15" stroke="black" stroke-width="2.4" stroke-linecap="round"/>"#);
 icon!(PIN, r#"<path d="M15 3l6 6-2 1-3.5 3.5.5 4.5-1.5 1.5-4-4-5 5-1-1 5-5-4-4L7 8l4.5.5L15 5z" fill="black"/>"#);
 icon!(
     PEOPLE,

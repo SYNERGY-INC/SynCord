@@ -233,6 +233,11 @@ pub enum Message {
     // Direct messages
     ShowHome,
     ShowServer,
+    /// Open the server at this position in the rail.
+    SwitchServer(usize),
+    /// Sign in to one more server (the + in the rail).
+    AddServer,
+    CancelAddServer,
     OpenDirect(UserId),
     NewDirect,
 
@@ -691,11 +696,22 @@ pub struct App {
     /// Problem importing a font file.
     pub font_error: Option<String>,
 
-    generation: u64,
+    pub(crate) generation: u64,
     pub(crate) conn: Option<Connection>,
     voice_sink: crate::voice::VoiceSink,
-    pending_auth: Option<ClientMsg>,
-    reconnect_attempts: u32,
+    pub(crate) pending_auth: Option<ClientMsg>,
+    pub(crate) reconnect_attempts: u32,
+    /// Other servers you're signed in to (see servers.rs).
+    pub(crate) parked: Vec<crate::servers::Parked>,
+    /// The open server, and the one the call is on.
+    pub(crate) server_uid: u64,
+    pub(crate) call_uid: Option<u64>,
+    /// Handling a message for a server that isn't open: change nothing on screen.
+    pub(crate) background: bool,
+    /// On the sign-in screen for an extra server (it can be cancelled).
+    pub adding_server: bool,
+    /// Where in the rail to go back to if adding a server is cancelled.
+    pub(crate) add_return: usize,
     pub reconnecting: bool,
 
     pub login: LoginForm,
@@ -735,7 +751,7 @@ pub struct App {
     pub voice: Option<ActiveVoice>,
     pub voice_joining: Option<ChannelId>,
     /// Voice channel to rejoin after a reconnect.
-    rejoin_voice: Option<ChannelId>,
+    pub(crate) rejoin_voice: Option<ChannelId>,
     pub muted: bool,
     pub deafened: bool,
     pub voice_status: voice::Status,
@@ -833,6 +849,12 @@ impl App {
             voice_sink: Default::default(),
             pending_auth: None,
             reconnect_attempts: 0,
+            parked: Vec::new(),
+            server_uid: crate::servers::next_uid(),
+            call_uid: None,
+            background: false,
+            adding_server: false,
+            add_return: 0,
             reconnecting: false,
             session: None,
             composer: String::new(),
@@ -923,6 +945,7 @@ impl App {
             }
             _ => Task::none(),
         };
+        let others = app.start_parked();
         // Look for updates shortly after starting.
         let check = Task::perform(
             async {
@@ -931,7 +954,7 @@ impl App {
             },
             Message::UpdateFound,
         );
-        (app, Task::batch([task, check]))
+        (app, Task::batch([task, others, check]))
     }
 
     pub fn title(&self) -> String {
@@ -1065,8 +1088,8 @@ impl App {
         Subscription::batch(subs)
     }
 
-    fn connect(&mut self, auth: ClientMsg) -> Task<Message> {
-        self.generation += 1;
+    pub(crate) fn connect(&mut self, auth: ClientMsg) -> Task<Message> {
+        self.generation = crate::servers::next_generation();
         self.conn = None;
         self.pending_auth = Some(auth);
         self.identity_changed = None;
@@ -1208,9 +1231,13 @@ impl App {
 
             Message::Net(generation, event) => {
                 if generation != self.generation {
-                    return Task::none(); // from a connection we've abandoned
+                    // Another server's (or one we've abandoned).
+                    return self.on_parked_net(generation, event);
                 }
                 return self.on_net(event);
+            }
+            Message::Reconnect(generation) if generation != self.generation => {
+                return self.reconnect_parked(generation);
             }
             Message::Reconnect(generation) => {
                 if generation == self.generation
@@ -1498,9 +1525,13 @@ impl App {
                 self.settings.low_memory = v;
                 self.settings.save();
             }
+            Message::SwitchServer(position) => return self.switch_server(position),
+            Message::AddServer => self.add_server(),
+            Message::CancelAddServer => return self.cancel_add_server(),
             Message::Logout => {
                 self.send(ClientMsg::Logout);
                 self.end_session(None);
+                return self.after_sign_out();
             }
 
             Message::JoinVoice(id) => {
@@ -1512,6 +1543,7 @@ impl App {
                 }
                 self.mic_test = None;
                 self.stop_voice();
+                self.claim_call();
                 self.voice_joining = Some(id);
                 self.send(ClientMsg::JoinVoice { channel_id: id, encrypted: true });
             }
@@ -1519,7 +1551,7 @@ impl App {
                 if self.voice.is_some() && self.settings.voice_sounds {
                     self.settings.play(crate::sounds::Sound::Leave);
                 }
-                self.send(ClientMsg::LeaveVoice);
+                self.send_call(ClientMsg::LeaveVoice);
                 self.voice_joining = None;
                 self.rejoin_voice = None;
                 self.stop_voice();
@@ -1985,6 +2017,7 @@ impl App {
         *self.voice_sink.lock().unwrap() = None;
         self.speaking.clear();
         self.voice_status = voice::Status::default();
+        self.call_uid = None;
     }
 
     fn start_engine(
@@ -2031,7 +2064,7 @@ impl App {
         if let Some(v) = &self.voice {
             v.engine.set_muted(self.muted);
             v.engine.set_deafened(self.deafened);
-            self.send(ClientMsg::SetVoiceState { muted: self.muted, deafened: self.deafened });
+            self.send_call(ClientMsg::SetVoiceState { muted: self.muted, deafened: self.deafened });
         }
     }
 
@@ -2051,6 +2084,10 @@ impl App {
         if self.mic_test.take().is_some() {
             return self.restart_mic_test();
         }
+        self.on_call_server(Self::restart_call_audio);
+    }
+
+    fn restart_call_audio(&mut self) {
         if let Some(v) = self.voice.take() {
             let (channel_id, ssrc, token, key, udp_port) = (v.channel_id, v.ssrc, v.token, v.key, v.udp_port);
             let (counters, since) = (v.counters.clone(), v.since);
@@ -2059,7 +2096,7 @@ impl App {
                 Ok(engine) => self.install_engine(channel_id, ssrc, token, key, udp_port, counters, since, engine),
                 Err(e) => {
                     self.notice = Some(format!("Couldn't switch audio device: {e}"));
-                    self.send(ClientMsg::LeaveVoice);
+                    self.send_call(ClientMsg::LeaveVoice);
                     self.stop_voice();
                 }
             }
@@ -2074,10 +2111,11 @@ impl App {
     }
 
     fn on_voice(&mut self, msg: ServerMsg) {
+        let call_here = self.call_here();
         match msg {
             ServerMsg::VoiceReady { channel_id, ssrc, token, udp_port, key } => {
                 // Ignore answers to joins we've since cancelled or replaced.
-                if self.voice_joining != Some(channel_id) {
+                if self.voice_joining != Some(channel_id) || !call_here {
                     return;
                 }
                 self.voice_joining = None;
@@ -2104,7 +2142,7 @@ impl App {
                 let Some(s) = &mut self.session else { return };
                 let me = s.me;
                 // Someone else came into or left the voice channel we're in.
-                if let Some(mine) = self.voice.as_ref().map(|v| v.channel_id)
+                if let Some(mine) = self.voice.as_ref().filter(|_| call_here).map(|v| v.channel_id)
                     && user_id != me
                     && self.settings.voice_sounds
                     && !self.deafened
@@ -2121,7 +2159,9 @@ impl App {
                     Some(st) => s.voice.insert(user_id, st.clone()),
                     None => s.voice.remove(&user_id),
                 };
-                if user_id == me {
+                if !call_here {
+                    // The call is on another server: nothing below is about it.
+                } else if user_id == me {
                     let my_ssrc = self.voice.as_ref().map(|v| v.ssrc);
                     match (state.clone(), my_ssrc) {
                         // Removed by the server (e.g. the channel was deleted).
@@ -2148,7 +2188,8 @@ impl App {
                 let Some(s) = &self.session else { return };
                 if user_id != s.me {
                     let in_dm_call = state.as_ref().map(|st| st.channel_id).filter(|c| s.direct(*c).is_some());
-                    let mine = self.voice.as_ref().map(|v| v.channel_id).or(self.voice_joining);
+                    let mine =
+                        if call_here { self.voice.as_ref().map(|v| v.channel_id).or(self.voice_joining) } else { None };
                     match in_dm_call {
                         Some(c) if mine != Some(c) && self.ringing != Some(c) => {
                             self.ringing = Some(c);
@@ -2174,14 +2215,31 @@ impl App {
 
     /// Drop back to the login screen.
     fn end_session(&mut self, error: Option<String>) {
-        self.stop_voice();
+        if self.background {
+            // Signed out of a server that isn't open: it waits in the rail to sign back in.
+            if self.call_here() {
+                self.stop_voice();
+            }
+            self.generation = crate::servers::next_generation();
+            self.conn = None;
+            self.session = None;
+            self.settings.token = None;
+            self.reconnecting = false;
+            self.login.busy = false;
+            self.login.error = error;
+            return;
+        }
+        self.adding_server = false;
+        if self.call_here() {
+            self.stop_voice();
+        }
         self.pending.clear();
         self.emoji_picker = None;
         self.images = ImageCache::default();
         self.mic_test = None;
         self.voice_joining = None;
         self.rejoin_voice = None;
-        self.generation += 1;
+        self.generation = crate::servers::next_generation();
         self.conn = None;
         self.session = None;
         self.settings.token = None;
@@ -2246,7 +2304,7 @@ impl App {
         Task::batch([Self::snap_to_end(), operation::focus(Id::new(COMPOSER_ID)), self.request_pictures()])
     }
 
-    fn on_net(&mut self, event: net::Event) -> Task<Message> {
+    pub(crate) fn on_net(&mut self, event: net::Event) -> Task<Message> {
         match event {
             net::Event::Connected { conn, url, fingerprint } => {
                 if let Some(auth) = self.pending_auth.take() {
@@ -2267,7 +2325,9 @@ impl App {
             }
             net::Event::IdentityChanged { seen } => {
                 self.conn = None;
-                self.stop_voice();
+                if self.call_here() {
+                    self.stop_voice();
+                }
                 self.session = None;
                 self.reconnecting = false;
                 self.login.busy = false;
@@ -2281,10 +2341,12 @@ impl App {
             }
             net::Event::Disconnected(reason) => {
                 self.conn = None;
-                if let Some(channel) = self.voice.as_ref().map(|v| v.channel_id).or(self.voice_joining.take()) {
-                    self.rejoin_voice = Some(channel);
+                if self.call_here() {
+                    if let Some(channel) = self.voice.as_ref().map(|v| v.channel_id).or(self.voice_joining.take()) {
+                        self.rejoin_voice = Some(channel);
+                    }
+                    self.stop_voice();
                 }
-                self.stop_voice();
                 if self.session.is_some() {
                     // Keep the UI and retry with growing delays (1s, 2s, 4s ... max 30s).
                     self.reconnecting = true;
@@ -2302,6 +2364,9 @@ impl App {
     }
 
     fn on_ready(&mut self, ready: Ready) -> Task<Message> {
+        if !self.background {
+            self.adding_server = false;
+        }
         self.settings.token = Some(ready.token);
         self.settings.save();
         self.login.busy = false;
@@ -2362,11 +2427,21 @@ impl App {
         self.gifs = GifSearch::default();
         if let Some(channel_id) = self.rejoin_voice.take()
             && self.session.as_ref().is_some_and(|s| s.channels.iter().any(|c| c.id == channel_id))
+            && self.voice.is_none()
+            && self.voice_joining.is_none()
         {
+            self.call_uid = Some(self.server_uid);
             self.voice_joining = Some(channel_id);
             self.send(ClientMsg::JoinVoice { channel_id, encrypted: true });
         }
         let avatars = self.request_avatars();
+        if self.background {
+            // Shown when you switch to it.
+            if let Some(s) = &mut self.session {
+                s.current = current;
+            }
+            return avatars;
+        }
         let open = match current {
             Some(id) => self.select_channel(id),
             None => Task::none(),
@@ -2467,9 +2542,10 @@ impl App {
                 }
                 let st = s.chans.entry(channel).or_default();
                 // Sending while looking at older messages takes you back to the newest.
-                let back_to_present = st.detached && Some(m.author_id) == me && s.current == Some(channel);
+                let viewing = !self.background && s.current == Some(channel);
+                let back_to_present = st.detached && Some(m.author_id) == me && viewing;
                 if st.loaded && !st.detached && !st.messages.iter().any(|x| x.id == m.id) {
-                    if s.current == Some(channel) {
+                    if viewing {
                         let now = Instant::now();
                         self.arrived.retain(|_, at| now.duration_since(*at) < Duration::from_secs(1));
                         self.arrived.insert(m.id, now);
@@ -2481,7 +2557,7 @@ impl App {
                 if back_to_present {
                     return Task::batch([attention, self.update_search(Message::JumpToPresent)]);
                 }
-                if self.session.as_ref().is_some_and(|s| s.current == Some(channel)) {
+                if viewing {
                     self.mark_current_read();
                     return Task::batch([attention, self.request_pictures()]);
                 }
@@ -2524,7 +2600,7 @@ impl App {
                 st.loaded = true;
                 st.loading = false;
                 st.reached_start = reached_start;
-                if s.current == Some(channel_id) {
+                if s.current == Some(channel_id) && !self.background {
                     self.mark_current_read();
                     let pictures = self.request_pictures();
                     return if initial { Task::batch([Self::snap_to_end(), pictures]) } else { pictures };
@@ -2536,7 +2612,7 @@ impl App {
                 }
             }
             ServerMsg::UserJoined(u) | ServerMsg::UserUpdated(u) => {
-                let showing = matches!(&self.overlay, Some(Overlay::Profile(id)) if *id == u.id);
+                let showing = !self.background && matches!(&self.overlay, Some(Overlay::Profile(id)) if *id == u.id);
                 s.users.insert(u.id, u.clone());
                 let avatars = self.request_avatars();
                 return if showing { Task::batch([avatars, self.request_profile_extras(&u)]) } else { avatars };
@@ -2565,6 +2641,10 @@ impl App {
                 if s.current == Some(channel_id) {
                     s.current = None;
                     if let Some(first) = s.first_text_channel() {
+                        if self.background {
+                            s.current = Some(first);
+                            return Task::none();
+                        }
                         return self.select_channel(first);
                     }
                 }

@@ -137,6 +137,8 @@ impl App {
                 "Continue",
                 "Already have an account? Log in",
             )
+        } else if self.adding_server {
+            ("Add a server", "Sign in to another Celerity server.", "Log In", "Need an account? Register")
         } else {
             ("Welcome back!", "We're so excited to see you again!", "Log In", "Need an account? Register")
         };
@@ -209,6 +211,22 @@ impl App {
                 .on_press(Message::ToggleRegister)
                 .style(style::link_button(t.accent.0, t.header.0)),
         );
+        // Signed in elsewhere too: a way back.
+        if self.adding_server {
+            form = form.push(
+                button(text("Cancel").size(fs * 0.9))
+                    .padding(0)
+                    .on_press(Message::CancelAddServer)
+                    .style(style::link_button(t.muted.0, t.header.0)),
+            );
+        } else if let Some(other) = self.rail().into_iter().find(|e| !e.open && !e.offline) {
+            form = form.push(
+                button(text(format!("Back to {}", other.name)).size(fs * 0.9))
+                    .padding(0)
+                    .on_press(Message::SwitchServer(other.position))
+                    .style(style::link_button(t.muted.0, t.header.0)),
+            );
+        }
 
         // A glow of the accent colour behind the card.
         let (back, accent) = (style::backdrop(t), t.accent.0);
@@ -218,7 +236,17 @@ impl App {
                 .add_stop(0.55, back)
                 .add_stop(1.0, style::mix(back, t.online.0, 0.12)),
         ));
-        center(container(form).width(460).padding(32).style(style::panel(t, t.sidebar.0, !self.settings.low_memory)))
+        let card = center(container(form).width(460).padding(32).style(style::panel(
+            t,
+            t.sidebar.0,
+            !self.settings.low_memory,
+        )));
+        // Signed in elsewhere too: those servers stay in the rail.
+        let body: Element<'_, Message> =
+            if self.parked.is_empty() { card.into() } else { row![self.server_rail(None), card].into() };
+        container(body)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .style(move |_| container::Style { background: Some(glow), ..Default::default() })
             .into()
     }
@@ -228,7 +256,7 @@ impl App {
     fn main_view<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let (side, chat) = (t.sidebar.0, t.chat.0);
-        let mut layout = row![self.server_rail(s)].spacing(8).height(Length::Fill);
+        let mut layout = row![self.server_rail(Some(s))].spacing(8).height(Length::Fill);
         if s.view == View::Home {
             layout = layout.push(self.float(self.home_sidebar(s), side)).push(self.float(self.chat_area(s), chat));
             if self.search.open {
@@ -241,8 +269,7 @@ impl App {
         layout = layout.push(self.float(self.channel_sidebar(s), side));
         // The call view replaces the chat while open.
         let stage = self
-            .voice
-            .as_ref()
+            .voice_here()
             .map(|v| v.channel_id)
             .filter(|c| self.live.stage && s.channels.iter().any(|x| x.id == *c));
         if let Some(channel) = stage {
@@ -281,7 +308,8 @@ impl App {
         crate::widgets::slide(panel, iced::Vector::new(dx, 0.0)).into()
     }
 
-    fn server_rail<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
+    /// The server rail; on the sign-in screen (`s` is None) just the other servers.
+    fn server_rail<'a>(&'a self, s: Option<&'a Session>) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let header = t.header.0;
@@ -295,6 +323,7 @@ impl App {
         };
         let glow = !self.settings.low_memory;
         let ring = style::lighten(t.accent.0, 0.25);
+        let rail_hover = t.sidebar.0;
         let tile = |content: Element<'a, Message>, color: Color, selected: bool, msg: Message| {
             button(container(content).center(48).style(move |_| container::Style {
                 background: Some(if selected { style::sheen(color) } else { color.into() }),
@@ -320,86 +349,133 @@ impl App {
             .style(|_, _| button::Style::default())
         };
 
-        // Direct messages.
-        let home_selected = s.view == View::Home;
-        let home_color = if home_selected { t.accent.0 } else { t.sidebar.0 };
-        let home_icon =
-            icons::icon(&icons::DIRECT, 26.0, if home_selected { contrast_text(t.accent.0) } else { t.text.0 });
-        let mut home = stack![tile(home_icon, home_color, home_selected, Message::ShowHome)];
-        // Pings first (like Discord), else how many conversations have something new.
-        let unread = match s.direct_mentions() {
-            0 => s.unread_directs() as u32,
-            n => n,
-        };
-        if unread > 0 {
-            let danger = t.danger.0;
-            let badge = container(text(unread.min(99).to_string()).size(fs * 0.7).font(bold()).color(Color::WHITE))
-                .padding([1, 5])
-                .style(move |_| container::Style {
-                    background: Some(danger.into()),
-                    border: Border { radius: 9.0.into(), width: 3.0, color: Color::TRANSPARENT },
-                    ..Default::default()
-                });
-            home = home.push(container(badge).width(48).height(48).align_x(Alignment::End).align_y(Alignment::End));
-        }
-        let home_pill: Element<'a, Message> = if home_selected { pill(40.0).into() } else { space().width(4).into() };
-
-        // The community.
-        let initials: String =
-            s.community.split_whitespace().filter_map(|w| w.chars().next()).take(3).collect::<String>().to_uppercase();
-        let server_selected = s.view == View::Server;
-        let accent = t.accent.0;
-        let server_unread = s.channels.iter().any(|c| c.kind == ChannelKind::Text && s.is_unread(c.id));
-        let label = text(initials).size(fs * 1.1).font(bold()).color(contrast_text(accent));
-        let server_pings = s.server_mentions();
-        let server_pill: Element<'a, Message> = if server_selected {
-            pill(40.0).into()
-        } else if server_unread {
-            pill(8.0).into()
-        } else {
-            space().width(4).into()
-        };
-
         let entry = |p: Element<'a, Message>, content: Element<'a, Message>| {
             row![p, space().width(8), content].align_y(Alignment::Center)
         };
+        let mut list = column![].spacing(10).align_x(Alignment::Center);
+        if let Some(s) = s {
+            // Direct messages.
+            let home_selected = s.view == View::Home;
+            let home_color = if home_selected { t.accent.0 } else { t.sidebar.0 };
+            let home_icon =
+                icons::icon(&icons::DIRECT, 26.0, if home_selected { contrast_text(t.accent.0) } else { t.text.0 });
+            let mut home = stack![tile(home_icon, home_color, home_selected, Message::ShowHome)];
+            // Pings first (like Discord), else how many conversations have something new.
+            let unread = match s.direct_mentions() {
+                0 => s.unread_directs() as u32,
+                n => n,
+            };
+            if unread > 0 {
+                let danger = t.danger.0;
+                let badge = container(text(unread.min(99).to_string()).size(fs * 0.7).font(bold()).color(Color::WHITE))
+                    .padding([1, 5])
+                    .style(move |_| container::Style {
+                        background: Some(danger.into()),
+                        border: Border { radius: 9.0.into(), width: 3.0, color: Color::TRANSPARENT },
+                        ..Default::default()
+                    });
+                home = home.push(container(badge).width(48).height(48).align_x(Alignment::End).align_y(Alignment::End));
+            }
+            let home_pill: Element<'a, Message> =
+                if home_selected { pill(40.0).into() } else { space().width(4).into() };
+            list = list.push(entry(home_pill, home.into())).push(container(divider(t.hover.0)).width(32));
+        }
+
+        // Every server you're signed in to, the open one highlighted.
+        let accent = t.accent.0;
+        let call_session = self.call_session();
+        for server in self.rail().into_iter().filter(|e| !(e.open && self.adding_server)) {
+            let initials: String = server
+                .name
+                .split_whitespace()
+                .filter_map(|w| w.chars().next())
+                .take(3)
+                .collect::<String>()
+                .to_uppercase();
+            let selected = server.open && s.is_some_and(|s| s.view == View::Server);
+            let session = server.session;
+            let unread = session.is_some_and(|x| {
+                x.channels.iter().any(|c| c.kind == ChannelKind::Text && x.is_unread(c.id))
+                    || (!server.open && x.unread_directs() > 0)
+            });
+            // Pings in its channels (and, for servers that aren't open, its DMs).
+            let pings = session.map_or(0, |x| x.server_mentions() + if server.open { 0 } else { x.direct_mentions() });
+            let color = if server.offline {
+                t.hover.0
+            } else if server.open {
+                accent
+            } else {
+                style::mix(t.sidebar.0, accent, 0.35)
+            };
+            let label = text(if initials.is_empty() { "?".to_string() } else { initials })
+                .size(fs * 1.1)
+                .font(bold())
+                .color(contrast_text(color));
+            let press = if server.open { Message::ShowServer } else { Message::SwitchServer(server.position) };
+            let mut tile_stack = stack![tile(label.into(), color, selected, press)];
+            // A speaker while anyone is talking in one of the server's voice channels (green when it's your call).
+            if let Some(x) = session {
+                let voice_active = x.voice.values().any(|v| x.channels.iter().any(|c| c.id == v.channel_id));
+                let your_call = call_session.is_some_and(|c| std::ptr::eq(c, x)) && self.voice.is_some();
+                if voice_active || your_call {
+                    let green = if your_call { t.online.0 } else { style::mix(t.online.0, t.muted.0, 0.5) };
+                    let rail = t.rail.0;
+                    let speaker =
+                        container(icons::icon(&icons::SPEAKER, 11.0, Color::WHITE)).center(20).style(move |_| {
+                            container::Style {
+                                background: Some(green.into()),
+                                border: Border { radius: 10.0.into(), width: 3.0, color: rail },
+                                ..Default::default()
+                            }
+                        });
+                    tile_stack = tile_stack.push(
+                        container(speaker).width(48).height(48).align_x(Alignment::Start).align_y(Alignment::End),
+                    );
+                }
+            }
+            if pings > 0 {
+                tile_stack = tile_stack.push(
+                    container(mention_badge(t, pings, fs))
+                        .width(48)
+                        .height(48)
+                        .align_x(Alignment::End)
+                        .align_y(Alignment::End),
+                );
+            }
+            let side: Element<'a, Message> = if selected {
+                pill(40.0).into()
+            } else if unread {
+                pill(8.0).into()
+            } else {
+                space().width(4).into()
+            };
+            // Two accounts on one server look alike, so say whose each one is.
+            let who = session.and_then(|x| x.me()).map(|u| u.name().to_string()).unwrap_or_default();
+            let tip = match (server.offline, who.is_empty()) {
+                (true, _) => format!("{} (signed out)", server.name),
+                (false, true) => server.name.clone(),
+                (false, false) => format!("{} · {who}", server.name),
+            };
+            list = list.push(entry(side, rail_tip(t, tile_stack.into(), tip, fs)));
+        }
+
+        // Sign in to another server.
+        let online = t.online.0;
+        let add =
+            button(container(icons::icon(&icons::PLUS, 22.0, online)).center(48).style(move |_| container::Style {
+                background: Some(rail_hover.into()),
+                border: Border { radius: 24.0.into(), ..Default::default() },
+                ..Default::default()
+            }))
+            .padding(0)
+            .on_press(Message::AddServer)
+            .style(|_, _| button::Style::default());
+        list = list.push(entry(space().width(4).into(), rail_tip(t, add.into(), "Add a server".to_string(), fs)));
+
+        // Scrolls when there are many servers, without a visible bar.
+        let hidden = iced::widget::scrollable::Scrollbar::new().width(0).scroller_width(0);
         container(
-            column![
-                entry(home_pill, home.into()),
-                container(divider(t.hover.0)).width(32),
-                entry(server_pill, {
-                    let mut t2 = stack![tile(label.into(), accent, server_selected, Message::ShowServer)];
-                    // A speaker while anyone is talking in one of the server's voice channels.
-                    let voice_active = s.voice.values().any(|v| s.channels.iter().any(|c| c.id == v.channel_id));
-                    if voice_active {
-                        let green = t.online.0;
-                        let rail = t.rail.0;
-                        let speaker =
-                            container(icons::icon(&icons::SPEAKER, 11.0, Color::WHITE)).center(20).style(move |_| {
-                                container::Style {
-                                    background: Some(green.into()),
-                                    border: Border { radius: 10.0.into(), width: 3.0, color: rail },
-                                    ..Default::default()
-                                }
-                            });
-                        t2 = t2.push(
-                            container(speaker).width(48).height(48).align_x(Alignment::Start).align_y(Alignment::End),
-                        );
-                    }
-                    if server_pings > 0 {
-                        t2 = t2.push(
-                            container(mention_badge(t, server_pings, fs))
-                                .width(48)
-                                .height(48)
-                                .align_x(Alignment::End)
-                                .align_y(Alignment::End),
-                        );
-                    }
-                    t2.into()
-                }),
-            ]
-            .spacing(10)
-            .align_x(Alignment::Center),
+            scrollable(list).direction(iced::widget::scrollable::Direction::Vertical(hidden)).height(Length::Fill),
         )
         .padding([12, 0])
         .width(72)
@@ -459,7 +535,7 @@ impl App {
 
         list = list.push(self.category(s, "Voice channels", ChannelKind::Voice));
         for ch in s.channels.iter().filter(|c| c.kind == ChannelKind::Voice) {
-            let connected = self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id);
+            let connected = self.voice_here().is_some_and(|v| v.channel_id == ch.id);
             let mut line = row![
                 icons::icon(&icons::SPEAKER, fs * 1.2, t.muted.0),
                 text(ch.name.clone()).size(fs).width(Length::Fill)
@@ -514,7 +590,7 @@ impl App {
     fn voice_member<'a>(&'a self, u: &'a User, v: &VoiceState, me: UserId) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let speaking = self.speaking.contains(&u.id);
+        let speaking = self.is_speaking(&u.id);
         let ring = if speaking { t.online.0 } else { Color::TRANSPARENT };
         let pic = container(self.avatar(u, 22.0)).padding(2).style(move |_| container::Style {
             border: Border { radius: 14.0.into(), width: 2.0, color: ring },
@@ -570,6 +646,9 @@ impl App {
     pub(crate) fn voice_panel<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
+        // The call may be on another server than the one open.
+        let elsewhere = self.call_elsewhere();
+        let s = self.call_session().unwrap_or(s);
         let (channel_id, connected) = match (&self.voice, self.voice_joining) {
             (Some(v), _) => (v.channel_id, true),
             (None, Some(id)) => (id, false),
@@ -581,7 +660,9 @@ impl App {
             s.channels.iter().find(|c| c.id == channel_id).map(|c| c.name.clone()).or(dm_name).unwrap_or_default();
         let channel = channel.as_str();
         let (title, color) = if connected { ("Voice Connected", t.online.0) } else { ("Connecting...", rgb(0xF0B232)) };
-        let route = if !connected {
+        let route = if let Some((_, server)) = &elsewhere {
+            format!("{channel} · {server}")
+        } else if !connected {
             String::new()
         } else if self.voice_status.udp {
             format!("{channel} · direct (UDP)")
@@ -598,7 +679,20 @@ impl App {
             ]
             .spacing(6)
             .align_y(Alignment::Center),
-            text(if route.is_empty() { channel.to_string() } else { route }).size(fs * 0.75).color(t.muted.0),
+            {
+                let place =
+                    text(if route.is_empty() { channel.to_string() } else { route }).size(fs * 0.75).color(t.muted.0);
+                match &elsewhere {
+                    // Click to go back to the server the call is on.
+                    Some((position, _)) => Element::from(
+                        button(place)
+                            .padding(0)
+                            .on_press(Message::SwitchServer(*position))
+                            .style(style::link_button(t.muted.0, t.header.0)),
+                    ),
+                    None => place.into(),
+                }
+            },
         ]
         .spacing(2)
         .width(Length::Fill);
@@ -616,7 +710,7 @@ impl App {
         .spacing(6)
         .align_y(Alignment::Center);
         let mut body = column![content].spacing(8);
-        if connected {
+        if connected && elsewhere.is_none() {
             body = body.push(self.live_buttons());
         }
         // An inset card with a faint green glow while connected.
@@ -780,8 +874,8 @@ impl App {
             )
         };
         if let Some(ch) = channel.as_ref().filter(|_| is_direct) {
-            let in_call =
-                self.voice.as_ref().is_some_and(|v| v.channel_id == ch.id) || self.voice_joining == Some(ch.id);
+            let in_call = self.voice_here().is_some_and(|v| v.channel_id == ch.id)
+                || self.call_here() && self.voice_joining == Some(ch.id);
             if !in_call {
                 header = header.push(tool(&icons::PHONE, false, "Start a call", Message::JoinVoice(ch.id)));
             }
@@ -1398,7 +1492,7 @@ impl App {
             );
         }
         let in_my_call =
-            self.voice.as_ref().is_some_and(|v| s.voice.get(&u.id).is_some_and(|st| st.channel_id == v.channel_id));
+            self.voice_here().is_some_and(|v| s.voice.get(&u.id).is_some_and(|st| st.channel_id == v.channel_id));
         if u.id == s.me || !in_my_call {
             return profile.into();
         }
@@ -2370,5 +2464,18 @@ fn level_meter<'a>(t: &AppTheme, level_db: f32, threshold_db: f32, live: bool) -
         container(marker).padding(Padding { left: (WIDTH * frac(threshold_db) - 1.5).max(0.0), ..Padding::ZERO }),
     ]
     .width(WIDTH)
+    .into()
+}
+
+/// A server's name next to its tile in the rail.
+fn rail_tip<'a>(t: &AppTheme, tile: Element<'a, Message>, name: String, fs: f32) -> Element<'a, Message> {
+    iced::widget::tooltip(
+        tile,
+        container(text(name).size(fs * 0.9).font(semibold()).color(t.header.0))
+            .padding([6, 10])
+            .style(card(t.floating.0, 6.0)),
+        iced::widget::tooltip::Position::Right,
+    )
+    .gap(8)
     .into()
 }

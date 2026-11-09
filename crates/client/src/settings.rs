@@ -12,6 +12,10 @@ pub struct Settings {
     pub username: String,
     /// Session token for automatic login. Cleared on log out.
     pub token: Option<String>,
+    /// More servers you're signed in to (shown in the server rail), in rail order without
+    /// the one above, which sits at `server_position`.
+    pub other_servers: Vec<SavedServer>,
+    pub server_position: usize,
     pub theme: String,
     /// Multiplier applied to the theme's font size.
     pub text_scale: f32,
@@ -121,6 +125,8 @@ impl Default for Settings {
             recent_emoji: Vec::new(),
             favorite_gifs: Vec::new(),
             known_servers: HashMap::new(),
+            other_servers: Vec::new(),
+            server_position: 0,
             ignored: HashMap::new(),
             ping_sound: true,
             video_volume: 0.8,
@@ -133,6 +139,15 @@ impl Default for Settings {
             video_muted: false,
         }
     }
+}
+
+/// A server you're signed in to besides the open one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedServer {
+    pub server: String,
+    pub username: String,
+    pub token: Option<String>,
 }
 
 fn path() -> Option<PathBuf> {

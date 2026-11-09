@@ -193,7 +193,7 @@ impl App {
         if ignored {
             return iced::Task::none();
         }
-        let looking = s.current == Some(m.channel_id) && self.focused;
+        let looking = s.current == Some(m.channel_id) && self.focused && !self.background;
         if looking {
             return iced::Task::none();
         }
