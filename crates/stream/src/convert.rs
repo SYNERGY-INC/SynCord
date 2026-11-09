@@ -250,6 +250,23 @@ impl Converter {
 
     /// Resamples one plane to `dw`x`dh` (tightly packed in `dst`), optionally remapping values.
     fn plane(&mut self, src: Plane<'_>, dst: &mut [u8], dw: usize, dh: usize, lut: Option<&[u8; 256]>) {
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: the CPU supports AVX2 (checked just above).
+            return unsafe { self.plane_avx2(src, dst, dw, dh, lut) };
+        }
+        self.plane_generic(src, dst, dw, dh, lut)
+    }
+
+    /// See `yuv_full_to_rgba_avx2`: the 32-bit multiply-adds of the vertical pass need SSE4.1+.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn plane_avx2(&mut self, src: Plane<'_>, dst: &mut [u8], dw: usize, dh: usize, lut: Option<&[u8; 256]>) {
+        self.plane_generic(src, dst, dw, dh, lut)
+    }
+
+    #[inline(always)]
+    fn plane_generic(&mut self, src: Plane<'_>, dst: &mut [u8], dw: usize, dh: usize, lut: Option<&[u8; 256]>) {
         let (sw, sh) = (src.width, src.height);
         if sw == 0 || sh == 0 || dw == 0 || dh == 0 {
             return;
@@ -259,6 +276,24 @@ impl Converter {
         if same_w && same_h {
             for (y, out) in dst.chunks_exact_mut(dw).enumerate().take(dh) {
                 copy_row(src.row(y), src.step, out);
+                if let Some(lut) = lut {
+                    out.iter_mut().for_each(|v| *v = lut[*v as usize]);
+                }
+            }
+            return;
+        }
+        if sw / 2 == dw && sh / 2 == dh && src.step <= 2 {
+            // Exactly half size (2560x1440 shown at 1280x720, 4K sent at 1080p): a plain 2x2
+            // average, the same result as the general filter but several times faster.
+            for (oy, out) in dst.chunks_exact_mut(dw).enumerate().take(dh) {
+                let (r0, r1) = (src.row(2 * oy), src.row(2 * oy + 1));
+                if r0.len() < (2 * dw - 1) * src.step + 1 || r1.len() < r0.len() {
+                    out.fill(0);
+                } else if src.step == 1 {
+                    half_row::<1>(r0, r1, out);
+                } else {
+                    half_row::<2>(r0, r1, out);
+                }
                 if let Some(lut) = lut {
                     out.iter_mut().for_each(|v| *v = lut[*v as usize]);
                 }
@@ -347,6 +382,28 @@ fn copy_row(row: &[u8], step: usize, out: &mut [u8]) {
     }
 }
 
+/// One output row of a 2x2 box downscale; `S` is the sample step (2 = one plane of NV12's UV).
+/// Rows hold at least `(2 * out.len() - 1) * S + 1` samples.
+#[inline(always)]
+fn half_row<const S: usize>(r0: &[u8], r1: &[u8], out: &mut [u8]) {
+    let avg = |a: u8, b: u8, c: u8, d: u8| ((a as u16 + b as u16 + c as u16 + d as u16 + 2) >> 2) as u8;
+    if S == 1 {
+        let it = r0.as_chunks::<2>().0.iter().zip(r1.as_chunks::<2>().0);
+        for (o, (p, q)) in out.iter_mut().zip(it) {
+            *o = avg(p[0], p[1], q[0], q[1]);
+        }
+    } else {
+        // The last group is one sample short of 4 bytes, so it is done on its own.
+        let n = out.len() - 1;
+        let it = r0.as_chunks::<4>().0.iter().zip(r1.as_chunks::<4>().0);
+        for (o, (p, q)) in out[..n].iter_mut().zip(it) {
+            *o = avg(p[0], p[2], q[0], q[2]);
+        }
+        let i = 4 * n;
+        out[n] = avg(r0[i], r0[i + 2], r1[i], r1[i + 2]);
+    }
+}
+
 #[inline]
 fn hpass<const K: usize>(acc: &[u32], t: &Taps, out: &mut [u8]) {
     for ((o, &s), w) in out.iter_mut().zip(&t.start).zip(t.w.as_chunks::<K>().0.iter()) {
@@ -369,9 +426,21 @@ fn hpass_n(acc: &[u32], t: &Taps, out: &mut [u8]) {
 
 /// RGB(A) -> I420 at the same size (cropping a trailing odd row/column). `out` is already sized.
 fn rgb_to_i420_full(data: &[u8], stride: usize, bgr: bool, out: &mut I420Frame) {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU supports AVX2 (checked just above).
+        return unsafe { rgb_to_i420_full_avx2(data, stride, bgr, out) };
+    }
     if bgr { rgb_full::<true>(data, stride, out) } else { rgb_full::<false>(data, stride, out) }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn rgb_to_i420_full_avx2(data: &[u8], stride: usize, bgr: bool, out: &mut I420Frame) {
+    if bgr { rgb_full::<true>(data, stride, out) } else { rgb_full::<false>(data, stride, out) }
+}
+
+#[inline(always)]
 fn rgb_full<const BGR: bool>(data: &[u8], stride: usize, out: &mut I420Frame) {
     let w = out.width() as usize;
     let (yp, up, vp) = out.planes_mut();
@@ -542,8 +611,12 @@ impl<'a> From<&'a I420Frame> for YuvView<'a> {
 pub(crate) fn to_rgba(pic: &YuvView<'_>, ow: u32, oh: u32, out: &mut Vec<u8>) -> (u32, u32) {
     thread_local!(static SCRATCH: std::cell::RefCell<(Converter, I420Frame)> = Default::default());
     let (ow, oh) = ((ow & !1).max(2), (oh & !1).max(2));
-    out.clear();
-    out.resize(ow as usize * oh as usize * 4, 255);
+    // Every byte is overwritten below; only (re)size, skipping a 15 MB fill at 1440p.
+    let len = ow as usize * oh as usize * 4;
+    if out.len() != len {
+        out.clear();
+        out.resize(len, 255);
+    }
     if ow as usize == pic.width & !1 && oh as usize == pic.height & !1 {
         yuv_full_to_rgba(pic, ow as usize, oh as usize, out);
     } else {
@@ -558,28 +631,80 @@ pub(crate) fn to_rgba(pic: &YuvView<'_>, ow: u32, oh: u32, out: &mut Vec<u8>) ->
 }
 
 fn yuv_full_to_rgba(pic: &YuvView<'_>, w: usize, h: usize, out: &mut [u8]) {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU supports AVX2 (checked just above).
+        return unsafe { yuv_full_to_rgba_avx2(pic, w, h, out) };
+    }
+    yuv_full_to_rgba_generic(pic, w, h, out)
+}
+
+/// The same code compiled for AVX2 (twice the lanes of SSE2), which nearly every x86 CPU of the
+/// last decade has; the baseline build may only assume SSE2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn yuv_full_to_rgba_avx2(pic: &YuvView<'_>, w: usize, h: usize, out: &mut [u8]) {
+    yuv_full_to_rgba_generic(pic, w, h, out)
+}
+
+#[inline(always)]
+fn yuv_full_to_rgba_generic(pic: &YuvView<'_>, w: usize, h: usize, out: &mut [u8]) {
+    // Chroma terms upsampled to full width once per chroma row (shared by two luma rows), then
+    // one straight-line pass per row: both loops are simple enough for LLVM to vectorise.
+    let mut chroma = [Vec::new(), Vec::new(), Vec::new()];
+    for c in &mut chroma {
+        c.resize(w, 0i16);
+    }
+    let [cr, cg, cb] = &mut chroma;
     for (y, row) in out.chunks_exact_mut(w * 4).enumerate().take(h) {
-        let yr = &pic.y[y * pic.stride_y..][..w];
-        let ur = &pic.u[(y / 2) * pic.stride_uv..][..w / 2];
-        let vr = &pic.v[(y / 2) * pic.stride_uv..][..w / 2];
-        for (((px, ys), &u), &v) in
-            row.as_chunks_mut::<8>().0.iter_mut().zip(yr.as_chunks::<2>().0.iter()).zip(ur).zip(vr)
-        {
-            let (u, v) = (u as i32 - 128, v as i32 - 128);
-            let (cr, cg, cb) = (RV * v, GU * u + GV * v, BU * u);
-            for (p, &yv) in px.as_chunks_mut::<4>().0.iter_mut().zip(ys) {
-                let yy = (yv as i32 - 16) * Y_MUL + 2048;
-                p[0] = ((yy + cr) >> 12).clamp(0, 255) as u8;
-                p[1] = ((yy - cg) >> 12).clamp(0, 255) as u8;
-                p[2] = ((yy + cb) >> 12).clamp(0, 255) as u8;
-            }
+        if y % 2 == 0 {
+            let ur = &pic.u[(y / 2) * pic.stride_uv..][..w / 2];
+            let vr = &pic.v[(y / 2) * pic.stride_uv..][..w / 2];
+            chroma_row(ur, vr, cr, cg, cb);
         }
+        let yr = &pic.y[y * pic.stride_y..][..w];
+        rgba_row(yr, cr, cg, cb, row);
     }
 }
 
-// BT.709 limited range, 12-bit fixed point.
-const Y_MUL: i32 = 4769; // 255/219
-const RV: i32 = 7343; // 2(1-Kr) * 255/224
+/// Per-pixel chroma contributions (`>> 6` fixed point) for one row, each chroma sample twice.
+#[inline(always)]
+fn chroma_row(ur: &[u8], vr: &[u8], cr: &mut [i16], cg: &mut [i16], cb: &mut [i16]) {
+    let it = ur
+        .iter()
+        .zip(vr)
+        .zip(cr.as_chunks_mut::<2>().0.iter_mut())
+        .zip(cg.as_chunks_mut::<2>().0.iter_mut())
+        .zip(cb.as_chunks_mut::<2>().0.iter_mut());
+    for ((((&u, &v), r), g), b) in it {
+        let (u, v) = (u as i32 - 128, v as i32 - 128);
+        let (tr, tg, tb) = ((RV * v + 32) >> 6, (GU * u + GV * v + 32) >> 6, (BU * u + 32) >> 6);
+        *r = [tr as i16; 2];
+        *g = [tg as i16; 2];
+        *b = [tb as i16; 2];
+    }
+}
+
+/// One RGBA row from luma and the upsampled chroma terms. All arithmetic stays in 16 bits
+/// (values are scaled by 64 and fit comfortably), which SSE2/NEON do 8 lanes at a time.
+#[inline(always)]
+fn rgba_row(yr: &[u8], cr: &[i16], cg: &[i16], cb: &[i16], out: &mut [u8]) {
+    let it = yr.iter().zip(cr).zip(cg).zip(cb).zip(out.as_chunks_mut::<4>().0.iter_mut());
+    for ((((&y, &r), &g), &b), px) in it {
+        // (y - 16) * 255/219 in 6-bit fixed point (plus the rounding term). Luma outside the
+        // limited range clips anyway, and clamping first keeps the product within i16.
+        let yy = (((y.clamp(16, 235) as i16 - 16) * Y_MUL2) >> 1) + 32;
+        let c = |v: i16| (v.max(0) >> 6).min(255) as u8;
+        let (r, g, b) = (c(yy.saturating_add(r)), c(yy.saturating_sub(g)), c(yy.saturating_add(b)));
+        // Packing through a u32 lets LLVM interleave with shifts instead of byte shuffles.
+        *px = (r as u32 | (g as u32) << 8 | (b as u32) << 16 | 0xff00_0000).to_le_bytes();
+    }
+}
+
+// BT.709 limited range. Luma in 6-bit fixed point (i16 lanes); chroma terms computed in 12-bit
+// and rounded to 6.
+const Y_MUL2: i16 = 149; // 255/219 * 128
+const RV: i32 = 7343; // 2(1-Kr) * 255/224 * 4096
 const GU: i32 = 873;
 const GV: i32 = 2183;
 const BU: i32 = 8652;
@@ -732,6 +857,28 @@ mod bench {
         });
         time("i420 720p -> rgba 640x360", 20, || {
             to_rgba(&YuvView::from(&f), 640, 360, &mut rgba);
+        });
+        let f = I420Frame::new(2560, 1440);
+        time("fill 1440p rgba (memory bandwidth reference)", 20, || {
+            rgba.fill(std::hint::black_box(7));
+        });
+        time("i420 1440p -> rgba 1440p", 20, || {
+            to_rgba(&YuvView::from(&f), 2560, 1440, &mut rgba);
+        });
+        time("i420 1440p -> rgba 1920x1080", 20, || {
+            to_rgba(&YuvView::from(&f), 1920, 1080, &mut rgba);
+        });
+        time("i420 1440p -> rgba 1280x720", 20, || {
+            to_rgba(&YuvView::from(&f), 1280, 720, &mut rgba);
+        });
+        let bgra: Vec<u8> = (0..2560 * 1440 * 4).map(|i| (i * 7 % 251) as u8).collect();
+        time("bgra 1440p -> i420 1440p", 20, || {
+            c.convert(
+                &RawFrame::Bgra { data: &bgra, stride: 2560 * 4, width: 2560, height: 1440 },
+                2560,
+                1440,
+                &mut out,
+            )
         });
     }
 }

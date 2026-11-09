@@ -127,24 +127,32 @@ pub mod packet;
 mod convert;
 mod frame;
 mod h264;
+mod hwenc;
 mod pipeline;
+mod quality;
 mod test_pattern;
 
 #[cfg(feature = "capture")]
+mod audio;
+#[cfg(feature = "capture")]
 mod capture;
 
+#[cfg(feature = "capture")]
+pub use audio::{AudioCapture, AudioSource, AudioSupport, audio_support};
 #[cfg(feature = "capture")]
 pub use capture::{
     CameraConfig, Capture, DeviceInfo, ScreenConfig, ScreenInfo, ScreenKind, list_cameras, list_screens,
 };
 pub use convert::fit_size;
-pub use frame::{ContentKind, Frame, I420Frame};
+pub use frame::{ContentKind, Frame, I420Frame, Output, Pixels};
 pub use h264::{DecodeError, DecodedPicture, Decoder, EncodedFrame, Encoder, EncoderConfig};
+pub use hwenc::recommended_bitrate;
 pub use packet::{
     CompleteFrame, DEFAULT_MAX_PACKET, HEADER_LEN, PacketHeader, PushError, Reassembler, ReassemblerConfig,
     ReassemblerStats, packetize, stream_id_of,
 };
 pub use pipeline::{Receiver, ReceiverConfig, ReceiverStats, Sender, SenderConfig, SenderStats, Source};
+pub use quality::{CameraQuality, ScreenQuality};
 pub use test_pattern::{luma_difference, render_test_pattern};
 
 /// Microseconds on a monotonic clock (since the first call in this process). Capture

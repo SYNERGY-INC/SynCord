@@ -200,15 +200,25 @@ impl Encoder {
         p.iMinQp = if screen { 12 } else { 16 };
         p.iMaxQp = if screen { 40 } else { 42 };
         p.bEnableLongTermReference = false;
-        // One thread per stream keeps CPU use predictable; big screen frames get two.
-        p.iMultipleThreadIdc = if w * h > 1280 * 720 { 2 } else { 1 };
+        // Threads (one slice each) by pixel rate: one up to 720p30, two up to 1080p30, four
+        // beyond (1440p60 is 7x the work of 720p30). Slices cost ~1-2% efficiency each.
+        let rate = w as u64 * h as u64 * self.config.max_fps.max(1.0) as u64;
+        let cores = std::thread::available_parallelism().map_or(2, |n| n.get()) as i32;
+        let threads = match rate {
+            r if r <= 1280 * 720 * 30 => 1,
+            r if r <= 1920 * 1080 * 30 => 2,
+            _ => 4,
+        };
+        p.iMultipleThreadIdc = threads.min(cores).max(1) as u16;
         p.iLoopFilterDisableIdc = 0;
         p.bEnableDenoise = false;
         p.bEnableBackgroundDetection = true;
         p.bEnableAdaptiveQuant = !screen;
         p.bEnableFrameCroppingFlag = true;
         p.bEnableSceneChangeDetect = true;
-        p.iComplexityMode = sys::LOW_COMPLEXITY;
+        // Small, slow streams can afford the better motion search; big or fast ones cannot.
+        p.iComplexityMode =
+            if rate <= 1280 * 720 * 30 && !screen_usage { sys::MEDIUM_COMPLEXITY } else { sys::LOW_COMPLEXITY };
         let l = &mut p.sSpatialLayers[0];
         l.iVideoWidth = w as i32;
         l.iVideoHeight = h as i32;
@@ -348,6 +358,12 @@ impl DecodedPicture<'_> {
 
     /// Copies the picture into an [`I420Frame`] (cropped to even size).
     pub fn to_i420(&self, out: &mut I420Frame) {
+        let mut c = convert::Converter::default();
+        self.scale_to_i420(self.width() & !1, self.height() & !1, &mut c, out);
+    }
+
+    /// The picture as I420 at `w`x`h` (area-averaged when smaller; a plain copy when equal).
+    pub(crate) fn scale_to_i420(&self, w: u32, h: u32, conv: &mut convert::Converter, out: &mut I420Frame) {
         let v = &self.view;
         let raw = convert::RawFrame::I420 {
             y: v.y,
@@ -358,8 +374,7 @@ impl DecodedPicture<'_> {
             width: v.width,
             height: v.height,
         };
-        let mut c = convert::Converter::default();
-        c.convert_to(&raw, v.width as u32 & !1, v.height as u32 & !1, out);
+        conv.convert_to(&raw, w, h, out);
     }
 }
 

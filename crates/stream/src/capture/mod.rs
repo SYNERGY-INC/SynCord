@@ -183,10 +183,12 @@ impl Capture {
         })
     }
 
-    fn spawn(
+    /// Runs a backend on its own thread and waits until it reports readiness. Also used for
+    /// audio capture.
+    pub(crate) fn spawn<S: Send + 'static>(
         name: &str,
-        sink: Sink,
-        run: impl FnOnce(Sink, Ready, &Stop) -> Result<(), String> + Send + 'static,
+        sink: S,
+        run: impl FnOnce(S, Ready, &Stop) -> Result<(), String> + Send + 'static,
     ) -> Result<Capture, String> {
         let stop = Arc::new(Stop(AtomicBool::new(false)));
         let error = Arc::new(Mutex::new(None));
