@@ -1,10 +1,13 @@
-//! Windows: Media Foundation cameras, DXGI desktop duplication screens (GDI fallback).
+//! Windows: Media Foundation cameras, DXGI desktop duplication screens (GDI fallback),
+//! Windows.Graphics.Capture windows.
 
 mod camera;
 mod screen;
+mod window;
 
 pub(crate) use camera::{list_cameras, run_camera};
 pub(crate) use screen::{list_screens, run_screen};
+pub(crate) use window::window_pid;
 
 use windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_NOSOCKET, MFShutdown, MFStartup};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};

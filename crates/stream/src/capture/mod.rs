@@ -23,6 +23,8 @@ use macos as platform;
 mod windows;
 #[cfg(windows)]
 use self::windows as platform;
+#[cfg(windows)]
+pub(crate) use self::windows::window_pid;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod platform {

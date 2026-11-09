@@ -898,6 +898,7 @@ dependencies = [
  "objc2-video-toolbox",
  "openh264-sys2",
  "windows 0.62.2",
+ "windows-core 0.62.2",
  "x11rb",
  "zune-jpeg 0.5.15",
 ]
