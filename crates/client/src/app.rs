@@ -244,6 +244,10 @@ pub enum Message {
     /// The "new messages" bar: jump to the first one, or dismiss it.
     JumpToUnread,
     DismissUnread,
+    /// A message you sent hasn't come back from the server yet / try again / give up on it.
+    SendTimedOut(MessageId),
+    RetrySend(MessageId),
+    DiscardSend(MessageId),
     ToggleDesktopNotifications(bool),
     ToggleNotifyAll(bool),
     /// Sign in to one more server (the + in the rail).
@@ -514,6 +518,8 @@ pub struct ChannelState {
     pub reached_start: bool,
     /// Showing older messages (after jumping to a search result), so new ones aren't added.
     pub detached: bool,
+    /// Kept from before a reconnect: shown as is, and replaced when fetched again.
+    pub stale: bool,
 }
 
 pub struct Session {
@@ -750,6 +756,9 @@ pub struct App {
     pub new_since: Option<(ChannelId, MessageId)>,
     /// The "new messages" bar over the open channel (until jumped to or dismissed).
     pub unread_bar: bool,
+    /// Messages shown as soon as you send them, until the server's copy arrives (local,
+    /// negative ids): when they were sent, and whether sending failed.
+    pub outbox: HashMap<MessageId, (Instant, bool)>,
     /// The taskbar icon was flashed and hasn't been cleared yet.
     pub(crate) wants_attention: bool,
     /// Message the next one you send replies to.
@@ -885,6 +894,7 @@ impl App {
             wants_attention: false,
             new_since: None,
             unread_bar: false,
+            outbox: HashMap::new(),
             voice_drag: None,
             voice_hover: None,
             overlay: None,
@@ -1321,13 +1331,19 @@ impl App {
                         return Task::none();
                     }
                     let reply_to = self.replying.take();
+                    // Shown straight away (plain text only; files show once they've arrived).
+                    let local = if attachments.is_empty() {
+                        self.show_outgoing(channel_id, &content, reply_to)
+                    } else {
+                        Task::none()
+                    };
                     self.send(ClientMsg::SendMessage { channel_id, content, attachments, reply_to });
                     self.set_composer(String::new());
                     self.composer_mentions.clear();
                     self.pending.clear();
                     self.emoji_picker = None;
                     self.last_typing_sent = None;
-                    return Self::snap_to_end();
+                    return Task::batch([local, Self::snap_to_end()]);
                 }
             }
             Message::LoadOlder => {
@@ -1573,6 +1589,13 @@ impl App {
                 }
             }
             Message::DismissUnread => self.unread_bar = false,
+            Message::SendTimedOut(id) => {
+                if let Some((_, failed)) = self.outbox.get_mut(&id) {
+                    *failed = true;
+                }
+            }
+            Message::RetrySend(id) => return self.retry_send(id),
+            Message::DiscardSend(id) => self.discard_outgoing(id),
             Message::ToggleDesktopNotifications(on) => {
                 self.settings.desktop_notifications = on;
                 self.settings.save();
@@ -2351,7 +2374,7 @@ impl App {
         }
         self.pending_channel = Some(id);
         let st = s.chans.entry(id).or_default();
-        if !st.loaded && !st.loading {
+        if (!st.loaded || st.stale) && !st.loading {
             st.loading = true;
             if let Some(conn) = &self.conn {
                 conn.send(ClientMsg::FetchHistory { channel_id: id, before: None });
@@ -2407,7 +2430,11 @@ impl App {
                 if self.session.is_some() {
                     // Keep the UI and retry with growing delays (1s, 2s, 4s ... max 30s).
                     self.reconnecting = true;
-                    let delay = Duration::from_secs((1u64 << self.reconnect_attempts.min(5)).min(30));
+                    // Straight away the first time (most drops are a blip), then 1s, 2s, 4s ... 30s.
+                    let delay = match self.reconnect_attempts {
+                        0 => Duration::from_millis(250),
+                        n => Duration::from_secs((1u64 << (n - 1).min(5)).min(30)),
+                    };
                     self.reconnect_attempts += 1;
                     let generation = self.generation;
                     return Task::perform(tokio::time::sleep(delay), move |_| Message::Reconnect(generation));
@@ -2418,6 +2445,34 @@ impl App {
             net::Event::Received(msg) => return self.on_server(*msg),
         }
         Task::none()
+    }
+
+    /// Fetch the channels you're likely to open next (unread ones first, then the rest, and
+    /// recent conversations), so switching to them shows messages at once.
+    fn preload_channels(&mut self, except: Option<ChannelId>) {
+        const CHANNELS: usize = 12;
+        const DIRECTS: usize = 5;
+        let Some(s) = &mut self.session else { return };
+        let mut text: Vec<ChannelId> =
+            s.channels.iter().filter(|c| c.kind == ChannelKind::Text).map(|c| c.id).collect();
+        text.sort_by_key(|id| !s.is_unread(*id));
+        let wanted: Vec<ChannelId> = text
+            .into_iter()
+            .take(CHANNELS)
+            .chain(s.directs.iter().take(DIRECTS).map(|d| d.id))
+            .filter(|id| Some(*id) != except)
+            .collect();
+        let mut fetch = Vec::new();
+        for id in wanted {
+            let st = s.chans.entry(id).or_default();
+            if (!st.loaded || st.stale) && !st.loading {
+                st.loading = true;
+                fetch.push(id);
+            }
+        }
+        for channel_id in fetch {
+            self.send(ClientMsg::FetchHistory { channel_id, before: None });
+        }
     }
 
     fn on_ready(&mut self, ready: Ready) -> Task<Message> {
@@ -2433,8 +2488,24 @@ impl App {
         self.reconnecting = false;
         self.reconnect_attempts = 0;
 
-        // On a reconnect, stay in the same channel but refetch everything.
+        // On a reconnect, stay in the same channel and keep showing what was there, but
+        // refetch it (messages may have come and gone meanwhile).
         let previous = self.session.as_ref().and_then(|s| s.current);
+        let kept_chans: HashMap<ChannelId, ChannelState> = match self.session.take() {
+            Some(old) if old.me == ready.me => old
+                .chans
+                .into_iter()
+                .filter(|(_, st)| st.loaded)
+                .map(|(id, mut st)| {
+                    st.stale = true;
+                    st.loading = false;
+                    st.detached = false;
+                    st.messages.retain(|m| m.id > 0);
+                    (id, st)
+                })
+                .collect(),
+            _ => HashMap::new(),
+        };
         let current = previous
             .filter(|id| ready.channels.iter().any(|c| c.id == *id) || ready.directs.iter().any(|d| d.id == *id))
             .or_else(|| ready.channels.iter().find(|c| c.kind == ChannelKind::Text).map(|c| c.id));
@@ -2458,7 +2529,7 @@ impl App {
             channels: ready.channels,
             // Keeping the previous channel means select_channel won't wipe a half-typed message.
             current: previous,
-            chans: HashMap::new(),
+            chans: kept_chans,
             typing: HashMap::new(),
             voice: ready.voice.into_iter().map(|v| (v.user_id, v)).collect(),
             view: View::Server,
@@ -2492,6 +2563,7 @@ impl App {
             self.send(ClientMsg::JoinVoice { channel_id, encrypted: true });
         }
         let avatars = self.request_avatars();
+        self.preload_channels(current);
         if self.background {
             // Shown when you switch to it.
             if let Some(s) = &mut self.session {
@@ -2600,11 +2672,20 @@ impl App {
                     s.directs.insert(0, d);
                 }
                 let st = s.chans.entry(channel).or_default();
+                // Your own message coming back replaces the copy shown when you sent it.
+                let mut echo = false;
+                if Some(m.author_id) == me
+                    && let Some(i) = st.messages.iter().position(|x| x.id < 0 && x.content.trim() == m.content.trim())
+                {
+                    self.outbox.remove(&st.messages[i].id);
+                    st.messages.remove(i);
+                    echo = true;
+                }
                 // Sending while looking at older messages takes you back to the newest.
                 let viewing = !self.background && s.current == Some(channel);
                 let back_to_present = st.detached && Some(m.author_id) == me && viewing;
                 if st.loaded && !st.detached && !st.messages.iter().any(|x| x.id == m.id) {
-                    if viewing {
+                    if viewing && !echo {
                         let now = Instant::now();
                         self.arrived.retain(|_, at| now.duration_since(*at) < Duration::from_secs(1));
                         self.arrived.insert(m.id, now);
@@ -2648,9 +2729,22 @@ impl App {
             }
             ServerMsg::History { channel_id, messages, reached_start } => {
                 let st = s.chans.entry(channel_id).or_default();
-                let initial = !st.loaded;
+                let initial = !st.loaded || st.stale;
                 if initial {
+                    // Keep messages you're still sending (they're not in the history yet).
+                    let sending: Vec<ChatMessage> = st.messages.drain(..).filter(|m| m.id < 0).collect();
+                    let was_shown = st.loaded;
                     st.messages = messages;
+                    st.messages.extend(sending);
+                    st.stale = false;
+                    if was_shown && s.current == Some(channel_id) && !self.background {
+                        // Refreshed after a reconnect: no jump, it was already on screen.
+                        st.loaded = true;
+                        st.loading = false;
+                        st.reached_start = reached_start;
+                        self.mark_current_read();
+                        return self.request_pictures();
+                    }
                 } else {
                     let mut older = messages;
                     older.append(&mut st.messages);

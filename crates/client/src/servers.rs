@@ -340,6 +340,11 @@ impl App {
         Task::none()
     }
 
+    /// Only say the connection was lost once the quick first retry didn't bring it back.
+    pub fn visibly_reconnecting(&self) -> bool {
+        self.reconnecting && self.reconnect_attempts > 1
+    }
+
     // ---- Calls on another server
 
     /// The call (or the one being joined) is on the open server, or there's none.

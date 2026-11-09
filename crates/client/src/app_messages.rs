@@ -43,6 +43,7 @@ impl App {
 
     pub(crate) fn update_messages(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::OpenMessageMenu(id) if id < 0 => {} // still sending
             Message::OpenMessageMenu(id) => {
                 if self.editing.as_ref().is_some_and(|(e, _)| *e == id) {
                     return Task::none();
@@ -270,5 +271,89 @@ impl App {
             None => line = line.push(text("Original message was deleted").size(fs).color(t.muted.0)),
         }
         container(line).padding(iced::Padding { left: 56.0, bottom: 2.0, ..iced::Padding::ZERO }).into()
+    }
+}
+
+// ---- Sending feels instant
+
+static NEXT_LOCAL_ID: AtomicU64 = AtomicU64::new(1);
+
+impl App {
+    /// Show a message you just sent right away (until the server's copy replaces it).
+    pub(crate) fn show_outgoing(
+        &mut self,
+        channel_id: celerity_proto::ChannelId,
+        content: &str,
+        reply_to: Option<MessageId>,
+    ) -> Task<Message> {
+        let Some(s) = &mut self.session else { return Task::none() };
+        let id = -(NEXT_LOCAL_ID.fetch_add(1, Ordering::Relaxed) as i64);
+        let reply = reply_to.and_then(|r| {
+            let st = s.chans.get(&channel_id)?;
+            let target = st.messages.iter().find(|m| m.id == r)?;
+            Some(celerity_proto::ReplyRef {
+                message_id: r,
+                author_id: Some(target.author_id),
+                snippet: target.content.chars().take(celerity_proto::REPLY_SNIPPET_LEN).collect(),
+            })
+        });
+        let mentions = celerity_proto::parse_mentions(content).0;
+        let message = ChatMessage {
+            id,
+            channel_id,
+            author_id: s.me,
+            content: content.to_string(),
+            created_at: crate::app::now_ms() + s.clock_offset_ms,
+            edited_at: None,
+            attachments: Vec::new(),
+            reactions: Vec::new(),
+            embeds: Vec::new(),
+            mentions,
+            reply,
+            pinned: false,
+            kind: Default::default(),
+        };
+        let st = s.chans.entry(channel_id).or_default();
+        if !st.loaded || st.detached {
+            return Task::none();
+        }
+        st.messages.push(message);
+        self.outbox.insert(id, (std::time::Instant::now(), false));
+        // Redraw once it's been a moment (to say "Sending..."), and give up after a while.
+        let slow = Task::perform(tokio::time::sleep(std::time::Duration::from_millis(900)), |_| Message::Tick);
+        let failed =
+            Task::perform(tokio::time::sleep(std::time::Duration::from_secs(15)), move |_| Message::SendTimedOut(id));
+        Task::batch([slow, failed])
+    }
+
+    pub(crate) fn discard_outgoing(&mut self, id: MessageId) {
+        self.outbox.remove(&id);
+        if let Some(s) = &mut self.session {
+            for st in s.chans.values_mut() {
+                st.messages.retain(|m| m.id != id);
+            }
+        }
+    }
+
+    /// Send a message that didn't go through again.
+    pub(crate) fn retry_send(&mut self, id: MessageId) -> Task<Message> {
+        let Some(m) = self
+            .session
+            .as_ref()
+            .and_then(|s| s.chans.values().flat_map(|st| st.messages.iter()).find(|m| m.id == id))
+            .cloned()
+        else {
+            return Task::none();
+        };
+        self.discard_outgoing(id);
+        let reply_to = m.reply.as_ref().map(|r| r.message_id);
+        let local = self.show_outgoing(m.channel_id, &m.content, reply_to);
+        self.send(celerity_proto::ClientMsg::SendMessage {
+            channel_id: m.channel_id,
+            content: m.content,
+            attachments: Vec::new(),
+            reply_to,
+        });
+        local
     }
 }

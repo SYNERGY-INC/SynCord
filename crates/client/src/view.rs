@@ -739,7 +739,7 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let Some(me) = s.me() else { return space().into() };
-        let status = if self.reconnecting {
+        let status = if self.visibly_reconnecting() {
             "Reconnecting...".to_string()
         } else if let Some(a) =
             self.effective_activity().filter(|_| self.effective_status() != celerity_proto::Status::Invisible)
@@ -761,7 +761,7 @@ impl App {
         // Click your name or avatar to set your status, like Discord.
         let who = button(
             row![
-                self.avatar_status(me, 32.0, !self.reconnecting, t.user_panel.0),
+                self.avatar_status(me, 32.0, !self.visibly_reconnecting(), t.user_panel.0),
                 column![
                     text(truncate(me.name(), 9)).size(fs * 0.9).font(semibold()).color(t.header.0),
                     text(status).size(fs * 0.75).color(t.muted.0),
@@ -921,7 +921,7 @@ impl App {
             col = col.push(bar);
         }
 
-        if self.reconnecting {
+        if self.visibly_reconnecting() {
             col = col.push(
                 container(text("Connection lost. Reconnecting...").size(fs * 0.85).color(Color::WHITE))
                     .padding([6, 16])
@@ -1098,6 +1098,35 @@ impl App {
             .into()
     }
 
+    /// Under a message you sent that the server hasn't confirmed: nothing for the first
+    /// moment (it usually arrives at once), then "Sending...", or what to do if it failed.
+    fn outgoing_status(&self, id: celerity_proto::MessageId) -> Option<Element<'_, Message>> {
+        let (sent, failed) = self.outbox.get(&id)?;
+        let t = &self.theme;
+        let fs = self.fs();
+        if !failed {
+            if sent.elapsed() < std::time::Duration::from_millis(800) {
+                return None;
+            }
+            return Some(text("Sending...").size(fs * 0.75).color(t.muted.0).into());
+        }
+        Some(
+            row![
+                text("Couldn't send this message.").size(fs * 0.8).color(t.danger.0),
+                button(text("Retry").size(fs * 0.8))
+                    .padding(0)
+                    .on_press(Message::RetrySend(id))
+                    .style(style::link_button(t.accent.0, t.header.0)),
+                button(text("Delete").size(fs * 0.8))
+                    .padding(0)
+                    .on_press(Message::DiscardSend(id))
+                    .style(style::link_button(t.muted.0, t.header.0)),
+            ]
+            .spacing(10)
+            .into(),
+        )
+    }
+
     fn message_row<'a>(&'a self, s: &'a Session, m: &'a ChatMessage, grouped: bool) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
@@ -1118,7 +1147,8 @@ impl App {
             (None, Some(u)) => rgb(u.profile.accent_color),
             (None, None) => t.header.0,
         };
-        let hovered = self.hovered == Some(m.id);
+        // Messages still on their way (negative, local ids) have no toolbar or menu.
+        let hovered = self.hovered == Some(m.id) && m.id > 0;
         let editing = self.editing.as_ref().filter(|(id, _)| *id == m.id);
 
         let jumbo = crate::emoji::is_jumbo(&m.content);
@@ -1163,6 +1193,9 @@ impl App {
                 }
                 if let Some(reactions) = self.reactions_view(s, m) {
                     col = col.push(reactions);
+                }
+                if let Some(status) = self.outgoing_status(m.id) {
+                    col = col.push(status);
                 }
                 col.into()
             }
