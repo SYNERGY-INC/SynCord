@@ -78,9 +78,11 @@ class Player extends AudioWorkletProcessor {
     super();
     this.step = o.processorOptions.step; // 48 kHz samples per output sample
     this.q = new Map(); // ssrc -> {frames: Float32Array[], off, primed}
+    this.gains = new Map(); // ssrc -> volume (1 = normal)
     this.port.onmessage = (e) => {
-      const { ssrc, pcm, clear } = e.data;
+      const { ssrc, pcm, clear, gains } = e.data;
       if (clear) { this.q.clear(); return; }
+      if (gains) { this.gains = new Map(gains); return; }
       let s = this.q.get(ssrc);
       if (!s) this.q.set(ssrc, (s = { frames: [], off: 0, primed: false }));
       s.frames.push(pcm);
@@ -92,19 +94,19 @@ class Player extends AudioWorkletProcessor {
     out.fill(0);
     for (const [ssrc, s] of this.q) {
       if (!s.primed) { if (s.frames.length >= 3) s.primed = true; else continue; } // ~60 ms cushion
+      const g = this.gains.has(ssrc) ? this.gains.get(ssrc) : 1;
       for (let i = 0; i < out.length; i++) {
         let f = s.frames[0];
         if (!f) { s.primed = false; break; }
         const k = s.off | 0;
         const a = f[k], b = k + 1 < f.length ? f[k + 1] : (s.frames[1] ? s.frames[1][0] : a);
-        out[i] += a + (b - a) * (s.off - k);
+        out[i] += (a + (b - a) * (s.off - k)) * g;
         s.off += this.step;
         if (s.off >= f.length) { s.off -= f.length; s.frames.shift(); }
       }
       if (!s.frames.length && !s.primed) this.q.delete(ssrc);
     }
     for (let c = 1; c < outputs[0].length; c++) outputs[0][c].set(out);
-    for (let i = 0; i < out.length; i++) out[i] = Math.max(-1, Math.min(1, out[i]));
     return true;
   }
 }
@@ -116,6 +118,78 @@ registerProcessor("celerity-player", Player);
 const SPEECH_RMS = 0.012;
 /** ...and audio keeps flowing this many frames after speech stops (300 ms). */
 const HANGOVER = 15;
+
+/** Call audio settings, kept on this device. */
+export interface AudioPrefs {
+  /** Overall call volume, 1 = 100%. Phones play calls quietly, so it starts louder. */
+  volume: number;
+  /** Speaker / headphones to play the call on ("" = the default). */
+  output: string;
+  /** Microphone ("" = the default). */
+  input: string;
+  /** Play straight through Web Audio instead of a media player (fallback if there's no sound). */
+  direct: boolean;
+  /** Volume per person (user id -> 1 = 100%). */
+  people: Record<string, number>;
+}
+const AUDIO_KEY = "celerity.audio";
+export const audioPrefs: AudioPrefs = (() => {
+  const defaults: AudioPrefs = { volume: typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches ? 2 : 1, output: "", input: "", direct: false, people: {} };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(AUDIO_KEY) ?? "{}") };
+  } catch {
+    return defaults;
+  }
+})();
+export function saveAudioPrefs(): void {
+  try {
+    localStorage.setItem(AUDIO_KEY, JSON.stringify(audioPrefs));
+  } catch {
+    /* private mode */
+  }
+}
+
+/** Speakers and microphones the browser will tell us about (names need microphone permission). */
+export async function audioDevices(): Promise<{ outputs: MediaDeviceInfo[]; inputs: MediaDeviceInfo[] }> {
+  const all = (await navigator.mediaDevices?.enumerateDevices?.().catch(() => [])) ?? [];
+  const real = (d: MediaDeviceInfo) => d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications";
+  return {
+    outputs: all.filter((d) => d.kind === "audiooutput" && real(d)),
+    inputs: all.filter((d) => d.kind === "audioinput" && real(d)),
+  };
+}
+
+/** Whether this browser can pick where sound plays (not iPhones; there the phone decides). */
+export function canPickOutput(): boolean {
+  return typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
+}
+
+function micConstraints(): MediaStreamConstraints {
+  return {
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1,
+      ...(audioPrefs.input ? { deviceId: { exact: audioPrefs.input } } : {}),
+    },
+  };
+}
+
+interface Output {
+  volume: GainNode;
+  limiter: DynamicsCompressorNode;
+  speaker: HTMLAudioElement | null;
+}
+
+async function sink(el: HTMLAudioElement, id: string): Promise<boolean> {
+  try {
+    await (el as HTMLAudioElement & { setSinkId(id: string): Promise<void> }).setSinkId(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface VoiceEvents {
   send(packet: Uint8Array): void;
@@ -131,6 +205,8 @@ export class VoiceSession {
   private capture: AudioWorkletNode | null = null;
   private player: AudioWorkletNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  /** Call volume, a limiter so turning it up doesn't crackle, and the media player it plays through. */
+  private out: Output;
   private encoder: Encoder | null = null;
   private decoders = new Map<number, Decoder>();
   private token = new Uint8Array(16);
@@ -147,9 +223,10 @@ export class VoiceSession {
   /** For troubleshooting: frames sent and decoded, and the loudness of the last one heard. */
   stats = { sent: 0, decoded: 0, level: 0, peak: 0 };
 
-  private constructor(ctx: AudioContext, stream: MediaStream, private events: VoiceEvents) {
+  private constructor(ctx: AudioContext, stream: MediaStream, private events: VoiceEvents, out: Output) {
     this.ctx = ctx;
     this.stream = stream;
+    this.out = out;
   }
 
   /** Ask for the microphone (call from a tap). Throws with a readable message if refused. */
@@ -166,16 +243,56 @@ export class VoiceSession {
       ctx = new AudioContext({ latencyHint: "interactive" });
     }
     void ctx.resume();
+    // Set up the speaker now, while we're still inside the tap (phones only start playback then).
+    const volume = ctx.createGain();
+    volume.gain.value = audioPrefs.volume;
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -6;
+    limiter.knee.value = 3;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.1;
+    volume.connect(limiter);
+    const out: Output = { volume, limiter, speaker: null };
+    if (!audioPrefs.direct) {
+      // Phones play Web Audio quietly (often on the earpiece) while the microphone is on;
+      // a media player goes to the loudspeaker at normal volume, and can pick an output.
+      const dest = ctx.createMediaStreamDestination();
+      limiter.connect(dest);
+      const speaker = new Audio();
+      out.speaker = speaker;
+      speaker.autoplay = true;
+      speaker.srcObject = dest.stream;
+      speaker.play().catch(() => {
+        // Not allowed to play: fall back to Web Audio.
+        limiter.disconnect();
+        limiter.connect(ctx.destination);
+        out.speaker = null;
+      });
+      if (audioPrefs.output && canPickOutput()) void sink(speaker, audioPrefs.output);
+    } else {
+      limiter.connect(ctx.destination);
+    }
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-      });
+      stream = await navigator.mediaDevices.getUserMedia(micConstraints());
     } catch (e) {
-      void ctx.close();
-      throw new Error(`Microphone not available: ${(e as Error).message || e}`);
+      if (audioPrefs.input) {
+        // The chosen microphone is gone: use the default one.
+        audioPrefs.input = "";
+        saveAudioPrefs();
+        stream = await navigator.mediaDevices.getUserMedia(micConstraints()).catch((e2) => {
+          void ctx.close();
+          out.speaker?.pause();
+          throw new Error(`Microphone not available: ${(e2 as Error).message || e2}`);
+        });
+      } else {
+        void ctx.close();
+        out.speaker?.pause();
+        throw new Error(`Microphone not available: ${(e as Error).message || e}`);
+      }
     }
-    return new VoiceSession(ctx, stream, events);
+    return new VoiceSession(ctx, stream, events, out);
   }
 
   /** The server said where to send audio: start. */
@@ -205,7 +322,7 @@ export class VoiceSession {
       outputChannelCount: [2],
       processorOptions: { step: SAMPLE_RATE / rate },
     });
-    this.player.connect(this.ctx.destination);
+    this.player.connect(this.out.volume);
     this.source = this.ctx.createMediaStreamSource(this.stream);
     this.source.connect(this.capture);
     this.encoder = this.codec.encoder((opus) => this.sendOpus(opus));
@@ -282,7 +399,41 @@ export class VoiceSession {
     this.decoders.delete(ssrc);
   }
 
+  /** Overall call volume (1 = 100%). */
+  setVolume(v: number): void {
+    this.out.volume.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
+  }
+
+  /** Volume for each person in the call, by ssrc (1 = 100%). */
+  setPeopleVolumes(gains: Map<number, number>): void {
+    this.player?.port.postMessage({ gains: [...gains] });
+  }
+
+  /** Play the call on another speaker or headphones. */
+  async setOutput(id: string): Promise<boolean> {
+    return this.out.speaker ? sink(this.out.speaker, id) : false;
+  }
+
+  /** Switch microphone during the call. */
+  async setInput(): Promise<void> {
+    const stream = await navigator.mediaDevices.getUserMedia(micConstraints());
+    for (const t of this.stream.getTracks()) t.stop();
+    this.stream = stream;
+    for (const t of stream.getAudioTracks()) t.enabled = !this.muted && !this.deafened;
+    this.source?.disconnect();
+    this.source = this.ctx.createMediaStreamSource(stream);
+    if (this.capture) this.source.connect(this.capture);
+  }
+
+  /** Phones pause audio in the background; start it again when the app comes back. */
+  wake(): void {
+    if (this.ctx.state !== "running") void this.ctx.resume();
+    if (this.out.speaker?.paused) void this.out.speaker.play().catch(() => {});
+  }
+
   stop(): void {
+    this.out.speaker?.pause();
+    if (this.out.speaker) this.out.speaker.srcObject = null;
     for (const t of this.stream.getTracks()) t.stop();
     this.encoder?.close();
     for (const d of this.decoders.values()) d.close();

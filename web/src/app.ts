@@ -11,7 +11,7 @@ import { Store } from "./store";
 import type { Change } from "./store";
 import { avatar, messageRow, messageText, newLine } from "./ui_messages";
 import type { MessageActions } from "./ui_messages";
-import { VoiceSession } from "./voice";
+import { VoiceSession, audioDevices, audioPrefs, canPickOutput, saveAudioPrefs } from "./voice";
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 const MORE_EMOJI =
@@ -88,6 +88,7 @@ export class App implements MessageActions {
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && this.signedIn) {
         this.conn.nudge();
+        this.voice?.wake();
         this.markRead();
       }
     });
@@ -140,6 +141,7 @@ export class App implements MessageActions {
         break;
     }
     const change = this.store.apply(msg);
+    if (msg.op === "VoiceStateUpdate") this.applyPeopleVolumes();
     if (msg.op === "Ready") this.afterReady();
     if (change) this.store.emit(change);
   }
@@ -556,6 +558,7 @@ export class App implements MessageActions {
         h("div", { class: "grow" }, h("div", { class: "ok" }, this.voiceChannel != null ? "Voice connected" : "Connecting..."), h("div", { class: "muted small ellipsis" }, `${name} · `, h("span", { dataset: { since: "" } }, since))),
         mine ? btn(mine.muted || mine.deafened ? ICONS.micOff : ICONS.mic, mine.muted || mine.deafened, "Mute", () => this.setVoice(!mine.muted, mine.deafened)) : null,
         mine ? btn(mine.deafened ? ICONS.headphonesOff : ICONS.headphones, mine.deafened, "Deafen", () => this.setVoice(mine.muted, !mine.deafened)) : null,
+        btn(ICONS.sliders, false, "Volume and speaker", () => void this.showAudioSettings()),
         btn(ICONS.hangup, false, "Leave voice", () => this.leaveVoice(), true),
       ),
     );
@@ -800,6 +803,13 @@ export class App implements MessageActions {
         h("h2", null, s.name(id)),
         h("div", { class: "muted" }, `@${u.username}${u.profile.pronouns ? ` · ${u.profile.pronouns}` : ""}`),
         u.profile.status_text ? h("p", null, u.profile.status_text) : null,
+        id !== s.me && this.voice && s.voice.get(id)?.channel_id === this.voiceChannel
+          ? h("div", { class: "person-volume" }, h("span", { class: "muted small" }, "Volume in this call"), this.slider(audioPrefs.people[id] ?? 1, (v) => {
+              audioPrefs.people[id] = v;
+              saveAudioPrefs();
+              this.applyPeopleVolumes();
+            }))
+          : null,
         u.profile.bio ? messageText(s, u.profile.bio, this) : null,
         roles.length ? h("div", { class: "role-list" }, roles.map((r) => h("span", { class: "role", style: { borderColor: r!.color != null ? `#${r!.color.toString(16).padStart(6, "0")}` : "" } }, r!.name))) : null,
         id !== s.me ? h("button", { class: "primary", onclick: () => (this.closeSheet(), this.messageUser(id)) }, "Send message") : null,
@@ -890,6 +900,7 @@ export class App implements MessageActions {
     this.voiceChannel = d.channel_id;
     this.joining = null;
     this.voiceSince = Date.now();
+    this.applyPeopleVolumes();
     if (notify.prefs.voiceSounds) notify.play("join");
     this.drawSidebar();
   }
@@ -973,6 +984,8 @@ export class App implements MessageActions {
       permRow,
       toggle("Notify me about direct messages and mentions", "notify"),
       toggle("...and every message in server channels", "notifyAll"),
+      h("div", { class: "section" }, "Voice"),
+      h("button", { class: "sheet-item", onclick: () => void this.showAudioSettings() }, icon(ICONS.sliders, 18), "Call volume, speaker and microphone"),
       h("div", { class: "section" }, "Sounds"),
       toggle("Sound when someone mentions me", "pingSound"),
       toggle("Sound for new direct messages", "dmSound"),
@@ -982,6 +995,86 @@ export class App implements MessageActions {
       install,
       h("p", { class: "muted small" }, `Server ${this.store.ready?.server_version || "?"} · ${location.host}${this.voice ? ` · voice codec: ${this.voice.codecName}` : ""}`),
       h("button", { class: "sheet-item danger", onclick: () => this.logout() }, "Log out"),
+    );
+  }
+
+  /** A 0 to 300% volume slider. */
+  private slider(value: number, onChange: (v: number) => void): HTMLElement {
+    const label = h("span", { class: "slider-value" }, `${Math.round(value * 100)}%`);
+    const input = h("input", { type: "range", min: 0, max: 300, step: 5, value: String(Math.round(value * 100)) }) as HTMLInputElement;
+    input.oninput = () => {
+      label.textContent = `${input.value}%`;
+      onChange(Number(input.value) / 100);
+    };
+    return h("div", { class: "slider" }, input, label);
+  }
+
+  /** Each person's volume, applied to the call. */
+  private applyPeopleVolumes(): void {
+    if (!this.voice) return;
+    const gains = new Map<number, number>();
+    for (const v of this.store.voice.values()) {
+      const g = audioPrefs.people[v.user_id];
+      if (g != null && g !== 1) gains.set(v.ssrc, g);
+    }
+    this.voice.setPeopleVolumes(gains);
+  }
+
+  private async showAudioSettings(): Promise<void> {
+    const { outputs, inputs } = await audioDevices();
+    const select = (list: MediaDeviceInfo[], current: string, kind: string, onPick: (id: string) => void) => {
+      const el = h(
+        "select",
+        { class: "select" },
+        h("option", { value: "" }, `Default ${kind}`),
+        list.map((d, i) => h("option", { value: d.deviceId, selected: d.deviceId === current }, d.label || `${kind[0].toUpperCase()}${kind.slice(1)} ${i + 1}`)),
+      ) as HTMLSelectElement;
+      el.onchange = () => onPick(el.value);
+      return el;
+    };
+    const ios = notify.isIos();
+    const direct = h("input", { type: "checkbox", checked: audioPrefs.direct }) as HTMLInputElement;
+    direct.onchange = () => {
+      audioPrefs.direct = direct.checked;
+      saveAudioPrefs();
+      if (this.voiceChannel != null) this.toast("Rejoin the call to use this");
+    };
+    this.sheet(
+      h("h3", null, "Voice"),
+      h("div", { class: "section" }, "Call volume"),
+      this.slider(audioPrefs.volume, (v) => {
+        audioPrefs.volume = v;
+        saveAudioPrefs();
+        this.voice?.setVolume(v);
+      }),
+      h("p", { class: "muted small" }, "Tap someone in the call to change just their volume."),
+      h("div", { class: "section" }, "Play the call on"),
+      canPickOutput() && outputs.length
+        ? select(outputs, audioPrefs.output, "speaker", async (id) => {
+            audioPrefs.output = id;
+            saveAudioPrefs();
+            if (this.voice && !(await this.voice.setOutput(id))) this.toast("Couldn't switch to that speaker");
+          })
+        : h(
+            "p",
+            { class: "muted small" },
+            ios
+              ? "On iPhone, choose the speaker, earpiece or Bluetooth from Control Center (the AirPlay icon on the music card) while in a call."
+              : "Choose the speaker or Bluetooth from your phone's sound settings while in a call. The phone's volume buttons also change the call volume.",
+          ),
+      h("div", { class: "section" }, "Microphone"),
+      inputs.length
+        ? select(inputs, audioPrefs.input, "microphone", async (id) => {
+            audioPrefs.input = id;
+            saveAudioPrefs();
+            try {
+              await this.voice?.setInput();
+            } catch (e) {
+              this.toast(`Couldn't switch microphone: ${(e as Error).message}`);
+            }
+          })
+        : h("p", { class: "muted small" }, "Join a call once to see the microphones here."),
+      h("label", { class: "toggle" }, h("span", { class: "grow" }, "Can't hear anything? Turn this on (plays the call a simpler way, but quieter on phones)"), direct),
     );
   }
 

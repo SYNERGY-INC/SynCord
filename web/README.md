@@ -11,6 +11,7 @@ Example: `https://sc.hepbep.online`
 - **Markdown**, same rules as the desktop app (bold, italics, code, quotes, lists, headings, links).
 - **Pictures and files**: tap + to send photos or files from the phone (with upload progress), tap a picture to view it full screen, play videos, download files.
 - **Voice**: join a voice channel, mute, deafen, leave. Shows who is in each channel, who is talking (green ring), and call timers. Join/leave sounds.
+- **Call volume and devices**: the sliders button in the voice bar (or Settings, Voice) has the call volume (up to 300%, starts at 200% on phones), the speaker and microphone to use where the browser allows picking them, and tapping someone in a call gives them their own volume.
 - **Notifications**: a pop-up for DMs and mentions while the app is in the background, a number on the app icon, and sounds. All of it can be switched on or off in Settings (the gear at the bottom of the channel list).
 - **Profiles**: tap a name or avatar to see the profile and start a DM.
 
@@ -32,6 +33,8 @@ Not in this version: video and screen sharing, server settings and role manageme
 
 - **Notifications only arrive while the app is running in the background.** If the phone has fully closed the app (after a long time, or after swiping it away), there are no notifications until it is opened again. True "closed app" push notifications would need Web Push, which needs extra server work; that is a possible next step.
 - **Voice in the background:** iPhones pause web apps shortly after you switch away or lock the screen, so voice can stop. Android keeps it going longer. Keep the app open during calls for now.
+- **Loudness on phones:** call audio plays through a media player rather than straight through Web Audio, because phones play Web Audio very quietly (often on the earpiece) while the microphone is on. If a phone plays nothing at all, the "Can't hear anything?" switch in the voice settings goes back to the old way.
+- **Choosing a speaker on iPhone:** Safari doesn't let web pages pick an output, so the app points to Control Center instead.
 - **Voice quality:** the same Opus audio as the desktop app (mono, 48 kHz). Phones use their built-in echo cancellation and noise suppression. Voice goes over the same secure connection as chat (browsers can't use the UDP voice port), encrypted the same way as the desktop app. Desktop and phone users can talk to each other in the same channel.
 - **Sign out** is at the bottom of Settings. The login is remembered on the device until then.
 - If something looks stuck, pull the app away and reopen it; it reconnects by itself after the phone wakes up.

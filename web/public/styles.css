@@ -222,3 +222,10 @@ h1.md-h { font-size: 1.5em; } h2.md-h { font-size: 1.25em; } h3.md-h { font-size
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Volume sliders and device pickers */
+.slider { display: flex; align-items: center; gap: 12px; width: 100%; padding: 6px 4px; }
+.slider input { flex: 1; accent-color: var(--accent); height: 28px; }
+.slider-value { min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; color: var(--bright); }
+.select { width: 100%; background: var(--bg-3); color: var(--text); border: 0; border-radius: 6px; padding: 10px; font-size: 16px; }
+.person-volume { width: 100%; margin-top: 8px; }
