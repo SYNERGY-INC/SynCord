@@ -72,8 +72,8 @@ static LOGGED_FALLBACK: AtomicBool = AtomicBool::new(false);
 static LOGGED_RUNTIME: AtomicBool = AtomicBool::new(false);
 
 /// Encodes `frames` test-pattern frames with `backend` and checks that OpenH264 decodes them
-/// cleanly, at the right size and close to the source.
-pub(crate) fn self_test(backend: &mut dyn Backend, w: u32, h: u32, frames: u64) -> Result<(), String> {
+/// cleanly, at the right size and close to the source, and that encoding keeps up with `fps`.
+pub(crate) fn self_test(backend: &mut dyn Backend, w: u32, h: u32, frames: u64, fps: f32) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(4);
     let mut dec = Decoder::new()?;
     let mut src = I420Frame::new(w, h);
@@ -82,11 +82,17 @@ pub(crate) fn self_test(backend: &mut dyn Backend, w: u32, h: u32, frames: u64) 
     let mut decoded = I420Frame::default();
     let (mut pictures, mut first) = (0u64, true);
     let mut worst: f64 = 0.0;
+    let mut busy = Duration::ZERO;
     for n in 0..frames + 4 {
         if n < frames {
             render_test_pattern(n * 3, &mut src);
             sources.push(src.clone());
+            let t = Instant::now();
             backend.encode(&src, n * 33, n == 0, &mut out)?;
+            // The first frames include warm-up (allocations, first keyframe).
+            if n >= 2 {
+                busy += t.elapsed();
+            }
         } else {
             // Give pipelined encoders a moment to hand over what they still hold.
             std::thread::sleep(Duration::from_millis(20));
@@ -119,6 +125,13 @@ pub(crate) fn self_test(backend: &mut dyn Backend, w: u32, h: u32, frames: u64) 
     }
     if pictures + 2 < frames {
         return Err(format!("only {pictures} of {frames} frames came out"));
+    }
+    // A CPU encoder (the Media Foundation software one) can be too slow for 1440p60; then
+    // OpenH264 is the better choice. Hardware takes a few ms.
+    let per_frame = busy.as_secs_f64() * 1000.0 / frames.saturating_sub(2).max(1) as f64;
+    let budget = 750.0 / fps.clamp(1.0, 60.0) as f64;
+    if per_frame > budget {
+        return Err(format!("too slow for {fps} fps ({per_frame:.1} ms per frame)"));
     }
     // Generous: the test pattern moves fast and hardware rate control starts conservatively.
     if worst > 14.0 {
@@ -206,7 +219,8 @@ impl VideoEncoder {
         }
         let mut reasons = Vec::new();
         for c in candidates() {
-            let tested = (c.open)(&self.config, w, h).and_then(|mut b| self_test(b.as_mut(), w, h, 8));
+            let fps = self.config.max_fps;
+            let tested = (c.open)(&self.config, w, h).and_then(|mut b| self_test(b.as_mut(), w, h, 8, fps));
             // A fresh instance for the real stream, so rate control starts clean.
             match tested.and_then(|()| (c.open)(&self.config, w, h)) {
                 Ok(b) => {
@@ -455,6 +469,7 @@ mod tests {
         }
         let cfg = EncoderConfig { bitrate_bps: 2_000_000, ..EncoderConfig::camera() };
         let mut b = Soft(Encoder::new(cfg).unwrap());
-        self_test(&mut b, 640, 360, 8).unwrap();
+        // Unoptimised test builds are slow; the timing budget is not what this checks.
+        self_test(&mut b, 640, 360, 8, 1.0).unwrap();
     }
 }
