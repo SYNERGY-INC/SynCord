@@ -3,7 +3,7 @@
 use celerity_proto::{ClientMsg, Reaction, ServerMsg};
 use iced::Task;
 
-use crate::app::{App, EmojiPicker, Message, Overlay, PickerTab, PickerTarget, View};
+use crate::app::{App, EmojiPicker, Message, PickerTab, PickerTarget, View};
 use crate::media;
 
 /// Wait this long after the last key press before searching for GIFs.
@@ -118,6 +118,9 @@ impl App {
                     p.tab = tab;
                     p.search.clear();
                 }
+                if matches!(tab, PickerTab::Stickers | PickerTab::Custom) {
+                    return self.request_expressions();
+                }
                 if tab == PickerTab::Gifs {
                     if self.gifs.query.as_deref() != Some("") || self.gifs.error.is_some() {
                         self.search_gifs("");
@@ -157,7 +160,7 @@ impl App {
             Message::ShowHome => {
                 let Some(s) = &mut self.session else { return Task::none() };
                 s.view = View::Home;
-                let first = s.directs.first().map(|d| d.id);
+                let first = s.conversations().first().copied();
                 return match first {
                     Some(id) => self.select_channel(id),
                     None => {
@@ -188,7 +191,6 @@ impl App {
                     }
                 }
             }
-            Message::NewDirect => self.overlay = Some(Overlay::NewDirect),
             _ => {}
         }
         Task::none()

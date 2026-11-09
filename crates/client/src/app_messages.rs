@@ -11,8 +11,8 @@ use crate::style::{self, card};
 
 /// Width of the message menu, used to keep it on screen.
 const MENU_WIDTH: f32 = 200.0;
-/// Rough height of the message menu (five rows), used to keep it on screen.
-const MENU_HEIGHT: f32 = 260.0;
+/// Rough height of the message menu (up to nine rows), used to keep it on screen.
+const MENU_HEIGHT: f32 = 380.0;
 
 /// Where the mouse pointer last was, in window coordinates (two `f32`s packed together).
 /// Kept outside the app state so moving the mouse doesn't redraw the window.
@@ -35,10 +35,14 @@ pub struct Selecting {
 }
 
 impl App {
-    /// The message with this id in the channel being shown.
+    /// The message with this id in the channel being shown, or in the open thread.
     pub(crate) fn find_message(&self, id: MessageId) -> Option<&ChatMessage> {
         let s = self.session.as_ref()?;
-        s.chans.get(&s.current?)?.messages.iter().find(|m| m.id == id)
+        [s.current, s.open_thread]
+            .into_iter()
+            .flatten()
+            .filter_map(|c| s.chans.get(&c))
+            .find_map(|st| st.messages.iter().find(|m| m.id == id))
     }
 
     pub(crate) fn update_messages(&mut self, message: Message) -> Task<Message> {
@@ -88,6 +92,14 @@ impl App {
             Message::StartReply(id) => {
                 self.message_menu = None;
                 self.selecting = None;
+                // Replies to a thread's messages are written in the thread's own box.
+                if self
+                    .find_message(id)
+                    .is_some_and(|m| self.session.as_ref().is_some_and(|s| s.open_thread == Some(m.channel_id)))
+                {
+                    self.thread_ui.replying = Some(id);
+                    return operation::focus(Id::new(crate::app_threads::THREAD_COMPOSER_ID));
+                }
                 self.replying = Some(id);
                 return operation::focus(Id::new(crate::app::COMPOSER_ID));
             }
@@ -138,13 +150,19 @@ impl App {
         let Some(m) = self.find_message(id) else { return base };
         let mine = m.author_id == s.me;
         // Roles decide who may tidy up server channels (direct messages: only your own).
-        let can_delete =
-            mine || (s.can(celerity_proto::perms::MANAGE_MESSAGES) && s.channels.iter().any(|c| c.id == m.channel_id));
+        let in_server_or_thread =
+            s.channels.iter().any(|c| c.id == m.channel_id) || s.threads.contains_key(&m.channel_id);
+        let can_delete = mine || (s.can(celerity_proto::perms::MANAGE_MESSAGES) && in_server_or_thread);
         let has_text = !m.content.is_empty();
         // Pinning: Manage messages in server channels, anyone in a DM.
         let in_server = s.channels.iter().any(|c| c.id == m.channel_id);
         let can_pin = m.kind.is_normal() && (!in_server || s.can(celerity_proto::perms::MANAGE_MESSAGES));
         let pin_state = can_pin.then_some(m.pinned);
+        let thread = if m.thread.is_some() || (m.kind.is_normal() && s.threads_allowed(m.channel_id)) {
+            Some(if m.thread.is_some() { "Open Thread" } else { "Create Thread" })
+        } else {
+            None
+        };
 
         // Clicking anywhere else closes the menu.
         let backdrop = mouse_area(container(text("")).width(Length::Fill).height(Length::Fill))
@@ -153,7 +171,7 @@ impl App {
         let placed = responsive(move |size| {
             let x = at.x.min(size.width - MENU_WIDTH - 8.0).max(0.0);
             let y = at.y.min(size.height - MENU_HEIGHT - 8.0).max(0.0);
-            pin(self.message_menu_items(id, mine, can_delete, has_text, pin_state)).x(x).y(y).into()
+            pin(self.message_menu_items(id, mine, can_delete, has_text, pin_state, thread)).x(x).y(y).into()
         });
         stack![base, backdrop, placed].into()
     }
@@ -167,6 +185,7 @@ impl App {
         can_delete: bool,
         has_text: bool,
         pin: Option<bool>,
+        thread: Option<&'static str>,
     ) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();
@@ -179,9 +198,15 @@ impl App {
         };
         let mut items =
             column![item("Add Reaction", Message::MenuReact(id)), item("Reply", Message::StartReply(id))].spacing(2);
+        if let Some(label) = thread {
+            items = items.push(item(label, Message::Threads(crate::app_threads::ThreadMsg::Create(id))));
+        }
         if has_text {
             items = items.push(item("Copy Text", Message::CopyMessageText(id)));
             items = items.push(item("Select Text", Message::SelectMessageText(id)));
+        }
+        if let Some(link) = self.message_link(id) {
+            items = items.push(item("Copy Message Link", Message::CopyText(link)));
         }
         if mine {
             items = items.push(item("Edit Message", Message::MenuEdit(id)));
@@ -209,6 +234,15 @@ impl App {
             );
         }
         container(items).width(MENU_WIDTH).padding(6).style(card(t.floating.0, t.radius * 0.6)).into()
+    }
+}
+
+impl App {
+    /// `celerity://open/<server>/<channel>/<message>`: opens Celerity at the message.
+    fn message_link(&self, id: MessageId) -> Option<String> {
+        let m = self.find_message(id)?;
+        let server = crate::net::server_key(&self.settings.server);
+        Some(format!("celerity://open/{server}/{}/{}", m.channel_id, m.id))
     }
 }
 

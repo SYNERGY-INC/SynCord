@@ -54,7 +54,7 @@ impl App {
 
         let base: Element<'_, Message> = match self.settings_tab {
             Some(tab) => self.with_color_picker(self.settings_view(session, tab)),
-            None => self.with_voice_drag(self.with_message_menu(self.main_view(session))),
+            None => self.with_channel_drag(self.with_voice_drag(self.with_message_menu(self.main_view(session)))),
         };
 
         match &self.overlay {
@@ -75,6 +75,7 @@ impl App {
                     Overlay::StatusPicker => self.status_picker(session),
                     Overlay::ScreenPicker(list) => self.screen_picker(list),
                     Overlay::ConfirmLink { url, trust } => self.confirm_link_dialog(url, *trust),
+                    Overlay::Dialog(d) => self.dialog_view(session, d),
                 };
                 let dim = if matches!(overlay, Overlay::Image(_)) { 0.88 } else { 0.6 };
                 // The backdrop fades in while the dialog pops up.
@@ -130,7 +131,15 @@ impl App {
             .spacing(6)
         };
 
-        let (title, subtitle, action, switch) = if f.register {
+        let (title, subtitle, action, switch) = if f.register && f.from_invite {
+            // Opened from an invite link.
+            (
+                "You're invited!",
+                "Your invite is filled in: pick a username and password.",
+                "Continue",
+                "Already have an account? Log in",
+            )
+        } else if f.register {
             (
                 "Create an account",
                 "Ask whoever runs the server for the invite code.",
@@ -281,6 +290,10 @@ impl App {
             layout = layout.push(self.sliding_panel(self.float(self.search_panel(s), side)));
         } else if let Some(p) = &self.pins {
             layout = layout.push(self.sliding_panel(self.float(self.pins_panel(s, p), side)));
+        } else if let Some(thread) = s.open_thread() {
+            layout = layout.push(self.sliding_panel(self.float(self.thread_panel(s, thread), side)));
+        } else if let Some(list) = s.thread_list.as_ref().filter(|l| Some(l.channel) == s.current) {
+            layout = layout.push(self.sliding_panel(self.float(self.thread_list_panel(s, list), side)));
         } else if self.settings.show_members {
             layout = layout.push(self.sliding_panel(self.float(self.member_list(s), side)));
         }
@@ -488,105 +501,10 @@ impl App {
         .into()
     }
 
-    fn category<'a>(&'a self, s: &'a Session, title: &'static str, kind: ChannelKind) -> Element<'a, Message> {
-        let t = &self.theme;
-        let fs = self.fs();
-        let mut category = row![label(t, title, fs), space::horizontal()].align_y(Alignment::Center);
-        if s.can(celerity_proto::perms::MANAGE_CHANNELS) {
-            category = category.push(
-                button(text("+").size(fs * 1.2))
-                    .padding([0, 6])
-                    .on_press(Message::OpenNewChannel(kind))
-                    .style(style::link_button(t.muted.0, t.header.0)),
-            );
-        }
-        container(category).padding(Padding { left: 8.0, top: 16.0, right: 4.0, bottom: 4.0 }).into()
-    }
-
     fn channel_sidebar<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
-        let fs = self.fs();
-
-        let header = container(text(s.community.clone()).size(fs * 1.05).font(bold()).color(t.header.0))
-            .padding([0, 16])
-            .height(48)
-            .width(Length::Fill)
-            .align_y(Alignment::Center);
-
-        let mut list = column![self.category(s, "Text channels", ChannelKind::Text)].spacing(2);
-        for ch in s.channels.iter().filter(|c| c.kind == ChannelKind::Text) {
-            let selected = s.current == Some(ch.id);
-            // Muted channels don't light up for new messages (only for pings).
-            let muted = self.settings.is_muted(&self.settings.server, ch.id);
-            let unread = s.is_unread(ch.id) && !selected && !muted;
-            let name_color = if unread && !selected {
-                Some(t.header.0)
-            } else if muted && !selected {
-                Some(with_alpha(t.muted.0, 0.6))
-            } else {
-                None
-            };
-            let mut name = text(ch.name.clone()).size(fs);
-            if unread {
-                name = name.font(semibold());
-            }
-            if let Some(c) = name_color {
-                name = name.color(c);
-            }
-            let mut line = row![text("#").size(fs * 1.25).color(t.muted.0), name.width(Length::Fill)]
-                .spacing(6)
-                .align_y(Alignment::Center);
-            if s.mention_count(ch.id) > 0 && !selected {
-                line = line.push(mention_badge(t, s.mention_count(ch.id), fs));
-            }
-            let row = style::fade_row(
-                t,
-                button(line).width(Length::Fill).padding([6, 8]).on_press(Message::SelectChannel(ch.id)),
-                selected,
-            );
-            list = list.push(self.with_channel_menu(row, ch.id, false));
-        }
-
-        list = list.push(self.category(s, "Voice channels", ChannelKind::Voice));
-        for ch in s.channels.iter().filter(|c| c.kind == ChannelKind::Voice) {
-            let connected = self.voice_here().is_some_and(|v| v.channel_id == ch.id);
-            let mut line = row![
-                icons::icon(&icons::SPEAKER, fs * 1.2, t.muted.0),
-                text(ch.name.clone()).size(fs).width(Length::Fill)
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center);
-            if let Some(length) = s.call_length(ch.id) {
-                line = line.push(text(crate::app::format_duration(length)).size(fs * 0.75).color(t.muted.0));
-            }
-            let drop_here = self.voice_drag.as_ref().is_some_and(|d| d.moved() && d.over == Some(ch.id));
-            let mut entry = button(line)
-                .width(Length::Fill)
-                .padding([6, 8])
-                .style(style::row_button_still(t, connected || drop_here));
-            entry = entry.on_press(if connected { Message::OpenStage } else { Message::JoinVoice(ch.id) });
-            // Drop target for dragging people between channels.
-            let entry = crate::widgets::hover_fade(entry, t.hover.0, t.radius * 0.8);
-            list = list.push(
-                mouse_area(entry).on_enter(Message::VoiceDragOver(Some(ch.id))).on_exit(Message::VoiceDragOver(None)),
-            );
-
-            // Who's in this channel.
-            let mut members: Vec<(&User, &VoiceState)> = s
-                .voice
-                .values()
-                .filter(|v| v.channel_id == ch.id)
-                .filter_map(|v| Some((s.users.get(&v.user_id)?, v)))
-                .collect();
-            members.sort_by_key(|(u, _)| u.name().to_lowercase());
-            for (u, v) in members {
-                list = list.push(
-                    mouse_area(self.voice_member(u, v, s.me))
-                        .on_enter(Message::VoiceDragOver(Some(ch.id)))
-                        .on_exit(Message::VoiceDragOver(None)),
-                );
-            }
-        }
+        let header = self.sidebar_header(s);
+        let list = self.channel_list(s);
 
         container(column![
             header,
@@ -601,7 +519,7 @@ impl App {
     }
 
     /// One person listed under a voice channel, with a ring while they talk.
-    fn voice_member<'a>(&'a self, u: &'a User, v: &VoiceState, me: UserId) -> Element<'a, Message> {
+    pub(crate) fn voice_member<'a>(&'a self, u: &'a User, v: &VoiceState, me: UserId) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let speaking = self.is_speaking(&u.id);
@@ -668,8 +586,11 @@ impl App {
             (None, Some(id)) => (id, false),
             (None, None) => return space().into(),
         };
-        let dm_name =
-            s.direct(channel_id).and_then(|d| s.users.get(&d.user_id)).map(|u| format!("Call with {}", u.name()));
+        let dm_name = s
+            .direct(channel_id)
+            .and_then(|d| s.users.get(&d.user_id))
+            .map(|u| format!("Call with {}", u.name()))
+            .or_else(|| s.group(channel_id).map(|g| format!("Call in {}", s.group_name(g))));
         let channel =
             s.channels.iter().find(|c| c.id == channel_id).map(|c| c.name.clone()).or(dm_name).unwrap_or_default();
         let channel = channel.as_str();
@@ -766,6 +687,12 @@ impl App {
         let mut body = column![content].spacing(8);
         if connected && elsewhere.is_none() {
             body = body.push(self.live_buttons());
+            if self.soundboard_available(s) {
+                body = body.push(self.soundboard_button());
+                if self.soundboard.open {
+                    body = body.push(self.soundboard_grid(s));
+                }
+            }
         }
         // An inset card with a faint green glow while connected.
         let fill = if connected { style::mix(t.user_panel.0, t.online.0, 0.1) } else { t.user_panel.0 };
@@ -891,15 +818,16 @@ impl App {
         let t = &self.theme;
         let fs = self.fs();
         let channel = s.current_info();
-        let is_direct = channel.as_ref().is_some_and(|c| c.direct_with.is_some());
+        let is_direct = channel.as_ref().is_some_and(|c| c.is_conversation());
 
         // Header: [#] name · topic ............ [pin] [members] [trash] (search)
         let mut header = row![].spacing(10).align_y(Alignment::Center);
         if let Some(ch) = &channel {
             let accent = t.accent.0;
-            let badge: Element<'a, Message> = match ch.direct_with {
-                Some(u) => self.avatar(u, 26.0),
-                None => container(text("#").size(fs * 1.1).font(bold()).color(accent))
+            let badge: Element<'a, Message> = match (ch.direct_with, ch.group) {
+                (Some(u), _) => self.avatar(u, 26.0),
+                (None, Some(g)) => self.group_avatar(s, g, 26.0),
+                (None, None) => container(text("#").size(fs * 1.1).font(bold()).color(accent))
                     .center(26)
                     .style(move |_| container::Style {
                         background: Some(with_alpha(accent, 0.16).into()),
@@ -908,13 +836,13 @@ impl App {
                     })
                     .into(),
             };
-            header = header.push(badge).push(text(ch.name.to_owned()).size(fs * 1.05).font(bold()).color(t.header.0));
+            header = header.push(badge).push(text(ch.name.clone()).size(fs * 1.05).font(bold()).color(t.header.0));
             // Direct messages only the people in them can read.
-            if ch.direct_with.is_some() && self.is_encrypted(ch.id) {
+            if self.is_encrypted(ch.id) {
                 header = header.push(iced::widget::tooltip(
                     icons::icon(&icons::LOCK, fs * 0.95, t.online.0),
                     container(
-                        text("End-to-end encrypted: only you and they can read these messages (files aren't).")
+                        text("End-to-end encrypted: only the people in this conversation can read it (files aren't).")
                             .size(fs * 0.8)
                             .color(t.header.0),
                     )
@@ -948,6 +876,15 @@ impl App {
                 header = header.push(tool(&icons::PHONE, false, "Start a call", Message::JoinVoice(ch.id)));
             }
         }
+        if let Some(g) = channel.as_ref().and_then(|c| c.group) {
+            let settings = Message::Groups(crate::app_groups::GroupMsg::OpenSettings(g.id));
+            header = header.push(tool(&icons::PEOPLE, false, "Group settings", settings));
+        }
+        if let Some(ch) = channel.as_ref().filter(|c| s.threads_allowed(c.id)) {
+            let open = s.thread_list.as_ref().is_some_and(|l| l.channel == ch.id);
+            let list = Message::Threads(crate::app_threads::ThreadMsg::ToggleList);
+            header = header.push(tool(&icons::THREAD, open, "Threads", list));
+        }
         if channel.is_some() {
             header = header.push(tool(&icons::PIN, self.pins.is_some(), "Pinned messages", Message::TogglePins));
         }
@@ -957,10 +894,13 @@ impl App {
             let tip = if shown { "Hide members" } else { "Show members" };
             header = header.push(tool(&icons::PEOPLE, shown, tip, Message::ToggleMembers));
         }
-        if let Some(ch) = channel
-            .as_ref()
-            .filter(|_| s.can(celerity_proto::perms::MANAGE_CHANNELS) && s.channels.len() > 1 && !is_direct)
-        {
+        let manage = s.can(celerity_proto::perms::MANAGE_CHANNELS) && !is_direct;
+        if let Some(ch) = channel.as_ref().filter(|_| manage && s.v07) {
+            let edit = Message::Channels(crate::app_channels::ChannelsMsg::Edit(
+                crate::app_channels::EditTarget::Channel(ch.id),
+            ));
+            header = header.push(tool(&icons::GEAR, false, "Channel settings", edit));
+        } else if let Some(ch) = channel.as_ref().filter(|_| manage && s.channels.len() > 1) {
             header = header.push(tool(&icons::TRASH, false, "Delete channel", Message::AskDeleteChannel(ch.id)));
         }
         if channel.is_some() {
@@ -1063,6 +1003,11 @@ impl App {
         match state {
             Some(st) if st.loaded && st.reached_start => {
                 let (badge, title, line): (Element<'a, Message>, String, String) = match channel.direct_with {
+                    None if channel.group.is_some() => (
+                        self.group_avatar(s, channel.group.unwrap(), 68.0),
+                        channel.name.to_string(),
+                        format!("This is the beginning of the {} group.", channel.name),
+                    ),
                     Some(u) => (
                         self.avatar(u, 68.0),
                         u.name().to_owned(),
@@ -1181,7 +1126,7 @@ impl App {
         )
     }
 
-    fn message_row<'a>(&'a self, s: &'a Session, m: &'a ChatMessage, grouped: bool) -> Element<'a, Message> {
+    pub(crate) fn message_row<'a>(&'a self, s: &'a Session, m: &'a ChatMessage, grouped: bool) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let author = s.users.get(&m.author_id);
@@ -1230,7 +1175,12 @@ impl App {
             .into(),
             None => {
                 let mut col = column![].spacing(6);
-                if let Some(sel) = selecting {
+                if let Some(sticker) = &m.sticker {
+                    col = col.push(self.sticker_view(sticker));
+                }
+                if let Some(poll) = &m.poll {
+                    col = col.push(self.poll_view(s, m, poll));
+                } else if let Some(sel) = selecting {
                     col = col.push(self.selectable_body(sel, fs));
                 } else if !m.content.is_empty() {
                     let mut r = row![body_text].spacing(6).align_y(Alignment::End);
@@ -1247,6 +1197,9 @@ impl App {
                 }
                 if let Some(reactions) = self.reactions_view(s, m) {
                     col = col.push(reactions);
+                }
+                if let Some(thread) = self.thread_bar(s, m) {
+                    col = col.push(thread);
                 }
                 if let Some(status) = self.outgoing_status(m.id) {
                     col = col.push(status);
@@ -1324,21 +1277,38 @@ impl App {
 
         // Hover toolbar: react for everyone; edit/delete your own (the owner can delete in server channels).
         let mine = Some(m.author_id) == Some(s.me);
-        let in_server = s.channels.iter().any(|c| c.id == m.channel_id);
+        let in_server = s.channels.iter().any(|c| c.id == m.channel_id) || s.threads.contains_key(&m.channel_id);
         let mut line = row![container(content).width(Length::Fill)].align_y(Alignment::Start);
         if hovered && editing.is_none() && selecting.is_none() {
-            let mut tools = row![
+            let mut tools = row![].spacing(2).align_y(Alignment::Center);
+            for e in self.quick_reactions(s) {
+                tools = tools.push(
+                    button(container(self.emoji_glyph(&e, fs * 1.1)).center(fs * 1.3))
+                        .padding([3, 4])
+                        .on_press(Message::ToggleReaction(m.id, e))
+                        .style(style::icon_button(t)),
+                );
+            }
+            tools = tools.push(
                 button(icons::icon(&icons::SMILE, fs * 1.1, t.muted.0))
                     .padding([3, 6])
                     .on_press(Message::OpenEmojiPicker(PickerTarget::Reaction(m.id)))
                     .style(style::icon_button(t)),
+            );
+            tools = tools.push(
                 button(icons::icon(&icons::REPLY, fs * 1.1, t.muted.0))
                     .padding([3, 6])
                     .on_press(Message::StartReply(m.id))
                     .style(style::icon_button(t)),
-            ]
-            .spacing(2)
-            .align_y(Alignment::Center);
+            );
+            if m.thread.is_none() && m.kind.is_normal() && s.threads_allowed(m.channel_id) {
+                tools = tools.push(
+                    button(icons::icon(&icons::THREAD, fs * 1.1, t.muted.0))
+                        .padding([3, 6])
+                        .on_press(Message::Threads(crate::app_threads::ThreadMsg::Create(m.id)))
+                        .style(style::icon_button(t)),
+                );
+            }
             if mine {
                 tools = tools.push(
                     button(text("Edit").size(fs * 0.8))
@@ -1424,8 +1394,11 @@ impl App {
     fn composer<'a>(&'a self, s: &'a Session, ch: ChannelInfo<'a>) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let placeholder =
-            if ch.direct_with.is_some() { format!("Message @{}", ch.name) } else { format!("Message #{}", ch.name) };
+        let placeholder = match (ch.direct_with, ch.group) {
+            (Some(_), _) => format!("Message @{}", ch.name),
+            (None, Some(_)) => format!("Message {}", ch.name),
+            (None, None) => format!("Message #{}", ch.name),
+        };
         let suggestions = self.composer_suggestions().len();
         let empty = self.composer.is_empty();
         let (text_color, muted, accent) = (t.text.0, t.muted.0, t.accent.0);
@@ -1451,9 +1424,9 @@ impl App {
         let edge = with_alpha(t.header.0, 0.07);
         let bar = container(
             row![
-                button(icons::icon(&icons::ATTACH, fs * 1.4, t.muted.0))
+                button(icons::icon(&icons::PLUS, fs * 1.4, if self.composer_plus { t.header.0 } else { t.muted.0 }))
                     .padding(8)
-                    .on_press(Message::AttachFiles)
+                    .on_press(Message::Polls(crate::polls::PollMsg::TogglePlus))
                     .style(style::icon_button(t)),
                 crate::widgets::context_menu(input, move || self.composer_menu()),
                 button(
@@ -1497,6 +1470,9 @@ impl App {
         // The extras live in their own column that's always there, so the message box keeps
         // its place in the widget tree (and its keyboard focus) when they appear.
         let mut extras = column![].spacing(6);
+        if self.composer_plus {
+            extras = extras.push(self.composer_plus_menu(s, &ch));
+        }
         if let Some(reply) = self.reply_bar() {
             extras = extras.push(reply);
         }
@@ -1515,7 +1491,7 @@ impl App {
     fn member_list<'a>(&'a self, s: &'a Session) -> Element<'a, Message> {
         let t = &self.theme;
         let fs = self.fs();
-        let mut users: Vec<&User> = s.users.values().collect();
+        let mut users: Vec<&User> = s.users.values().filter(|u| !u.removed).collect();
         users.sort_by_key(|u| u.name().to_lowercase());
 
         // Like Discord: online people under their highest "show separately" role, then
@@ -1783,11 +1759,28 @@ impl App {
         .spacing(4)
         .width(200);
         let mut nav = nav;
-        if s.can(celerity_proto::perms::MANAGE_ROLES) {
-            nav = nav
-                .push(label(t, "Server settings", fs))
-                .push(nav_item("Roles", SettingsTab::Roles))
-                .push(space().height(12));
+        {
+            use celerity_proto::perms;
+            let mut server = Vec::new();
+            if s.v07 && s.can(perms::ADMINISTRATOR) {
+                server.push(("Overview", SettingsTab::Server));
+            }
+            if s.can(perms::MANAGE_ROLES) {
+                server.push(("Roles", SettingsTab::Roles));
+            }
+            if s.v07 && s.can(perms::MANAGE_EMOJI) {
+                server.push(("Emoji", SettingsTab::Emoji));
+            }
+            if s.v07 && s.can(perms::MANAGE_SOUNDBOARD) {
+                server.push(("Soundboard", SettingsTab::Soundboard));
+            }
+            if !server.is_empty() {
+                nav = nav.push(label(t, "Server settings", fs));
+                for (name, tab) in server {
+                    nav = nav.push(nav_item(name, tab));
+                }
+                nav = nav.push(space().height(12));
+            }
         }
         let nav = nav.push(
             column![
@@ -1807,6 +1800,9 @@ impl App {
             SettingsTab::Appearance => self.appearance_settings(),
             SettingsTab::Voice => self.voice_settings(),
             SettingsTab::Roles => self.roles_settings(s),
+            SettingsTab::Server => self.server_settings(s),
+            SettingsTab::Emoji => self.emoji_settings(s),
+            SettingsTab::Soundboard => self.soundboard_settings(s),
         };
 
         // A round close button, like the dialogs'.

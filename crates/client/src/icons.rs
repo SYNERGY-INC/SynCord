@@ -158,13 +158,6 @@ icon!(
     r#"<rect x="2.5" y="3.5" width="19" height="13.5" rx="2" stroke="black" stroke-width="2" fill="none"/><path d="M8 21h8M12 17v4" stroke="black" stroke-width="2" stroke-linecap="round"/><path d="M12 13.5V7.5m-3 3l3-3 3 3" stroke="black" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#
 );
 icon!(PLUS, r#"<path d="M12 4.5v15M4.5 12h15" stroke="black" stroke-width="2.4" stroke-linecap="round"/>"#);
-icon!(
-    LOCK,
-    concat!(
-        r#"<rect x="4.5" y="10.5" width="15" height="11" rx="2.5" fill="black"/>"#,
-        r#"<path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" stroke="black" stroke-width="2.2" fill="none"/>"#
-    )
-);
 icon!(PIN, r#"<path d="M15 3l6 6-2 1-3.5 3.5.5 4.5-1.5 1.5-4-4-5 5-1-1 5-5-4-4L7 8l4.5.5L15 5z" fill="black"/>"#);
 icon!(
     PEOPLE,
@@ -173,4 +166,38 @@ icon!(
 icon!(
     TRASH,
     r#"<path d="M9 3.5h6M4.5 6.5h15" stroke="black" stroke-width="2" stroke-linecap="round"/><path d="M6.5 6.5l1 13.5h9l1-13.5z" fill="black"/>"#
+);
+
+// ---- 0.7: categories, threads, polls, soundboard, invites
+icon!(
+    LOCK,
+    r#"<rect x="5" y="10.5" width="14" height="10" rx="2" fill="black"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="black" stroke-width="2.2" fill="none"/>"#
+);
+icon!(
+    CHEVRON_DOWN,
+    r#"<path d="M6 9l6 6 6-6" stroke="black" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#
+);
+icon!(
+    CHEVRON_RIGHT,
+    r#"<path d="M9 6l6 6-6 6" stroke="black" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#
+);
+icon!(
+    THREAD,
+    r#"<path d="M4 5.5h16v9.5H11l-4.5 4v-4H4z" stroke="black" stroke-width="2" fill="none" stroke-linejoin="round"/><path d="M8 9h8M8 12h5" stroke="black" stroke-width="1.8" stroke-linecap="round"/>"#
+);
+icon!(
+    POLL,
+    r#"<rect x="4" y="4" width="11" height="4" rx="1.5" fill="black"/><rect x="4" y="10" width="16" height="4" rx="1.5" fill="black"/><rect x="4" y="16" width="7" height="4" rx="1.5" fill="black"/>"#
+);
+icon!(
+    SOUNDBOARD,
+    r#"<rect x="3" y="3" width="8" height="8" rx="2" fill="black"/><rect x="13" y="3" width="8" height="8" rx="2" fill="black"/><rect x="3" y="13" width="8" height="8" rx="2" fill="black"/><path d="M14.5 15.5h1.8l2.4-2v7l-2.4-2h-1.8z" fill="black"/>"#
+);
+icon!(
+    LINK,
+    r#"<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="black" stroke-width="2.2" fill="none" stroke-linecap="round"/>"#
+);
+icon!(
+    INVITE,
+    r#"<circle cx="10" cy="8" r="3.8" fill="black"/><path d="M3 20c0-3.9 3.1-6.5 7-6.5s7 2.6 7 6.5z" fill="black"/><path d="M19 7v6M16 10h6" stroke="black" stroke-width="2.2" stroke-linecap="round"/>"#
 );

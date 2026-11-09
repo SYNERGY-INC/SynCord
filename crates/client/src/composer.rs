@@ -12,6 +12,8 @@ use crate::emoji;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Suggestion {
     Emoji(&'static emojis::Emoji, &'static str),
+    /// One of the server's own emoji.
+    Custom(celerity_proto::EmojiId),
     User(UserId),
     Role(RoleId),
     Everyone,
@@ -114,7 +116,13 @@ impl App {
             return mention_suggestions(s, query, 8);
         }
         match emoji::autocomplete_token(&self.composer) {
-            Some((_, code)) => emoji::suggestions(code, 6).into_iter().map(|(e, c)| Suggestion::Emoji(e, c)).collect(),
+            Some((_, code)) => {
+                // The server's own emoji first.
+                let custom = crate::app_expressions::custom_suggestions(&s.emojis, code, 3);
+                let custom = custom.into_iter().map(|e| Suggestion::Custom(e.id));
+                let standard = emoji::suggestions(code, 6).into_iter().map(|(e, c)| Suggestion::Emoji(e, c));
+                custom.chain(standard).take(6).collect()
+            }
             None => Vec::new(),
         }
     }
@@ -130,6 +138,16 @@ impl App {
                     text.push_str(e.as_str());
                     text.push(' ');
                     self.settings.remember_emoji(e.as_str());
+                    self.settings.save();
+                }
+            }
+            Suggestion::Custom(id) => {
+                let Some(code) = s.emojis.iter().find(|e| e.id == id).map(|e| e.code()) else { return };
+                if let Some((start, _)) = emoji::autocomplete_token(&text) {
+                    text.truncate(start);
+                    text.push_str(&code);
+                    text.push(' ');
+                    self.settings.remember_emoji(&code);
                     self.settings.save();
                 }
             }
@@ -299,12 +317,13 @@ fn mention_suggestions(s: &Session, query: &str, limit: usize) -> Vec<Suggestion
     let q = query.to_lowercase();
     let mut starts = Vec::new();
     let mut contains = Vec::new();
-    let in_dm = s.current.is_some_and(|c| s.direct(c).is_some());
-    let mut users: Vec<_> = s.users.values().filter(|u| u.id != s.me).collect();
+    let in_dm = s.current.is_some_and(|c| s.is_conversation(c));
+    let mut users: Vec<_> = s.users.values().filter(|u| u.id != s.me && !u.removed).collect();
     if in_dm {
-        // In a DM, only the other person can be pinged.
+        // In a conversation, only the people in it can be pinged.
         let other = s.current.and_then(|c| s.direct(c)).map(|d| d.user_id);
-        users.retain(|u| Some(u.id) == other);
+        let group = s.current.and_then(|c| s.group(c));
+        users.retain(|u| Some(u.id) == other || group.is_some_and(|g| g.members.contains(&u.id)));
     }
     users.sort_by_key(|u| (!s.online.contains(&u.id), u.name().to_lowercase()));
     for u in users {

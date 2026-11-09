@@ -301,14 +301,18 @@ impl App {
     }
 
     /// Everyone in this conversation (you included) with their keys, if it's a direct
-    /// message where everyone has published one.
+    /// message or group where everyone has published one.
     fn recipients(&self, channel: ChannelId) -> Option<Vec<(UserId, String)>> {
         let s = self.session.as_ref()?;
         if !s.e2ee {
             return None;
         }
-        let other = s.direct(channel)?.user_id;
-        [s.me, other].iter().map(|u| s.keys.get(u).map(|k| (*u, k.agreement_key.clone()))).collect()
+        let members: Vec<UserId> = match (s.direct(channel), s.groups.iter().find(|g| g.id == channel)) {
+            (Some(d), _) => vec![s.me, d.user_id],
+            (None, Some(g)) => g.members.clone(),
+            (None, None) => return None,
+        };
+        members.iter().map(|u| s.keys.get(u).map(|k| (*u, k.agreement_key.clone()))).collect()
     }
 
     /// The conversation is end-to-end encrypted (for the lock in its header).

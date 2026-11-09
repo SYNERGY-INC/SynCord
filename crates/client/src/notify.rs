@@ -156,7 +156,7 @@ impl App {
         if self.focused && !self.background && s.current == Some(m.channel_id) {
             return;
         }
-        let direct = s.direct(m.channel_id).is_some();
+        let direct = s.is_conversation(m.channel_id);
         let mention = s.mentions_me(m);
         let muted = self.settings.is_muted(&self.settings.server, m.channel_id);
         let wanted = if direct { !muted } else { mention || (self.settings.notify_all && !muted) };
@@ -169,7 +169,7 @@ impl App {
             None => author,
         };
         // Mentions read as names, not ids.
-        let mut content = m.content.clone();
+        let mut content = crate::app_expressions::plain_emoji(&m.content);
         for id in &m.mentions {
             if let Some(u) = s.users.get(id) {
                 content = content.replace(&format!("<@{id}>"), &format!("@{}", u.name()));
@@ -184,21 +184,32 @@ impl App {
         let show = iced::window::latest().and_then(|id| {
             iced::Task::batch([iced::window::set_mode(id, iced::window::Mode::Windowed), iced::window::gain_focus(id)])
         });
+        if link.starts_with("celerity://join/") {
+            return iced::Task::batch([show, self.open_invite(link)]);
+        }
         let Some(rest) = link.strip_prefix("celerity://open/") else { return show };
-        let Some((server, channel)) = rest.rsplit_once('/') else { return show };
-        let Ok(channel) = channel.trim_end_matches('/').parse::<i64>() else { return show };
+        // celerity://open/<server>/<channel>, with /<message> for a message link.
+        let mut parts = rest.trim_end_matches('/').split('/');
+        let (Some(server), Some(channel)) = (parts.next(), parts.next()) else { return show };
+        let Ok(channel) = channel.parse::<i64>() else { return show };
+        let message = parts.next().and_then(|m| m.parse::<i64>().ok());
         let switch = match self.rail().into_iter().find(|e| e.key == server) {
             Some(e) if !e.open => self.switch_server(e.position),
             _ => iced::Task::none(),
         };
-        let open = if self
-            .session
-            .as_ref()
-            .is_some_and(|s| s.channels.iter().any(|c| c.id == channel) || s.direct(channel).is_some())
-        {
-            self.update(Message::SelectChannel(channel))
-        } else {
-            iced::Task::none()
+        // A message in a thread opens its channel with the thread beside it.
+        let thread = self.session.as_ref().and_then(|s| s.threads.get(&channel)).map(|t| t.parent_id);
+        let known = self.session.as_ref().is_some_and(|s| {
+            s.channels.iter().any(|c| c.id == channel) || s.is_conversation(channel) || thread.is_some()
+        });
+        let open = match (known, thread, message) {
+            (false, _, _) => iced::Task::none(),
+            (true, Some(parent), _) => iced::Task::batch([
+                self.update(Message::SelectChannel(parent)),
+                self.update(Message::Threads(crate::app_threads::ThreadMsg::Open(channel))),
+            ]),
+            (true, None, Some(m)) => self.update(Message::OpenSearchResult(channel, m)),
+            (true, None, None) => self.update(Message::SelectChannel(channel)),
         };
         iced::Task::batch([show, switch, open])
     }

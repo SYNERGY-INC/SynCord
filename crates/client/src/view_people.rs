@@ -178,7 +178,12 @@ impl App {
         let card_body = column![
             self.avatar(u, 72.0),
             text(u.name().to_owned()).size(fs * 1.15).font(bold()).color(t.header.0),
-            text("Incoming call...").size(fs * 0.85).color(t.muted.0),
+            text(match s.group(channel) {
+                Some(g) => format!("Calling {}", crate::view::truncate(&s.group_name(g), 24)),
+                None => "Incoming call...".to_string(),
+            })
+            .size(fs * 0.85)
+            .color(t.muted.0),
             row![
                 iced::widget::button(text("Dismiss").size(fs * 0.9))
                     .padding([8, 14])

@@ -63,7 +63,7 @@ impl App {
     }
 
     /// A short menu of actions.
-    fn simple_menu(&self, items: Vec<(String, Message)>) -> Element<'_, Message> {
+    pub(crate) fn simple_menu(&self, items: Vec<(String, Message)>) -> Element<'_, Message> {
         let t = &self.theme;
         let fs = self.fs();
         let mut col = column![].spacing(1);
@@ -97,13 +97,25 @@ impl App {
         context_menu(base, move || {
             let muted = self.settings.channel_muted(&self.settings.server, channel);
             let what = if direct { "conversation" } else { "channel" };
-            self.simple_menu(vec![
+            let mut items = vec![
                 ("Mark as read".into(), Message::MarkChannelRead(channel)),
                 (
                     if muted { format!("Unmute {what}") } else { format!("Mute {what}") },
                     Message::ToggleMuteChannel(channel),
                 ),
-            ])
+            ];
+            let manage = self.session.as_ref().filter(|s| !direct && s.can(celerity_proto::perms::MANAGE_CHANNELS));
+            if let Some(s) = manage {
+                if s.v07 {
+                    let edit =
+                        crate::app_channels::ChannelsMsg::Edit(crate::app_channels::EditTarget::Channel(channel));
+                    items.push(("Edit channel".into(), Message::Channels(edit)));
+                }
+                if s.channels.len() > 1 {
+                    items.push(("Delete channel".into(), Message::AskDeleteChannel(channel)));
+                }
+            }
+            self.simple_menu(items)
         })
         .into()
     }
@@ -117,10 +129,18 @@ impl App {
     ) -> Element<'a, Message> {
         context_menu(base, move || {
             let muted = self.settings.muted_servers.contains(&key);
-            self.simple_menu(vec![
-                ("Mark as read".into(), Message::MarkServerRead(position)),
-                (if muted { "Unmute server" } else { "Mute server" }.into(), Message::ToggleMuteServer(position)),
-            ])
+            let mut items = Vec::new();
+            // Invites are made on the open server.
+            let open = position == self.settings.server_position.min(self.parked.len());
+            if open && self.session.as_ref().is_some_and(|s| s.v07 && s.can(celerity_proto::perms::CREATE_INVITES)) {
+                items.push(("Invite people".into(), Message::Invites(crate::app_invites::InviteMsg::Open)));
+            }
+            items.push(("Mark as read".into(), Message::MarkServerRead(position)));
+            items.push((
+                if muted { "Unmute server" } else { "Mute server" }.into(),
+                Message::ToggleMuteServer(position),
+            ));
+            self.simple_menu(items)
         })
         .into()
     }
@@ -188,6 +208,13 @@ impl App {
                 Message::ToggleBlock(user),
                 t.danger.0,
             ));
+            let moderation = self.moderation_items(s, u);
+            if !moderation.is_empty() {
+                col = col.push(sep());
+                for (label, msg) in moderation {
+                    col = col.push(item(label, msg, t.danger.0));
+                }
+            }
         }
         col = col.push(sep());
         col = col.push(item("Copy Username".into(), Message::CopyText(u.username.clone()), t.text.0));

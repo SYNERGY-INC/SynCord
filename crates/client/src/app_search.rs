@@ -360,7 +360,8 @@ impl App {
         let floating = t.floating.0;
         let author = s.users.get(&m.author_id);
         let name = author.map(|u| u.name()).unwrap_or("Unknown user");
-        let mut snippet = crate::view::truncate(&self.decode_mentions(&m.content).0, 300);
+        let mut snippet =
+            crate::view::truncate(&crate::app_expressions::plain_emoji(&self.decode_mentions(&m.content).0), 300);
         if snippet.is_empty() {
             snippet = match m.attachments.len() {
                 0 => "(no text)".into(),
